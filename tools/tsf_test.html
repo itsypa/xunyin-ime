@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>TSF 候选跟随测试</title>
+<style>
+  body { font-size: 20px; padding: 80px 40px; }
+  textarea { width: 80%; height: 160px; font-size: 20px; }
+  button { margin-top: 24px; font-size: 18px; padding: 8px 18px; }
+</style>
+</head>
+<body>
+  <h2>灵犀输入法候选跟随测试</h2>
+  <textarea id="box" placeholder="在此输入拼音测试…">第一行内容用于占位较长文本，便于光标远离行首。</textarea>
+  <br>
+  <button id="jump">把光标移到第一行</button>
+  <script>
+    const box = document.getElementById('box');
+    box.focus();
+    box.setSelectionRange(box.value.length, box.value.length);
+  </script>
+</body>
+</html>

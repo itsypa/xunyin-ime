@@ -1,0 +1,57 @@
+---
+name: emoji
+version: "1.0"
+sort: by_weight
+columns:
+  - text
+  - code
+  - weight
+...
+
+# 常用表情快捷输入（本地词库，对标搜狗 emoji 联想）
+😄	haha	100
+😄	xixi	90
+😊	hehe	100
+😊	keke	90
+😭	ku	100
+😭	daku	95
+😭	kuqi	90
+😢	ai	80
+😠	shengqi	95
+😘	qin	90
+😎	shuai	85
+👍	zan	100
+👎	buxing	80
+👌	ok	80
+👋	bye	80
+❤️	aiqing	95
+💔	shixin	85
+💋	wen	90
+💤	shu	85
+⭐	xingxing	90
+🌙	yueliang	90
+☀️	taiyang	90
+🌸	hua	80
+🍉	gua	80
+🍎	pingguo	80
+🍚	fan	80
+🐱	mao	80
+🐶	gou	80
+🐟	yu	80
+🐦	niao	80
+🐻	xiong	80
+🦋	hudie	85
+🚗	che	80
+✈️	feiji	90
+🎂	shengri	85
+🎉	gongxi	85
+🎁	liwu	80
+🏀	lanqiu	80
+⚽	zuqiu	80
+🎮	youxi	80
+🎵	yinyue	85
+📚	dushu	80
+💻	diannao	85
+📱	shouji	85
+☕	kafei	80
+🍵	cha	80

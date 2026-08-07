@@ -1,0 +1,255 @@
+# Rime dictionary
+# encoding: utf-8
+# 名字
+# 名字 要降频
+#
+---
+name: name
+version: "2024-05-21"
+sort: by_weight
+...
+季伯	ji bo	0
+季伯长	ji bo zhang	0
+季伯常	ji bo chang	0
+季伯英	ji bo ying	0
+季伯达	ji bo da	0
+季伯初	ji bo chu	0
+远坂凛	yuan ban lin	141
+弓凛	gong lin	20
+小林薫	xiao lin xun	0
+和田薫	he tian xun	17
+八千草薫	ba qian cao xun	0
+栗本薫	li ben xun	0
+高村薫	gao cun xun	0
+明石薫	ming shi xun	0
+吉田薫	ji tian xun	0
+岩元薫	yan yuan xun	0
+真嗣	zhen si	3339
+渚薰	zhu xun	992
+庵薰	an xun	32
+#Q薰	qq xun
+贞薰	zhen xun	32
+嗣香	si xiang	1
+嗣丽	si li	1
+薰嗣	xun si	5
+薰丽	xun li	0
+棚町薰	peng ting xun	0
+莫伊莱	mo yi lai	2
+龙丹妮	long dan ni	139
+龚琳娜	gong lin na	226
+龚翔宇	gong xiang yu	143
+丁威迪	ding wei di	113
+黛博拉	dai bo la	152
+黄子韬	huang zi tao	253
+黄雨萱	huang yu xuan	124
+黄旭东	huang xu dong	207
+黄有龙	huang you long	101
+麦瑞克	mai rui ke	1008
+麦道夫	mai dao fu	165
+亥姆霍兹	hai mu huo zi	89
+亨特拉尔	heng te la er	111
+伊东丰雄	yi dong feng xiong	139
+伊卡尔迪	yi ka er di	140
+伊坂幸太郎	yi ban xing tai lang	119
+伊巴卡	yi ba ka	398
+伊戈达拉	yi ge da la	337
+伊斯科	yi si ke	218
+妃英理	fei ying li	189
+姆巴佩	mu ba pei	1390
+姚主席	yao zhu xi	161
+姆希塔良	mu xi ta liang	191
+徐涛	xu tao	3071
+腿姐	tui jie	3940
+武磊	wu lei	2874
+艾顿	ai dun	1776
+卫庄	wei zhuang	2201
+夏洛	xia luo	1856
+羽生	yu sheng	2264
+德善	de shan	1714
+成德善	cheng de shan	20
+哈莉	ha li	1591
+短短的	duan duan de	1163
+没地去	mei di qu	10
+知群	zhi qun	1943
+来答	lai da	2318
+唐军	tang jun	1411
+迪伦	di lun	1102
+白玲	bai ling	1232
+郎平	lang ping	1045
+米莱	mi lai	1010
+韩烁	han shuo	1095
+德约	de yue	1616
+适马	shi ma	1219
+朱婷	zhu ting	964
+秦廷	qin ting	1026
+王澍	wang shu	739
+盛瑾	sheng jin	1037
+罗夏	luo xia	1229
+魔禁	mo jin	992
+许稚	xu zhi	947
+直子	zhi zi	890
+阿泽	a ze	1105
+西昊	xi hao	894
+立信	li xin	1071
+梁博	liang bo	768
+戈恩	ge en	771
+晴子	qing zi	863
+伯格	bo ge	628
+博子	bo zi	860
+莱万	lai wan	1124
+大超	da chao	888
+慕若	mu ruo	794
+今敏	jin min	707
+泽北	ze bei	1057
+燕姿	yan zi	806
+俞佩彤	yu pei tong	100
+梅罗	mei luo	741
+平成	ping cheng	583
+切嗣	qie si	839
+江歌	jiang ge	706
+灰原	hui yuan	739
+扎导	zha dao	769
+比伯	bi bo	694
+元起	yuan qi	552
+林奇	lin qi	572
+李陵	li ling	589
+艺兴	yi xing	599
+小津	xiao jin	610
+郑微	zheng wei	489
+马内	ma nei	576
+伍迪	wu di	419
+黄章	huang zhang	460
+友盟	you meng	399
+雪穗	xue sui	583
+穆迪	mu di	301
+痛仰	tong yang	368
+淘系	tao xi	507
+富坚	fu jian	516
+某音	mou yin	460
+王攀	wang pan	311
+纪淮	ji huai	477
+西决	xi jue	396
+素媛	su yuan	376
+快本	kuai ben	487
+饶毅	rao yi	301
+当贝	dang bei	341
+肖途	xiao tu	425
+复星	fu xing	145
+石昊	shi hao	413
+蒙氏	meng shi	349
+赵姬	zhao ji	363
+范雎	fan ju	435
+杨紫	yang zi	457
+黄洋	huang yang	347
+柯哀	ke ai	359
+刚铎	gang duo	349
+拓海	tuo hai	415
+林静	lin jing	353
+波洛	bo luo	345
+某度	mou du	311
+武周	wu zhou	315
+张剑	zhang jian	336
+黄峥	huang zheng	258
+高思	gao si	247
+蒙特卡洛	meng te ka luo	287
+霍尊	huo zun	302
+值乎	zhi hu	325
+宋眠	song mian	308
+彭越	peng yue	317
+于敏	yu min	278
+途锐	tu rui	258
+任然	ren ran	310
+渣叔	zha shu	363
+余得水	yu de shui	356
+眉庄	mei zhuang	337
+李泌	li mi	298
+唐探	tang tan	249
+李信	li xin	330
+乐夏	yue xia	343
+顾星染	gu xing ran	301
+某鱼	mou yu	262
+黄轩	huang xuan	243
+圣墟	sheng xu	236
+朗道	lang dao	324
+川崎	chuan qi	169
+田静	tian jing	307
+静茹	jing ru	295
+花粥	hua zhou	255
+莫迪	mo di	260
+艾梅柏	ai mei bai	249
+某乎	mou hu	250
+顾曾	gu ceng	328
+光遇	guang yu	145
+速激	su ji	250
+有赞	you zan	273
+哭悲	ku bei	160
+北语	bei yu	207
+二看	er kan	238
+数院	shu yuan	209
+理塘	li tang	217
+骨相	gu xiang	220
+隋末	sui mo	214
+花材	hua cai	241
+炖菜	dun cai	224
+带教	dai jiao	298
+亮司	liang si	266
+秦奋	qin fen	204
+老饭骨	lao fan gu	186
+赛睿	sai rui	260
+墓主	mu zhu	226
+打本	da ben	288
+实车	shi che	237
+花活	hua huo	338
+陆鸿	lu hong	269
+陆奇	lu qi	196
+御坂	yu ban	332
+微视	wei shi	189
+酷安	ku an	231
+魏冉	wei ran	212
+郑薇	zheng wei	135
+蔡澜	cai lan	170
+武忠祥	wu zhong xiang	197
+浪姐	lang jie	209
+胜七	sheng qi	307
+莫蒂	mo di	180
+玄策	xuan ce	129
+莎翁	sha weng	176
+狄俄涅索斯	di e nie suo si	201
+曼恩	man en	245
+伯明顿	bo ming dun	73
+游卡	you ka	218
+旷视	kuang shi	97
+胡斐	hu fei	213
+倪匡	ni kuang	170
+牛客	niu ke	194
+乙一	yi yi	278
+甜薪	tian xin	169
+杨慧兰	yang hui lan	148
+管虎	guan hu	133
+安欣	an xin	161
+缠师	chan shi	179
+武藤	wu teng	223
+博人	bo ren	156
+同程	tong cheng	78
+五竹	wu zhu	152
+双笙	shuang sheng	136
+灵汐	ling xi	149
+途家	tu jia	161
+堆糖	dui tang	136
+泰格	tai ge	110
+关谷	guan gu	122
+齐绍安	qi shao an	138
+韩立	han li	212
+剑南	jian nan	82
+菊厂	ju chang	134
+曾哥	ceng ge	126
+金妮	jin ni	119
+庄生	zhuang sheng	130
+董酒	dong jiu	110
+席慕容	xi mu rong	61
+霍奇	huo qi	120
+云村	yun cun	110
+华数	hua shu	120
+牧原	mu yuan	55
+拉斯	la si	62
+任素汐	ren su xi	78

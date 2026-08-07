@@ -1,0 +1,32 @@
+[package]
+name = "lingxi-ime"
+version = "0.1.0"
+description = "灵犀输入法 —— 基于 librime 引擎的现代化输入法"
+authors = ["Lingxi IME"]
+edition = "2021"
+
+[lib]
+name = "lingxi_ime_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+lingxi-rime = { path = "../../lingxi-rime" }
+tauri = { version = "2", features = ["tray-icon"] }
+tauri-plugin-opener = "2"
+tauri-plugin-global-shortcut = "2"
+tauri-plugin-single-instance = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+windows-sys = { version = "0.61.2", features = ["Win32_UI_Input_KeyboardAndMouse", "Win32_UI_WindowsAndMessaging", "Win32_Foundation", "Win32_System_Threading", "Win32_UI_Input", "Win32_Graphics_Gdi"] }
+
+[features]
+# 由 tauri-cli 生成的自定义协议功能
+custom-protocol = ["tauri/custom-protocol"]
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1

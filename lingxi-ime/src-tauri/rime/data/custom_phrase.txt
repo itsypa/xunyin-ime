@@ -1,0 +1,5 @@
+# Rime table
+#@/db_name	custom_phrase
+#@/db_type	tabledb
+#@/rime_version	1.13.1
+#@/tick	0

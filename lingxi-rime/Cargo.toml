@@ -1,0 +1,22 @@
+[package]
+name = "lingxi-rime"
+version = "0.1.0"
+description = "灵犀输入法 —— librime 引擎共享封装(FFI + 会话管理),供 Tauri 前端与 TSF 文本服务复用"
+edition = "2021"
+license = "MIT"
+
+[lib]
+name = "lingxi_rime"
+path = "src/lib.rs"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+windows-sys = { version = "0.61.2", features = [
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_Foundation",
+    "Win32_System_Threading",
+    "Win32_UI_Input",
+    "Win32_Graphics_Gdi",
+] }

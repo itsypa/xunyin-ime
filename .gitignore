@@ -1,0 +1,30 @@
+# Rust 构建产物
+**/target/
+*.pdb
+
+# Tauri / 前端
+node_modules/
+dist/
+src-tauri/gen/schemas/
+
+# 日志
+*.log
+logs/
+
+# Rime 编译缓存（部署/首次运行时由引擎重建）
+**/rime/data/build/
+**/rime/build/
+
+# Codex 桌面端会话元数据
+.reasonix/
+
+# 编辑器 / 系统
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# 本机测试截图与第三方参考素材（含搜狗版权图片，不入库）
+tools/sogou_ref_*.png
+tools/sogou_ref_*.gif
+tools/statusbar_capture.png
