@@ -57,6 +57,16 @@ jobs:
         working-directory: lingxi-ime
         run: npm run tauri -- build -- --features custom-protocol
 
+      - name: 安装包文件名改为英文
+        shell: powershell
+        run: |
+          $nsis = "lingxi-ime/src-tauri/target/release/bundle/nsis"
+          Get-ChildItem $nsis -Filter "*_x64-setup.exe" | ForEach-Object {
+            $newName = "LingxiIME_0.1.$env:GITHUB_RUN_NUMBER_x64-setup.exe"
+            Rename-Item -LiteralPath $_.FullName -NewName $newName -Force
+            Write-Output "renamed to $newName"
+          }
+
       - name: 上传安装包
         uses: actions/upload-artifact@v4
         with:
@@ -71,12 +81,12 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: v0.1.${{ github.run_number }}
-          name: 灵犀输入法 v0.1.${{ github.run_number }}
+          name: LingxiIME v0.1.${{ github.run_number }}
           body: |
-            自动构建产物（commit ${{ github.sha }}）
+            Auto-built Windows installer (commit ${{ github.sha }})
 
-            - Windows x64 NSIS 安装包：安装后自动注册 x64/x86 TSF 视图，装完即用
-            - lingxi-ime.exe：设置中心（便携版）
+            - NSIS setup (x64): registers both x64/x86 TSF views on install
+            - lingxi-ime.exe: portable settings app
           files: |
             lingxi-ime/src-tauri/target/release/bundle/nsis/*.exe
             lingxi-ime/src-tauri/target/release/lingxi-ime.exe
