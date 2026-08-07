@@ -49,7 +49,7 @@ jobs:
         run: |
           $conf = "lingxi-ime/src-tauri/tauri.conf.json"
           $json = Get-Content $conf -Raw | ConvertFrom-Json
-          $json.version = "0.1.0.$env:GITHUB_RUN_NUMBER"
+          $json.version = "0.1.$env:GITHUB_RUN_NUMBER"
           $text = $json | ConvertTo-Json -Depth 10
           [System.IO.File]::WriteAllText((Join-Path (Get-Location) $conf), $text, (New-Object System.Text.UTF8Encoding($false)))
 
@@ -70,8 +70,8 @@ jobs:
       - name: 发布 GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v0.1.0.${{ github.run_number }}
-          name: 灵犀输入法 v0.1.0.${{ github.run_number }}
+          tag_name: v0.1.${{ github.run_number }}
+          name: 灵犀输入法 v0.1.${{ github.run_number }}
           body: |
             自动构建产物（commit ${{ github.sha }}）
 
