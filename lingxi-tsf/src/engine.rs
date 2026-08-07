@@ -111,6 +111,9 @@ fn shared_data_dir() -> PathBuf {
         for cand in [
             dll.join("rime").join("data"),
             dll.join("..")
+                .join("rime")
+                .join("data"),
+            dll.join("..")
                 .join("..")
                 .join("..")
                 .join("lingxi-ime")

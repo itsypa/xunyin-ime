@@ -46,9 +46,17 @@
       "icons/icon.ico"
     ],
     "resources": {
-      "rime/rime.dll": "rime/rime.dll",
+      "rime/rime.dll": "rime.dll",
       "rime/rime_dict_manager.exe": "rime/rime_dict_manager.exe",
-      "rime/data/**/*": "rime/data/"
+      "rime/data/**/*": "rime/data/",
+      "tsf/lingxi_tsf_x64.dll": "tsf/lingxi_tsf_x64.dll",
+      "tsf-x86/lingxi_tsf_x86.dll": "tsf-x86/lingxi_tsf_x86.dll",
+      "rime-x86/rime.dll": "tsf-x86/rime.dll"
+    },
+    "windows": {
+      "nsis": {
+        "installerHooks": "nsis/hooks.nsh"
+      }
     }
   }
 }

@@ -441,8 +441,10 @@ impl StatusBar {
     }
 }
 
-/// 按本 DLL 所在目录向上查找工作区里的设置中心可执行文件，
-/// 使状态栏设置入口在不同机器/目录下都能工作。
+/// 定位设置中心可执行文件，兼容两种布局：
+/// - 安装布局：DLL 在 <安装目录>\tsf\ 下，设置程序在 <安装目录>\lingxi-ime.exe；
+/// - 开发布局：DLL 在 lingxi-tsf\target\...\ 下，设置程序在
+///   lingxi-ime\src-tauri\target\debug\lingxi-ime.exe。
 fn settings_exe_path() -> Option<std::path::PathBuf> {
     unsafe {
         let mut hmod: HMODULE = core::mem::zeroed();
@@ -456,7 +458,18 @@ fn settings_exe_path() -> Option<std::path::PathBuf> {
             return None;
         }
         let dll = std::path::PathBuf::from(String::from_utf16_lossy(&buf[..len as usize]));
-        let mut dir = dll.parent()?.to_path_buf();
+        let dll_dir = dll.parent()?.to_path_buf();
+        // 安装布局：逐级向上找 lingxi-ime.exe
+        let mut dir = dll_dir.clone();
+        for _ in 0..6 {
+            let exe = dir.join("lingxi-ime.exe");
+            if exe.exists() {
+                return Some(exe);
+            }
+            dir = dir.parent()?.to_path_buf();
+        }
+        // 开发布局：工作区根下 lingxi-ime\src-tauri\target\debug\
+        let mut dir = dll_dir;
         for _ in 0..6 {
             let ime = dir
                 .join("lingxi-ime")

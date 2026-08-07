@@ -1,0 +1,56 @@
+name: build-windows
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc, i686-pc-windows-msvc
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: lingxi-ime/package-lock.json
+
+      - name: 安装前端依赖
+        working-directory: lingxi-ime
+        run: npm ci
+
+      - name: 构建 lingxi-tsf（x64）
+        working-directory: lingxi-tsf
+        run: cargo build --release
+
+      - name: 构建 lingxi-tsf（x86）
+        working-directory: lingxi-tsf
+        run: cargo build --release --target i686-pc-windows-msvc
+
+      - name: 复制 TSF DLL 到打包资源目录
+        shell: powershell
+        run: |
+          New-Item -ItemType Directory -Force lingxi-ime/src-tauri/tsf | Out-Null
+          New-Item -ItemType Directory -Force lingxi-ime/src-tauri/tsf-x86 | Out-Null
+          Copy-Item lingxi-tsf/target/release/lingxi_tsf.dll lingxi-ime/src-tauri/tsf/lingxi_tsf_x64.dll -Force
+          Copy-Item lingxi-tsf/target/i686-pc-windows-msvc/release/lingxi_tsf.dll lingxi-ime/src-tauri/tsf-x86/lingxi_tsf_x86.dll -Force
+
+      - name: 构建 NSIS 安装包（设置中心 + TSF 注册）
+        working-directory: lingxi-ime
+        run: npm run tauri -- build -- --features custom-protocol
+
+      - name: 上传安装包
+        uses: actions/upload-artifact@v4
+        with:
+          name: lingxi-ime-windows
+          path: |
+            lingxi-ime/src-tauri/target/release/bundle/nsis/*.exe
+            lingxi-ime/src-tauri/target/release/lingxi-ime.exe
+            lingxi-ime/src-tauri/tsf/lingxi_tsf_x64.dll
+            lingxi-ime/src-tauri/tsf-x86/lingxi_tsf_x86.dll
