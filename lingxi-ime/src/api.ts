@@ -97,3 +97,18 @@ export function exportDict(): Promise<string> {
 export function openDataDir(): Promise<void> {
   return invoke("open_data_dir");
 }
+
+/** 备份用户词库（userdb 目录 + 自造词），返回备份目录路径。 */
+export function backupUserDict(): Promise<string> {
+  return invoke("backup_user_dict");
+}
+
+/** 列出已有用户词库备份目录（新的在前）。 */
+export function listUserDictBackups(): Promise<string[]> {
+  return invoke("list_user_dict_backups");
+}
+
+/** 从备份目录恢复用户词库（恢复前会自动另存当前词库）。 */
+export function restoreUserDict(dir: string): Promise<string> {
+  return invoke("restore_user_dict", { dir });
+}

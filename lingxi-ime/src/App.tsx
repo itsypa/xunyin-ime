@@ -1,4 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { getVersion } from "@tauri-apps/api/app";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import * as api from "./api";
 import type {
   AppearanceConfig,
@@ -81,6 +83,9 @@ function App() {
   const [ready, setReady] = useState(false);
   const [busy, setBusy] = useState(false);
   const [toast, setToast] = useState("");
+  const [backups, setBackups] = useState<string[]>([]);
+  const [selectedBackup, setSelectedBackup] = useState("");
+  const [version, setVersion] = useState("0.1.0");
   const saveTimer = useRef<number | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
 
@@ -88,6 +93,13 @@ function App() {
     setToast(msg);
     window.setTimeout(() => setToast(""), 3200);
   };
+
+  // 版本号以程序自身为准（构建时注入），避免与界面写死的数字不一致
+  useEffect(() => {
+    getVersion()
+      .then(setVersion)
+      .catch(() => {});
+  }, []);
 
   // 初始化：引擎 → 配置 → 方案列表 → 词库统计
   useEffect(() => {
@@ -131,6 +143,65 @@ function App() {
 
   const patchInput = (patch: Partial<LingxiConfig["input"]>) =>
     saveConfig({ ...config, input: { ...config.input, ...patch } });
+
+  // 用户词库备份 / 恢复
+  const refreshBackups = async () => {
+    try {
+      const list = await api.listUserDictBackups();
+      setBackups(list);
+      if (!selectedBackup && list.length) setSelectedBackup(list[0]);
+    } catch (e) {
+      toastMsg("读取备份列表失败：" + String(e));
+    }
+  };
+
+  const handleBackupDict = async () => {
+    setBusy(true);
+    try {
+      const dir = await api.backupUserDict();
+      toastMsg("已备份用户词库到：" + dir);
+      await refreshBackups();
+    } catch (e) {
+      toastMsg("备份失败：" + String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleRestoreDict = async () => {
+    if (!selectedBackup) {
+      toastMsg("请先选择一个备份");
+      return;
+    }
+    setBusy(true);
+    try {
+      const msg = await api.restoreUserDict(selectedBackup);
+      toastMsg(msg + "，正在重建索引…");
+      await api.redeploy();
+      setStats(await api.getDictStats());
+      toastMsg("用户词库已恢复");
+    } catch (e) {
+      toastMsg("恢复失败：" + String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  // 进入词库页时刷新备份列表
+  useEffect(() => {
+    if (page === "dict") void refreshBackups();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [page]);
+
+  /** 从磁盘重新载入配置（外部改过配置文件时用）。 */
+  const handleReload = async () => {
+    try {
+      setConfigState(await api.getConfig());
+      toastMsg("已从磁盘重新载入配置");
+    } catch (e) {
+      toastMsg("重载失败：" + String(e));
+    }
+  };
 
   const patchAppearance = (patch: Partial<AppearanceConfig>) =>
     saveConfig({ ...config, appearance: { ...config.appearance, ...patch } }, true);
@@ -246,6 +317,23 @@ function App() {
       </aside>
 
       <main className="content">
+        {/* 全局操作栏：设置自动保存，这里放跨页的通用操作 */}
+        <div className="actionbar">
+          <span className="actionbar-status">
+            设置自动保存 · 约 1 秒后对新会话生效
+          </span>
+          <div className="actionbar-btns">
+            <button className="btn small" disabled={busy} onClick={handleReload}>
+              重载配置
+            </button>
+            <button className="btn small" disabled={busy} onClick={handleRedeploy}>
+              重建词库索引
+            </button>
+            <button className="btn small" disabled={busy} onClick={handleReset}>
+              恢复默认
+            </button>
+          </div>
+        </div>
         {page === "input" && (
           <section className="page">
             <h1>输入设置</h1>
@@ -435,8 +523,8 @@ function App() {
             <div className="card">
               <h2>导入词库</h2>
               <p className="hint">
-                支持 Rime 自定义短语格式（每行：词&lt;Tab&gt;编码），
-                追加到用户词库并自动重建索引。
+                导入自定义短语（每行：词&lt;Tab&gt;拼音），追加到用户词库并自动重建索引。
+                想迁移打字学到的词请用下面的「备份用户词库」。
               </p>
               <div className="btn-row">
                 <button className="btn primary" disabled={busy} onClick={() => fileRef.current?.click()}>
@@ -453,8 +541,8 @@ function App() {
             </div>
 
             <div className="card">
-              <h2>导出词库</h2>
-              <p className="hint">把自定义短语导出为文本文件，可备份或迁移。</p>
+              <h2>导出自定义短语</h2>
+              <p className="hint">把自定义短语导出为文本文件（不含打字学到的词）。</p>
               <div className="btn-row">
                 <button className="btn" disabled={busy} onClick={handleExport}>
                   导出自定义短语
@@ -470,16 +558,44 @@ function App() {
             </div>
 
             <div className="card">
-              <h2>恢复默认</h2>
+              <h2>用户词库备份与恢复</h2>
               <p className="hint">
-                把输入方案、全半角、简繁、候选数等全部恢复为出厂默认。
+                打字学到的词存在 Rime 用户词库（*.userdb）里。备份会把用户词库与自定义短语
+                完整另存到数据目录的 backup\ 下；恢复前会自动把当前词库再另存一份，避免误操作丢词。
               </p>
               <div className="btn-row">
-                <button className="btn" disabled={busy} onClick={handleReset}>
-                  恢复默认设置
+                <button className="btn primary" disabled={busy} onClick={handleBackupDict}>
+                  备份用户词库
+                </button>
+                <button className="btn" disabled={busy} onClick={refreshBackups}>
+                  刷新备份列表
                 </button>
               </div>
+              {backups.length > 0 ? (
+                <div className="btn-row" style={{ marginTop: 10 }}>
+                  <select
+                    className="input"
+                    style={{ flex: 1, minWidth: 260 }}
+                    value={selectedBackup}
+                    onChange={(e) => setSelectedBackup(e.target.value)}
+                  >
+                    {backups.map((b) => (
+                      <option key={b} value={b}>
+                        {b.split(/[\\/]/).pop()}
+                      </option>
+                    ))}
+                  </select>
+                  <button className="btn" disabled={busy} onClick={handleRestoreDict}>
+                    恢复所选备份
+                  </button>
+                </div>
+              ) : (
+                <p className="hint" style={{ marginTop: 8 }}>
+                  暂无备份。
+                </p>
+              )}
             </div>
+
           </section>
         )}
 
@@ -487,17 +603,36 @@ function App() {
           <section className="page about">
             <div className="about-logo">灵</div>
             <h1>灵犀输入法</h1>
-            <p className="about-ver">版本 0.1.0</p>
-            <p className="about-desc">
-              系统级 TSF 输入法，基于 Rime 引擎与增强词库，
-              支持全角半角、简繁转换、主题定制与词库导入导出。
-            </p>
+              <p className="about-ver">版本 {version}</p>
+              <p className="about-desc">
+                系统级 TSF 输入法，基于 Rime 引擎与增强词库，
+                支持全角半角、简繁转换、状态栏快捷切换、主题定制与词库备份。
+              </p>
             <div className="about-tags">
               <span>无广告</span>
               <span>无遥测</span>
-              <span>本地运行</span>
-              <span>数据自主</span>
-            </div>
+                <span>本地运行</span>
+                <span>数据自主</span>
+              </div>
+              <div className="card">
+                <h2>更新</h2>
+                <p className="hint">
+                  本输入法不联网自检。点下面的按钮用浏览器打开发布页，
+                  对照最新版本号（当前 {version}）决定是否升级。
+                </p>
+                <div className="btn-row">
+                  <button
+                    className="btn"
+                    onClick={() =>
+                      openUrl("https://github.com/itsypa/lingxi-ime/releases/latest").catch((e) =>
+                        toastMsg("打开失败：" + String(e))
+                      )
+                    }
+                  >
+                    查看最新版本
+                  </button>
+                </div>
+              </div>
             <div className="card">
               <h2>快捷键</h2>
               <table className="keys">
@@ -506,8 +641,10 @@ function App() {
                   <tr><td>回车</td><td>直接把拼音上屏（不选词）</td></tr>
                   <tr><td>空格</td><td>确认高亮候选词</td></tr>
                   <tr><td>1-9</td><td>选择对应候选</td></tr>
-                  <tr><td>Ctrl+.</td><td>切换中英标点</td></tr>
-                  <tr><td>← / →</td><td>拼音内逐字移动（跳过分隔符，到头不循环）</td></tr>
+                    <tr><td>Ctrl+.</td><td>切换中英标点</td></tr>
+                    <tr><td>状态栏「简/繁」格</td><td>切换简入繁出（蓝底=已启用）</td></tr>
+                    <tr><td>右键状态栏</td><td>弹出开关菜单（中英/全角/标点/简繁/设置）</td></tr>
+                    <tr><td>← / →</td><td>拼音内逐字移动（跳过分隔符，到头不循环）</td></tr>
                   <tr><td>Tab / [ ] / - =</td><td>候选翻页</td></tr>
                 </tbody>
               </table>
