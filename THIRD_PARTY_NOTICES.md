@@ -18,3 +18,17 @@
 ## 界面参考
 
 - 状态栏视觉风格参考搜狗输入法默认状态栏（仅借鉴外观，无代码/素材复用）。
+
+## wind-installer（安装器）
+
+- 项目：[huanfeng/wind-installer](https://github.com/huanfeng/wind-installer)
+- 许可：MIT
+- 说明：`installer/` 目录为其源码副本（清单驱动的 Windows 安装器生成器）。
+  本项目用它生成 `LingxiIME-Setup-<版本>.exe`（含卸载器），清单见
+  `installer/app.toml`。原项目的 LICENSE 与 NOTICE 保留在 `installer/` 内。
+
+## windui
+
+- 项目：[huanfeng/wind-ui-rust](https://github.com/huanfeng/wind-ui-rust)
+- 许可：MIT
+- 说明：`installer/` 的安装/卸载向导 GUI 依赖（经 crates.io 引入，未随仓库分发源码）。

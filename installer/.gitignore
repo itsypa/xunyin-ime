@@ -1,0 +1,35 @@
+# Rust / Cargo
+/target/
+**/*.rs.bk
+# Cargo.lock 纳入版本控制：二进制 crate 惯例，锁定 windui git commit 与依赖版本以保证可复现构建
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+Thumbs.db
+Desktop.ini
+.DS_Store
+
+# Build artifacts
+*.exe
+*.dll
+*.pdb
+*.lnk
+
+# OMC (开发工具状态)
+.omc/
+.remember/
+.superpowers/
+docs/superpowers/
+
+# 临时文件
+*.tmp
+*.log
+
+# 构建输出 / 临时截图（不纳入版本控制）
+dist/

@@ -18,6 +18,14 @@ jobs:
         with:
           targets: x86_64-pc-windows-msvc, i686-pc-windows-msvc
 
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            lingxi-tsf
+            lingxi-rime
+            lingxi-ime/src-tauri
+            installer
+
       - uses: actions/setup-node@v4
         with:
           node-version: 20
@@ -36,13 +44,12 @@ jobs:
         working-directory: lingxi-tsf
         run: cargo build --release --target i686-pc-windows-msvc
 
-      - name: 复制 TSF DLL 到打包资源目录
-        shell: powershell
+      - name: 构建设置中心（前端 + 后端）
+        working-directory: lingxi-ime
         run: |
-          New-Item -ItemType Directory -Force lingxi-ime/src-tauri/tsf | Out-Null
-          New-Item -ItemType Directory -Force lingxi-ime/src-tauri/tsf-x86 | Out-Null
-          Copy-Item lingxi-tsf/target/release/lingxi_tsf.dll lingxi-ime/src-tauri/tsf/lingxi_tsf_x64.dll -Force
-          Copy-Item lingxi-tsf/target/i686-pc-windows-msvc/release/lingxi_tsf.dll lingxi-ime/src-tauri/tsf-x86/lingxi_tsf_x86.dll -Force
+          npm run build
+          cd src-tauri
+          cargo build --release --features custom-protocol
 
       - name: 注入构建版本号
         shell: powershell
@@ -53,29 +60,23 @@ jobs:
           $text = $json | ConvertTo-Json -Depth 10
           [System.IO.File]::WriteAllText((Join-Path (Get-Location) $conf), $text, (New-Object System.Text.UTF8Encoding($false)))
 
-      - name: 构建 NSIS 安装包（设置中心 + TSF 注册）
-        working-directory: lingxi-ime
-        run: npm run tauri -- build -- --features custom-protocol
+      - name: 构建安装器（stub / 卸载器 / 打包器）
+        working-directory: installer
+        run: cargo build --release --features packer
 
-      - name: 安装包文件名改为英文
+      - name: 生成安装包（wind-installer）
         shell: powershell
         run: |
-          $nsis = "lingxi-ime/src-tauri/target/release/bundle/nsis"
-          Get-ChildItem $nsis -Filter "*_x64-setup.exe" | ForEach-Object {
-            $newName = "LingxiIME_0.1.$env:GITHUB_RUN_NUMBER_x64-setup.exe"
-            Rename-Item -LiteralPath $_.FullName -NewName $newName -Force
-            Write-Output "renamed to $newName"
-          }
+          .\tools\pack-installer.ps1 -SkipBuild -Version "0.1.$env:GITHUB_RUN_NUMBER" -Compression lzma
 
       - name: 上传安装包
         uses: actions/upload-artifact@v4
         with:
           name: lingxi-ime-windows
           path: |
-            lingxi-ime/src-tauri/target/release/bundle/nsis/*.exe
-            lingxi-ime/src-tauri/target/release/lingxi-ime.exe
-            lingxi-ime/src-tauri/tsf/lingxi_tsf_x64.dll
-            lingxi-ime/src-tauri/tsf-x86/lingxi_tsf_x86.dll
+            build/installer-dist/*.exe
+            lingxi-tsf/target/release/lingxi_tsf.dll
+            lingxi-tsf/target/i686-pc-windows-msvc/release/lingxi_tsf.dll
 
       - name: 发布 GitHub Release
         uses: softprops/action-gh-release@v2
@@ -85,9 +86,9 @@ jobs:
           body: |
             Auto-built Windows installer (commit ${{ github.sha }})
 
-            - NSIS setup (x64): registers both x64/x86 TSF views on install
+            - Setup: installs the IME, registers both x64/x86 TSF views, includes an uninstaller
           files: |
-            lingxi-ime/src-tauri/target/release/bundle/nsis/*.exe
+            build/installer-dist/*.exe
           fail_on_unmatched_files: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

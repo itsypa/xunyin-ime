@@ -1,0 +1,92 @@
+# ============================================================================
+#  灵犀输入法 安装清单（wind-installer / 清单驱动）
+# ============================================================================
+#  用法（见 tools/pack-installer.ps1）：
+#    wind-packer build --config installer/app.toml --version <版本> \
+#        --source-dir <payload 目录> --stub <wind-installer.exe>
+#
+#  [app]/[ui]/[theme]/[paths]/[strings]/[ime]/[[shortcut]]/[startup] 会嵌入归档，
+#  安装/卸载器运行期读取；[package] 仅打包时使用。
+#  能力段整段缺省 = 不执行该能力。
+# ============================================================================
+
+[app]
+# id 同时是卸载时清理的用户数据目录名：本产品数据在 %APPDATA%\com.lingxi.ime，
+# 故此处用与 Tauri 标识一致的取值（安装目录另由 [paths].install 指定）。
+id              = "com.lingxi.ime"
+display_name    = "灵犀输入法"
+version         = "0.1.0"                 # 构建时由 --version 覆盖
+publisher       = "灵犀输入法 项目"
+description     = "基于 TSF 与 Rime 引擎的轻量中文输入法"
+main_exe        = "lingxi-ime.exe"
+setting_exe     = "lingxi-ime.exe"
+start_menu_folder = "灵犀输入法"
+window_title    = "灵犀输入法 安装向导"
+url_protocol    = "lingxiime"
+agreement_url   = ""
+portable_marker = "portable_mode"
+process_names   = ["lingxi-ime"]
+# 需要 ALL APPLICATION PACKAGES 读取权限的 DLL（沉浸式/UWP 应用加载输入法所需）
+acl_dlls        = ["tsf/lingxi_tsf_x64.dll", "tsf-x86/lingxi_tsf_x86.dll"]
+legacy_files    = []
+legacy_dirs     = []
+
+[ui]
+install_win   = { w = 520, h = 440 }
+uninstall_win = { w = 480, h = 420 }
+
+# 主题色：与状态栏主题蓝一致
+[theme]
+accent = "#4285F4"
+
+# 默认路径模板：{id} 替换为 app.id，%VAR% 由向导展开
+[paths]
+install  = '%ProgramFiles%\LingxiIME'
+portable = '%USERPROFILE%\LingxiIME'
+data     = '%APPDATA%\com.lingxi.ime'
+
+[strings]
+data_dir_hint       = "用户词库、配置与日志路径"
+mode_hint           = "标准安装将输入法注册到系统；便捷模式仅解压文件，不修改系统"
+agreement_text      = "《用户服务协议》"
+user_data_label     = "删除用户词库和配置数据"
+cache_label         = "清除本地词库缓存"
+delete_data_confirm = "将永久删除 {path} 下的所有词库和配置数据，卸载后无法恢复。\n\n确定要勾选删除吗？"
+
+# ── TSF 输入法注册（COM + 语言档案）──────────────────────────────────────
+# 与 lingxi-tsf/src/lib.rs 中的 CLSID / PROFILE GUID 必须一致。
+[ime]
+clsid        = "{F3A2D6E1-4C5B-4E8A-9C1D-2A6B7C8D9E0F}"
+profile_guid = "{5B8E9A2F-6D7C-4F1A-8E3B-4C5D6E7F8A9B}"
+lang_id      = "0804"
+dll_x64      = "tsf/lingxi_tsf_x64.dll"
+dll_x86      = "tsf-x86/lingxi_tsf_x86.dll"
+# 开发期多次 regsvr32 可能留下指向旧路径的悬空注册，安装前清扫同 GUID 的悬空项
+sweep_residue = true
+# 空 = 就地注册（DLL 留在安装目录）。系统目录布局要求 DLL 已代码签名，暂不启用。
+system_subdir = ""
+
+# ── 快捷方式 ─────────────────────────────────────────────────────────────
+[[shortcut]]
+target   = "lingxi-ime.exe"
+name     = "灵犀输入法 设置"
+location = "start_menu"
+
+[[shortcut]]
+target   = "uninstall.exe"
+name     = "卸载 灵犀输入法"
+location = "start_menu"
+
+# ── 安装完成后启动设置中心 ───────────────────────────────────────────────
+[startup]
+prestart = true
+exe      = "lingxi-ime.exe"
+
+# ── 打包参数（仅 wind-packer 使用）───────────────────────────────────────
+[package]
+compression = "lzma"
+source_dir  = "../build/installer-payload"
+output_name = "LingxiIME-Setup"
+output_dir  = "../build/installer-dist"
+logo        = "../lingxi-ime/src-tauri/icons/128x128.png"
+icon        = "../lingxi-ime/src-tauri/icons/icon.ico"

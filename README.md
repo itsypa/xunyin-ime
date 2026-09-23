@@ -61,13 +61,14 @@ tools/         部署、签名、状态栏资源生成脚本与测试页
 上自动：
 
 1. 编译 `lingxi-tsf`（x64 + x86 release）；
-2. 编译设置中心并生成 NSIS 安装包（内置词库、rime.dll 与 TSF DLL）；
-3. 安装包内置注册逻辑：安装时自动注册 x64/x86 两个 TSF 视图，卸载时注销；
-4. 上传产物：`灵犀输入法_<版本>_x64-setup.exe`（Actions 页面 Artifacts 下载）。
+2. 编译设置中心（Tauri release + 前端 dist）；
+3. 用 [wind-installer](https://github.com/huanfeng/wind-installer)（清单驱动）生成
+   **安装器 + 卸载器**：`LingxiIME-Setup-<版本>.exe`；
+4. 上传产物并在 Release 中发布。
 
 构建成功后还会自动发布 **GitHub Release**：每次构建注入唯一版本号
 `0.1.<构建序号>`（合法 semver），Release 名称与安装包文件名均为英文
-（`LingxiIME v0.1.<序号>` / `LingxiIME_0.1.<序号>_x64-setup.exe`），避免中文
+（`LingxiIME v0.1.<序号>` / `LingxiIME-Setup-0.1.<序号>.exe`），避免中文
 编码显示问题；应用本身安装后仍显示中文名「灵犀输入法」。以后想手动控制版本时，
 可以改为按 `v*` 标签触发。
 
@@ -75,14 +76,28 @@ tools/         部署、签名、状态栏资源生成脚本与测试页
 
 ```
 lingxi-ime.exe                   设置中心
-rime.dll                         x64 rime 引擎
+rime.dll                         x64 rime 引擎（设置中心旁）
 rime\data\...                    共享词库
-tsf\lingxi_tsf_x64.dll           x64 TSF（注册 64 位视图）
-tsf-x86\lingxi_tsf_x86.dll       x86 TSF + rime.dll（注册 32 位视图）
+tsf\lingxi_tsf_x64.dll           x64 TSF + 同目录 rime.dll（注册 64 位视图）
+tsf-x86\lingxi_tsf_x86.dll       x86 TSF + 32 位 rime.dll（注册 32 位视图）
+uninstall.exe                    卸载器（控制面板/设置里可卸载）
 ```
 
+## 本地打包安装器
+
+```powershell
+.\tools\pack-installer.ps1                      # 版本号取自 tauri.conf.json
+.\tools\pack-installer.ps1 -Version 0.2.0 -Compression zstd
+.\tools\pack-installer.ps1 -SkipBuild           # 复用已构建产物，只重新打包
+```
+
+安装器清单在 [installer/app.toml](installer/app.toml)（应用信息、TSF 注册的
+CLSID/GUID、快捷方式、启动行为、文案等）。安装器支持 `--silent` / `--quiet` /
+`--dir <目录>`，卸载器为安装目录下的 `uninstall.exe`（支持 `--silent`、
+`--keep-user-data`，卸载时可选删除用户词库与配置）。
+
 > 未配置代码签名证书时，安装包会触发 Windows SmartScreen 提示，属正常现象；
-> 发布正式版时可在构建中配置签名证书。
+> 发布正式版时可在构建中配置签名证书（签名后重跑 `pack-installer.ps1`）。
 
 ## 状态栏
 

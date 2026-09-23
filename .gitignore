@@ -22,6 +22,9 @@ lingxi-ime/src-tauri/tsf-x86/
 # Codex 桌面端会话元数据
 .reasonix/
 
+# 安装包构建产物（payload 与 dist 由 tools/pack-installer.ps1 生成）
+/build/
+
 # 编辑器 / 系统
 .vscode/
 .idea/

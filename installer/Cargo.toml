@@ -1,0 +1,92 @@
+[package]
+name = "wind-installer"
+version = "0.1.0"
+edition = "2021"
+description = "清单驱动的通用 Windows 安装器生成器"
+license = "MIT"
+
+# 应用身份配置已迁移到 app.toml（运行期清单），不再使用 Cargo.toml 元数据。
+
+[features]
+# TSF/字体注册已改为运行期清单驱动（见 app.toml 的 [ime]/[[font]] 段），不再是编译期开关。
+default = ["frameless"]
+frameless = []          # 无边框自定义标题栏（主题色标题栏代替系统标题栏）
+packer    = ["dep:editpe"]  # wind-packer 所需（写 EXE 图标）
+
+[lib]
+name = "wind_installer"
+path = "src/lib.rs"
+
+[dependencies]
+# 压缩
+# zstdmt: 启用多线程压缩。打包实测是发布流程里最大的单块耗时（占 d8 的 43%），
+# 而单线程 encode_all 在多核编译机上只用得到 1 个核。产物仍是标准 zstd 流。
+zstd = { version = "0.13", features = ["zstdmt"] }
+xz2 = "0.1"
+
+# 工具（跨平台：archive/manifest 模块与 wind-packer 仅依赖这些，可在 Linux 原生构建）
+crc32fast = "1.4"
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+clap = { version = "4", features = ["derive"] }
+rand = "0.8"
+ctrlc = "3"
+# 仅 wind-packer 需要（写 EXE 图标，纯 Rust 跨平台，无外部依赖）；installer/uninstaller 不引入
+editpe = { version = "0.2.3", features = ["images"], optional = true }
+indexmap = "2"
+
+# Windows-only 依赖（installer/uninstaller/ui/util 模块用）。隔离到 cfg(windows)
+# 后，wind-packer 可在 Linux 宿主原生构建（archive 纯 IO，无需 wine）。
+[target.'cfg(windows)'.dependencies]
+# GUI 框架（ui 模块用；开源仓库：https://github.com/huanfeng/wind-ui-rust）
+windui = "0.16"
+# Windows API（与 windui 对齐到 0.62）
+windows = { version = "0.62", features = [
+    "Win32_Foundation",
+    "Win32_System_Registry",
+    "Win32_Storage_FileSystem",
+    "Win32_System_Threading",
+    "Win32_System_ProcessStatus",
+    "Win32_System_Diagnostics_ToolHelp",
+    "Win32_Security",
+    "Win32_UI_Shell",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_System_Com",
+    "Win32_System_LibraryLoader",
+    "Win32_Graphics_Gdi",
+    "Win32_System_Memory",
+    "Win32_System_SystemInformation",
+    "Win32_UI_Input_KeyboardAndMouse",
+] }
+# 注册表操作
+winreg = "0.52"
+# 快捷方式
+mslnk = "0.1"
+
+[build-dependencies]
+embed-resource = "2.4"
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
+
+[[bin]]
+name = "wind-installer"
+path = "src/main.rs"
+
+[[bin]]
+name = "wind-uninstaller"
+path = "src/uninstaller_main.rs"
+
+[[bin]]
+name = "wind-packer"
+path = "tools/packer/main.rs"
+required-features = ["packer"]
+
+# 本地修补 editpe：上游 0.2.3 的 VersionInfo::build() 用 UTF-8 字节数（String::len()）
+# 计算版本资源头部长度，含中文时结构错乱、Windows 读不到版本信息。vendor 副本已修为 UTF-16 码元数。
+[patch.crates-io]
+editpe = { path = "vendor/editpe" }

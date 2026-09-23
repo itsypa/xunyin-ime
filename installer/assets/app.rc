@@ -1,0 +1,5 @@
+// UAC Manifest
+1 RT_MANIFEST "app.manifest"
+
+// 应用图标
+1 ICON "installer.ico"

@@ -1,0 +1,23 @@
+# 文本文件一律以 LF 入库（检出时由各平台的 core.autocrlf 决定），
+# 避免 Windows 贡献者的 CRLF 工作副本产生整文件级别的无关 diff。
+* text=auto
+
+# Shell 脚本强制 LF —— CRLF 会让 `#!` 行解析失败。git hook 尤其要紧：
+# 带 \r 的 shebang 在 Git Bash 下会报 `bad interpreter: /usr/bin/env bash^M`，
+# 而这只在「.gitattributes 晚于文件加入」的既有工作副本上发生（新克隆拿到的是 LF），
+# 属于典型的只在维护者机器上坏、贡献者复现不了的问题。
+*.sh text eol=lf
+.githooks/* text eol=lf
+
+# Windows 资源脚本与清单：由 rc.exe / MSVC 工具链消费，保持 CRLF 更稳妥
+*.rc text eol=crlf
+*.manifest text eol=crlf
+
+# 二进制资源：禁止任何换行/文本转换与 diff 尝试
+*.ico binary
+*.png binary
+*.exe binary
+
+# vendor/ 是第三方 crate 的本地修补副本，在 GitHub 语言统计与 PR diff 中折叠，
+# 但仍纳入版本控制（linguist-vendored 不影响 Cargo 的 [patch] 解析）
+vendor/** linguist-vendored

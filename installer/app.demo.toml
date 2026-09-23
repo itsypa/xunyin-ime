@@ -1,0 +1,165 @@
+# ============================================================================
+#  Wind Installer 应用清单（示例）
+# ============================================================================
+#  这是「通用安装器生成器」的唯一配置来源。修改本文件即可为不同应用生成安装包，
+#  无需重新编译 stub：
+#       wind-packer build --config app.toml --stub wind-installer.exe
+#
+#  [app]/[ui]/[ime]/[[font]]/[autostart]/[[shortcut]]/[startup] 会被嵌入归档头部，
+#  由安装/卸载器运行期读取；[package] 仅打包时使用，不进归档。
+#
+#  能力段（[ime]/[[font]]/[autostart]/[[shortcut]]/[startup]）遵循同一约定：
+#  **整段缺省 = 该能力不执行**。删掉不需要的段即可，无需改代码。
+#
+#  本文件是**演示用的虚构应用**，把每个字段的写法都列了出来（含大多数应用用不上的
+#  [ime]/[[font]]/[datadir]）。真实产品的清单归产品仓库自己维护，不放在这里。
+# ============================================================================
+
+[app]
+# ── 应用标识（注册表键名、默认安装目录名等）──────────────────────────────
+id              = "DemoApp"
+display_name    = "示例应用"
+version         = "0.1.0"
+publisher       = "Demo Inc."
+description     = "一个用来演示清单写法的示例应用"
+# ── 可执行文件名（相对安装目录）──────────────────────────────────────────
+main_exe        = "demo_app.exe"
+setting_exe     = "demo_settings.exe"
+# ── 显示与安装行为 ────────────────────────────────────────────────────────
+start_menu_folder = "示例应用"
+window_title    = "示例应用 安装向导"     # 留空则回退 "<display_name> 安装向导"
+url_protocol    = "demoapp"               # 留空则跳过 URL 协议注册
+agreement_url   = ""                      # 留空则不显示协议链接
+portable_marker = "portable_mode"         # 便携模式标记文件名
+# ── 进程 / 权限 / 升级清理 ────────────────────────────────────────────────
+process_names   = ["demo_app", "demo_helper"]        # 安装/卸载前终止
+acl_dlls        = ["demo_tsf.dll", "demo_tsf_x86.dll"]  # 需 ALL APP PACKAGES 权限
+legacy_files    = ["demo_old.dll"]        # 升级时清理的旧版遗留文件（相对安装目录）
+legacy_dirs     = []                      # 升级时清理的旧版遗留目录
+                                          # 打包器会拒绝这几类（那是内容层，不是遗留物）：
+                                          #   data                —— 但 data/子目录 允许清理
+                                          #   data_custom 及其子目录 —— 不在包里，删了装不回来
+                                          #   含 .. 的写法         —— 会走出安装目录
+
+[ui]
+install_win   = { w = 520, h = 420 }
+uninstall_win = { w = 480, h = 420 }
+
+# ── 主题色：逐项可选，留空即用内置默认（中性蓝色系）。格式 "#RRGGBB" ────────
+#    非法值静默回退到默认，不会让安装器起不来
+[theme]
+accent = "#4C8BF5"
+
+# ── 默认路径模板：{id} 替换为 app.id，%VAR% 由向导展开。整段可省 ────────────
+[paths]
+install  = '%ProgramFiles%\{id}'
+portable = '%USERPROFILE%\{id}'
+data     = '%APPDATA%\{id}'
+
+# ── 可覆盖文案：只收录会泄漏应用领域的文案，留空即用中性默认 ────────────────
+#    内置默认是领域中性的，故多数应用无需配置本段；只有当你的应用对这些东西有
+#    专属叫法（素材库、项目文件、工作区……）时才覆盖。
+[strings]
+data_dir_hint       = "项目文件、配置路径"
+mode_hint           = "标准安装将程序注册到系统；便捷模式仅解压文件，不修改系统"
+agreement_text      = "《用户服务协议》"
+user_data_label     = "删除用户项目和配置数据"
+cache_label         = "清除本地缓存"
+delete_data_confirm = "将永久删除 {path} 下的所有项目和配置数据，卸载后无法恢复。\n\n确定要勾选删除吗？"
+
+# ── 输入法（TSF）注册：整段缺省即跳过。非输入法应用删除本段即可 ───────────
+#    GUID 用你自己的，两个必须不同：clsid 标识 COM 组件，profile_guid 标识输入配置
+[ime]
+clsid        = "{A1B2C3D4-E5F6-4789-A0B1-C2D3E4F5A6B7}"
+profile_guid = "{A1B2C3D4-E5F6-4789-A0B1-C2D3E4F5A6B8}"
+lang_id      = "0804"                     # 简体中文
+dll_x64      = "demo_tsf.dll"
+dll_x86      = "demo_tsf_x86.dll"         # 留空则跳过 32 位注册
+# 安装前清扫「指向已消失 DLL 的悬空注册」：同 CLSID 的旧版卸载不净时，HKCR\CLSID、
+# CTF\TIP、旧安装器留下的 RunOnce 会残留并指向已删 DLL，可能导致部分应用无法开启输入法。
+# 缺省 false（通用安装器不擅自改注册表）；确有此历史包袱的产品才显式置 true。
+# 只删悬空项，且严格按本段 GUID 隔离——不同 GUID 变体的安装包互不干扰。
+sweep_residue = false
+# TSF DLL 的系统目录子路径。缺省空 = 就地注册（DLL 留在安装目录），普通输入法够用。
+# 置为形如 "IME/MyIme" 后，安装器把 DLL 复制到 %WINDIR%\System32\IME\MyIme\
+# （x86 到 SysWOW64\IME\MyIme\）并对系统副本 regsvr32，InprocServer32 随之指向系统副本。
+#
+# 何时需要：开启 Trusted Mode 的游戏只放行系统目录下的 in-proc DLL，装在 Program Files
+# 的副本连加载都会被拒。该判据同时要求 DLL 已代码签名，两个条件缺一不可。
+#
+# ⚠️ 置了本项，安装器会一并写 HKLM\Software\<[app] id> 的 InstallDir——DLL 搬离安装目录
+#    后，你的产品进程只能靠它回指安装目录（定位自己的 exe、配置、便携标记等）。
+#    卸载时随该键整键删除，无需额外处理。
+# ⚠️ 不接受 ".." 与盘符段，非法值按未配置处理（就地注册）。
+system_subdir = ""
+
+# ── 字体安装：可多条，缺省即跳过。普通应用通常删除本段 ─────────────────────
+[[font]]
+file         = "DemoFont.ttf"
+display_name = "Demo Font (TrueType)"
+source_rel   = "data/fonts/DemoFont.ttf"  # 相对安装目录
+
+# ── 开机自启动：整段缺省即不注册（写 HKCU\...\Run，键名 = app.id）──────────
+[autostart]
+enabled = true                            # 段落存在即默认 true；置 false 可保留配置但不生效
+exe     = "demo_app.exe"                  # 留空则回退 app.main_exe
+args    = ""                              # 附加命令行参数
+
+# ── 快捷方式：可多条，缺省即不创建 ────────────────────────────────────────
+#    location = "start_menu"（开始菜单 app.start_menu_folder 子目录）或 "desktop"（公共桌面）
+#    name 留空则取 target 去扩展名后的文件名
+[[shortcut]]
+target   = "demo_settings.exe"
+name     = "示例应用 设置"
+location = "start_menu"
+
+[[shortcut]]
+target   = "uninstall.exe"
+name     = "卸载 示例应用"
+location = "start_menu"
+
+# ── 安装完成后的启动行为：整段缺省即不启动任何程序 ─────────────────────────
+[startup]
+prestart = true                           # 装完立即以 DETACHED_PROCESS 启动
+exe      = "demo_app.exe"                 # 留空则回退 app.main_exe
+
+# ── 用户数据目录配置：整段缺省即不写。普通应用通常删除本段 ─────────────────
+#    首次安装时把向导中选定的数据目录写入 %LOCALAPPDATA%\{app.id}\{conf_file}，
+#    供主程序启动时读取；升级时跳过以保留用户既有配置。
+[datadir]
+conf_file = "datadir.conf"
+# 卸载删除用户数据前的安全判据：conf_file 是用户可编辑的明文路径，而下游动作是
+# remove_dir_all + 拷到桌面。目录非空时必须命中其一，否则跳过删除（空目录一律放行）。
+markers = ["config.toml", "projects"]
+
+# ── 本机数据目录清理：整段缺省即卸载完全不碰 %LOCALAPPDATA%\{app.id} ────────
+#    安装器往那个目录里只写过 [datadir].conf_file，它有回执、卸载时自动撤销。主程序
+#    在同一层写的缓存、日志、本机状态不是安装动作的产物，回执里没有，安装器也猜不出
+#    名字——不声明就会在卸载后原样留下（连同那个目录本身）。
+#
+#    两组条目跟随向导上**两个语义不同的勾选**，别合成一组：
+#      cache_dirs  →「清除本地缓存」：可重建产物，删了会自己长回来
+#      state_files →「删除用户数据」：删了就没了的用户侧状态
+#    合成一组的话，用户只勾了清缓存却把状态一起丢了——而他明确没勾另一个。
+#
+#    条目是相对 %LOCALAPPDATA%\{app.id} 的路径，逐个分量校验（不是整串），打包器拒绝四类：
+#      归一化后指向根本身  —— ""、"."、"..."、". ."。Win32 会剥掉分量尾部的点与空格，
+#                            剥完为空就是父目录自己；实测 remove_dir_all 会把整个目录删光
+#      含 ..              —— 走得出作用域
+#      任一分量带盘符      —— PathBuf::push 遇到带前缀的分量会截断整个缓冲区，不只第一个：
+#                            "logs/C:x" 拼出来就是 "C:x"（注意它的 is_absolute() 是 false）
+#      分量尾部带点        —— "logs." 在 Win32 下就是 "logs"，删得掉但删的不是你写的那个
+[localdata]
+cache_dirs  = ["cache", "logs"]
+state_files = ["state.toml"]
+# 上面两组清完后，目录若已空则连它一并移除（用非递归 remove_dir，非空自然失败）
+remove_dir_when_empty = true
+
+# ── 打包参数（仅 wind-packer 使用，不进归档）──────────────────────────────
+[package]
+compression = "lzma"                      # zstd（解压快）或 lzma（压缩率高）
+source_dir  = "../DemoApp/build"          # 待打包的应用构建产物目录（相对本文件）
+output_name = "DemoApp-Setup"             # 输出名（自动追加 -<version>）
+output_dir  = "./dist"
+logo        = "assets/logo.png"           # UI 显示的 logo，字节嵌入归档头部
+icon        = "assets/installer.ico"      # 安装器 EXE 图标，由 editpe 写入 PE 资源

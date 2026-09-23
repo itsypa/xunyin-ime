@@ -1,0 +1,20 @@
+# 静态链接 MSVC CRT —— 安装器必须自包含。
+#
+# VCRUNTIME140.dll 不是 Windows 内置组件。动态链接的 exe 在没装 VC++ 运行库的干净
+# 机器上会直接报「找不到 VCRUNTIME140.dll」或 0xc000007b 起不来——而安装器恰恰是
+# 用户在这台机器上运行的**第一个**程序，它起不来就什么都装不了，且用户无从自救。
+#
+# 这个 flag 原先只写在调用方（WindInput 仓的 dev.ps1 / pack-installer.sh）里，本仓
+# 直接 `cargo build --release` 出来的 stub 其实是不能发布的。约束属于产物本身，
+# 故固化在这里：无论谁在哪构建，产出的 Windows 二进制都自包含。
+#
+# 只作用于 MSVC 目标：Linux 上原生构建的 wind-packer 不受影响（glibc 静态链接另有
+# 一堆坑，且 packer 只跑在构建机上，不需要自包含）。
+#
+# 注意 RUSTFLAGS 环境变量会**覆盖**而非合并本节。调用方注入的恰好是同一个 flag，
+# 结果一致；但若日后要在这里加别的 flag，得同时检查那两个脚本。
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]
+
+[target.i686-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]
