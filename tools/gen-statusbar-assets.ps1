@@ -1,4 +1,4 @@
-param(
+﻿param(
     [string]$OutDir = "D:\灵犀输入法\lingxi-tsf\src\assets"
 )
 

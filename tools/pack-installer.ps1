@@ -1,4 +1,4 @@
-param(
+﻿param(
     [string]$Version = "",
     [ValidateSet("lzma", "zstd")]
     [string]$Compression = "lzma",
@@ -72,6 +72,17 @@ Copy-Item $rimeX86 (Join-Path $payloadDir "tsf-x86\rime.dll") -Force
 
 $size = [math]::Round(((Get-ChildItem $payloadDir -Recurse -File | Measure-Object Length -Sum).Sum / 1MB), 1)
 Write-Host "payload 组装完成: $payloadDir ($size MB)"
+
+# 组装后校验：这些文件缺一不可（曾出现过复制后缺失导致安装包不完整）
+$required = @(
+    "lingxi-ime.exe", "rime.dll", "uninstall.exe",
+    "rime\data\default.yaml",
+    "tsf\lingxi_tsf_x64.dll", "tsf\rime.dll",
+    "tsf-x86\lingxi_tsf_x86.dll", "tsf-x86\rime.dll"
+)
+$missing = $required | Where-Object { -not (Test-Path (Join-Path $payloadDir $_)) }
+if ($missing) { throw "payload 缺少必要文件: $($missing -join ', ')" }
+Write-Host "payload 校验通过（$($required.Count) 项必要文件齐备）"
 
 # ── 3. 生成安装包 ──────────────────────────────────────────────────────────
 New-Item -ItemType Directory -Force $distDir | Out-Null

@@ -1,4 +1,4 @@
-param(
+﻿param(
     [ValidateSet("x64", "x86")]
     [string]$Arch = "x64",
     [switch]$SkipFrontend,

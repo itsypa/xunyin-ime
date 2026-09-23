@@ -1,4 +1,4 @@
-param(
+﻿param(
     [ValidateSet("x64", "x86")]
     [string]$Arch = "x64",
     [string]$DllName = "lingxi_tsf_v50.dll",
