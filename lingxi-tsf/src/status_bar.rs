@@ -4,7 +4,8 @@
 //!
 //! 形制：横向圆角小条，条厚 30dp，左侧 12dp 拖动柄（2×3 点阵），
 //! 之后每格 30dp：中/英（文字，中文模式蓝底白字）、标点（矢量图标，全/半角换图）、
-//! 全半角（满月=全角 / 弯月=半角）、设置（齿轮，颜色更淡）。
+//! 全半角（满月=全角 / 弯月=半角）、简/繁（文字，启用繁出时蓝底白字）、
+//! 设置（齿轮，颜色更淡）。
 //!
 //! 渲染：资源按 2 倍分辨率预渲染（白底 245 alpha、圆角=厚度×0.3、1dp 同色边框、
 //! 格内高亮胶囊内缩 4dp）；图标与文字为**单色 alpha 蒙版**，运行时按状态 tint，
@@ -43,7 +44,7 @@ const WND_CLASS: &str = "Lingxi.StatusBar";
 const GRIP_W: i32 = 12; // 拖动柄宽度
 const CELL_W: i32 = 30; // 每格宽度
 const HEIGHT: i32 = 30; // 条厚
-const WIDTH: i32 = GRIP_W + CELL_W * 4; // 132：柄 + 4 格
+const WIDTH: i32 = GRIP_W + CELL_W * 5; // 162：柄 + 5 格
 const ASSET_W: usize = (WIDTH as usize) * 2;
 const ASSET_H: usize = (HEIGHT as usize) * 2;
 const TILE: usize = (CELL_W as usize) * 2; // 单格 tile 尺寸（2 倍）
@@ -52,8 +53,9 @@ const TILE: usize = (CELL_W as usize) * 2; // 单格 tile 尺寸（2 倍）
 const CELL_MODE: i32 = 0;
 const CELL_PUNCT: i32 = 1;
 const CELL_WIDTH: i32 = 2;
-const CELL_SETTINGS: i32 = 3;
-const CELL_COUNT: i32 = 4;
+const CELL_S2T: i32 = 3;
+const CELL_SETTINGS: i32 = 4;
+const CELL_COUNT: i32 = 5;
 
 // ── 配色（对齐 WindInput 默认主题）──────────────────────────────────────────
 const FG: [u8; 3] = [72, 72, 78]; // 常态内容
@@ -61,8 +63,15 @@ const HL_FG: [u8; 3] = [255, 255, 255]; // 激活格内容
 const SETTINGS_FG: [u8; 3] = [140, 140, 148]; // 设置齿轮更淡
 
 // 自定义窗口消息（TSF 线程 → UI 线程）
-const MSG_SHOW: u32 = WM_APP + 1; // WPARAM 位：1=ascii 2=full 4=punct
+const MSG_SHOW: u32 = WM_APP + 1; // WPARAM 位：1=ascii 2=full 4=punct 8=简繁
 const MSG_HIDE: u32 = WM_APP + 2;
+
+// 右键菜单命令 id
+const CMD_MODE: usize = 1001;
+const CMD_WIDTH: usize = 1002;
+const CMD_PUNCT: usize = 1003;
+const CMD_S2T: usize = 1004;
+const CMD_SETTINGS: usize = 1005;
 
 fn cell_x(i: i32) -> i32 {
     GRIP_W + i * CELL_W
@@ -108,6 +117,8 @@ struct Assets {
     icon_gear: &'static [u8],
     glyph_zhong: &'static [u8],
     glyph_ying: &'static [u8],
+    glyph_jian: &'static [u8],
+    glyph_fan: &'static [u8],
 }
 
 fn assets() -> &'static Assets {
@@ -123,6 +134,8 @@ fn assets() -> &'static Assets {
         icon_gear: include_bytes!("assets/icon_gear.bin"),
         glyph_zhong: include_bytes!("assets/glyph_zhong.bin"),
         glyph_ying: include_bytes!("assets/glyph_ying.bin"),
+        glyph_jian: include_bytes!("assets/glyph_jian.bin"),
+        glyph_fan: include_bytes!("assets/glyph_fan.bin"),
     })
 }
 
@@ -212,12 +225,13 @@ fn blit_tinted(dst: &mut [u8], dst_w: usize, mask: &[u8], ox: usize, oy: usize, 
 }
 
 /// 合成一帧：整条背景 + 各格高亮/悬停 + 各格内容（图标/文字按状态 tint）。
-fn composite_frame(hover: i32, ascii: bool, full: bool, punct: bool) -> Vec<u8> {
+fn composite_frame(hover: i32, ascii: bool, full: bool, punct: bool, s2t: bool) -> Vec<u8> {
     let a = assets();
     let mut f = decode(a.bar_bg);
     for i in 0..CELL_COUNT {
         let ox = (cell_x(i) as usize) * 2;
-        let active = i == CELL_MODE && !ascii; // 中文模式：蓝底白字
+        // 激活格：中文模式（中/英格）与繁出（简/繁格）都是蓝底白字
+        let active = (i == CELL_MODE && !ascii) || (i == CELL_S2T && s2t);
         if active {
             blit_over(&mut f, ASSET_W, &decode(a.cell_active), ox, 0);
         } else if hover == i {
@@ -235,6 +249,10 @@ fn composite_frame(hover: i32, ascii: bool, full: bool, punct: bool) -> Vec<u8> 
             CELL_WIDTH => (
                 if full { a.icon_width_full } else { a.icon_width_half },
                 FG,
+            ),
+            CELL_S2T => (
+                if s2t { a.glyph_fan } else { a.glyph_jian },
+                if active { HL_FG } else { FG },
             ),
             _ => (a.icon_gear, SETTINGS_FG),
         };
@@ -279,6 +297,7 @@ struct StatusBar {
     ascii: std::cell::Cell<bool>,
     full: std::cell::Cell<bool>,
     punct: std::cell::Cell<bool>,
+    s2t: std::cell::Cell<bool>,
     hover: std::cell::Cell<i32>,
     dragging: std::cell::Cell<bool>,
     drag_off: std::cell::Cell<(i32, i32)>,
@@ -297,6 +316,7 @@ impl StatusBar {
             ascii: std::cell::Cell::new(false),
             full: std::cell::Cell::new(false),
             punct: std::cell::Cell::new(false),
+            s2t: std::cell::Cell::new(false),
             hover: std::cell::Cell::new(-1),
             dragging: std::cell::Cell::new(false),
             drag_off: std::cell::Cell::new((0, 0)),
@@ -304,11 +324,16 @@ impl StatusBar {
         }
     }
 
-    fn update(&self, ascii: bool, full: bool, punct: bool) {
-        if self.ascii.get() != ascii || self.full.get() != full || self.punct.get() != punct {
+    fn update(&self, ascii: bool, full: bool, punct: bool, s2t: bool) {
+        if self.ascii.get() != ascii
+            || self.full.get() != full
+            || self.punct.get() != punct
+            || self.s2t.get() != s2t
+        {
             self.ascii.set(ascii);
             self.full.set(full);
             self.punct.set(punct);
+            self.s2t.set(s2t);
             if self.shown.get() {
                 self.push();
             }
@@ -388,6 +413,7 @@ impl StatusBar {
             self.ascii.get(),
             self.full.get(),
             self.punct.get(),
+            self.s2t.get(),
         );
         let (ww, wh) = self.win_size();
         let frame = if ww as usize == ASSET_W && wh as usize == ASSET_H {
@@ -467,7 +493,7 @@ impl StatusBar {
                         st.ascii_mode = !mode;
                     }
                 }
-                self.update(!mode, self.full.get(), self.punct.get());
+                self.update(!mode, self.full.get(), self.punct.get(), self.s2t.get());
             }
             CELL_WIDTH => {
                 let mut cfg = lingxi_rime::config::load_config();
@@ -479,7 +505,12 @@ impl StatusBar {
                         st.full_shape = cfg.input.full_shape;
                     }
                 }
-                self.update(self.ascii.get(), cfg.input.full_shape, self.punct.get());
+                self.update(
+                    self.ascii.get(),
+                    cfg.input.full_shape,
+                    self.punct.get(),
+                    self.s2t.get(),
+                );
             }
             CELL_PUNCT => {
                 let mut cfg = lingxi_rime::config::load_config();
@@ -491,7 +522,29 @@ impl StatusBar {
                         st.ascii_punct = cfg.input.ascii_punct;
                     }
                 }
-                self.update(self.ascii.get(), self.full.get(), cfg.input.ascii_punct);
+                self.update(
+                    self.ascii.get(),
+                    self.full.get(),
+                    cfg.input.ascii_punct,
+                    self.s2t.get(),
+                );
+            }
+            CELL_S2T => {
+                let mut cfg = lingxi_rime::config::load_config();
+                cfg.input.simplification = !cfg.input.simplification;
+                let _ = lingxi_rime::config::save_config(&cfg);
+                e.refresh_options(vec![("simplification".into(), cfg.input.simplification)]);
+                if let Some(sh) = latest_shared() {
+                    if let Ok(mut st) = sh.lock() {
+                        st.simplification = cfg.input.simplification;
+                    }
+                }
+                self.update(
+                    self.ascii.get(),
+                    self.full.get(),
+                    self.punct.get(),
+                    cfg.input.simplification,
+                );
             }
             _ => {}
         }
@@ -502,6 +555,60 @@ impl StatusBar {
             let _ = std::process::Command::new(exe)
                 .creation_flags(0x0800_0000) // CREATE_NO_WINDOW：避免控制台黑框
                 .spawn();
+        }
+    }
+
+    /// 右键菜单：四个开关 + 打开设置（对齐 WindInput「右键弹主菜单」）。
+    fn show_menu(&self) {
+        unsafe {
+            let Ok(menu) = CreatePopupMenu() else { return };
+            let check = |on: bool| if on { MF_CHECKED } else { MF_UNCHECKED };
+            AppendMenuW(
+                menu,
+                MF_STRING | check(!self.ascii.get()),
+                CMD_MODE,
+                w!("中文模式"),
+            )
+            .ok();
+            AppendMenuW(menu, MF_STRING | check(self.full.get()), CMD_WIDTH, w!("全角")).ok();
+            AppendMenuW(
+                menu,
+                MF_STRING | check(!self.punct.get()),
+                CMD_PUNCT,
+                w!("中文标点"),
+            )
+            .ok();
+            AppendMenuW(
+                menu,
+                MF_STRING | check(self.s2t.get()),
+                CMD_S2T,
+                w!("简入繁出"),
+            )
+            .ok();
+            AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null()).ok();
+            AppendMenuW(menu, MF_STRING, CMD_SETTINGS, w!("打开设置中心…")).ok();
+
+            let mut pt = POINT::default();
+            let _ = GetCursorPos(&mut pt);
+            SetForegroundWindow(self.hwnd);
+            let ret = TrackPopupMenu(
+                menu,
+                TPM_RETURNCMD | TPM_NONOTIFY | TPM_LEFTALIGN | TPM_TOPALIGN,
+                pt.x,
+                pt.y,
+                Some(0),
+                self.hwnd,
+                None,
+            );
+            let _ = DestroyMenu(menu);
+            match ret.0 as usize {
+                CMD_MODE => self.on_click(CELL_MODE),
+                CMD_WIDTH => self.on_click(CELL_WIDTH),
+                CMD_PUNCT => self.on_click(CELL_PUNCT),
+                CMD_S2T => self.on_click(CELL_S2T),
+                CMD_SETTINGS => self.open_settings(),
+                _ => {}
+            }
         }
     }
 }
@@ -643,7 +750,12 @@ extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM
         match msg {
             MSG_SHOW => {
                 let flags = wparam.0 as usize;
-                this.update(flags & 1 != 0, flags & 2 != 0, flags & 4 != 0);
+                this.update(
+                    flags & 1 != 0,
+                    flags & 2 != 0,
+                    flags & 4 != 0,
+                    flags & 8 != 0,
+                );
                 this.show();
                 LRESULT(0)
             }
@@ -744,8 +856,8 @@ extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM
                 LRESULT(0)
             }
             WM_RBUTTONUP => {
-                // 右键任意位置 → 打开设置中心（对齐 WindInput：右键弹主菜单）
-                this.open_settings();
+                // 右键任意位置 → 弹出主菜单（对齐 WindInput）
+                this.show_menu();
                 LRESULT(0)
             }
             0x02A3 => {
@@ -857,13 +969,22 @@ fn ui_thread_entry() {
 }
 
 /// 显示/更新状态栏（TSF 线程调用，投递给 UI 线程）。
-pub fn show_status_bar(shared: Arc<Mutex<SharedState>>, ascii: bool, full: bool, punct: bool) {
+pub fn show_status_bar(
+    shared: Arc<Mutex<SharedState>>,
+    ascii: bool,
+    full: bool,
+    punct: bool,
+    s2t: bool,
+) {
     *LATEST_SHARED
         .get_or_init(|| Mutex::new(None))
         .lock()
         .unwrap_or_else(|e| e.into_inner()) = Some(shared);
     if let Some(hwnd) = bar_hwnd() {
-        let flags = (ascii as usize) | ((full as usize) << 1) | ((punct as usize) << 2);
+        let flags = (ascii as usize)
+            | ((full as usize) << 1)
+            | ((punct as usize) << 2)
+            | ((s2t as usize) << 3);
         unsafe {
             PostMessageW(Some(hwnd), MSG_SHOW, WPARAM(flags), LPARAM(0));
         }
@@ -881,9 +1002,14 @@ pub fn hide_status_bar() {
 
 /// 刷新模式（模式变化时调用）。
 pub fn refresh_status_bar(shared: &Arc<Mutex<SharedState>>) {
-    let (ascii, full, punct) = match shared.lock() {
-        Ok(st) => (st.ascii_mode, st.full_shape, st.ascii_punct),
+    let (ascii, full, punct, s2t) = match shared.lock() {
+        Ok(st) => (
+            st.ascii_mode,
+            st.full_shape,
+            st.ascii_punct,
+            st.simplification,
+        ),
         Err(_) => return,
     };
-    show_status_bar(shared.clone(), ascii, full, punct);
+    show_status_bar(shared.clone(), ascii, full, punct, s2t);
 }

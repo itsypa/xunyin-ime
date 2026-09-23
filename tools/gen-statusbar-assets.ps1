@@ -16,7 +16,7 @@ $S = 2
 $CELL = 30
 $GRIP = 12
 $H = 30
-$W = $GRIP + $CELL * 4          # 132：拖动柄 + 中/英 + 标点 + 全半角 + 设置
+$W = $GRIP + $CELL * 5          # 162：拖动柄 + 中/英 + 标点 + 全半角 + 简/繁 + 设置
 $AW = $W * $S                    # 264
 $AH = $H * $S                    # 60
 $Tile = $CELL * $S               # 60（单格 tile 尺寸）
@@ -206,6 +206,8 @@ function Make-Glyph([string]$text, [string]$name) {
 
 Make-Glyph "中" "glyph_zhong"
 Make-Glyph "英" "glyph_ying"
+Make-Glyph "简" "glyph_jian"
+Make-Glyph "繁" "glyph_fan"
 
 Get-ChildItem $out -Filter *.bin | Select-Object Name, Length
 Write-Output "assets generated -> $out"

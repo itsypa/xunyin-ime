@@ -54,6 +54,8 @@ pub struct SharedState {
     pub ascii_mode: bool,
     pub full_shape: bool,
     pub ascii_punct: bool,
+    /// 简入繁出（状态栏「简/繁」格）。
+    pub simplification: bool,
     pub composition: Option<ITfComposition>,
     pub ui_element_mgr: Option<ITfUIElementMgr>,
     pub ui_element: Option<windows_core::ComObject<CandidateListUI>>,
@@ -363,6 +365,7 @@ impl TextService_Impl {
                 st.ascii_mode = status.is_ascii_mode;
                 st.full_shape = status.is_full_shape;
             }
+            st.simplification = eng.get_option("simplification");
         }
         crate::status_bar::refresh_status_bar(&self.shared);
         if vk == 0x0D {
@@ -578,17 +581,40 @@ impl ITfTextInputProcessor_Impl for TextService_Impl {
         kr?;
         // 显示状态栏（搜狗式）
         {
-            let (ascii, full, punct) = match engine::engine() {
+            let cfg = lingxi_rime::config::load_config();
+            let (ascii, full, punct, s2t) = match engine::engine() {
                 Some(eng) => match eng.lock() {
                     Ok(e) => e
                         .get_status()
-                        .map(|s| (s.is_ascii_mode, s.is_full_shape, false))
-                        .unwrap_or((false, false, false)),
-                    Err(_) => (false, false, false),
+                        .map(|s| {
+                            (
+                                s.is_ascii_mode,
+                                s.is_full_shape,
+                                cfg.input.ascii_punct,
+                                cfg.input.simplification,
+                            )
+                        })
+                        .unwrap_or((
+                            cfg.input.ascii_mode,
+                            cfg.input.full_shape,
+                            cfg.input.ascii_punct,
+                            cfg.input.simplification,
+                        )),
+                    Err(_) => (
+                        cfg.input.ascii_mode,
+                        cfg.input.full_shape,
+                        cfg.input.ascii_punct,
+                        cfg.input.simplification,
+                    ),
                 },
-                None => (false, false, false),
+                None => (
+                    cfg.input.ascii_mode,
+                    cfg.input.full_shape,
+                    cfg.input.ascii_punct,
+                    cfg.input.simplification,
+                ),
             };
-            crate::status_bar::show_status_bar(self.shared.clone(), ascii, full, punct);
+            crate::status_bar::show_status_bar(self.shared.clone(), ascii, full, punct, s2t);
         }
         crate::tsf_log!("TSF Activate: done");
         Ok(())

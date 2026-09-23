@@ -272,6 +272,8 @@ pub struct CandidateWindow {
     /// 当前在光标上方还是下方（滞回，避免候选数量变化时上下反复翻转）。
     above: Cell<bool>,
     font_pt: Cell<u32>,
+    /// 当前字体所用的显示器 DPI（跟随候选窗所在屏，多屏不同缩放各自适配）。
+    dpi: Cell<i32>,
 }
 
 // 候选窗只由 TSF 线程创建与访问（静态互斥锁串行化），
@@ -287,7 +289,16 @@ impl CandidateWindow {
             HWND(std::ptr::null_mut())
         };
         let font_pt = cfg().appearance.font_size.max(8);
-        let (font, row_h) = create_font(font_pt);
+        // 初始 DPI 取鼠标所在屏（候选窗随后跟随光标，update/on_timer 会按落点重算）
+        let dpi = unsafe {
+            let mut pt = POINT::default();
+            if GetCursorPos(&mut pt).is_ok() {
+                dpi_for_point(pt.x, pt.y)
+            } else {
+                96
+            }
+        };
+        let (font, row_h) = create_font(font_pt, dpi);
         Self {
             shared: Mutex::new(Some(shared)),
             hwnd,
@@ -303,7 +314,27 @@ impl CandidateWindow {
             positioned: Cell::new(false),
             above: Cell::new(false),
             font_pt: Cell::new(font_pt),
+            dpi: Cell::new(dpi),
         }
+    }
+
+    /// 按候选窗落点所在显示器重建字体/行高（字号或显示器 DPI 变化时）。
+    fn ensure_font_for(&mut self, origin: (i32, i32)) {
+        let font_pt = cfg().appearance.font_size.max(8);
+        let dpi = dpi_for_point(origin.0, origin.1);
+        if font_pt == self.font_pt.get() && dpi == self.dpi.get() {
+            return;
+        }
+        if !self.font.0.is_null() {
+            unsafe {
+                DeleteObject(HGDIOBJ(self.font.0));
+            }
+        }
+        let (font, row_h) = create_font(font_pt, dpi);
+        self.font = font;
+        self.row_h = row_h;
+        self.font_pt.set(font_pt);
+        self.dpi.set(dpi);
     }
 
     fn update(
@@ -318,19 +349,6 @@ impl CandidateWindow {
         if self.hwnd.0.is_null() {
             return;
         }
-        // 字体大小变更时重建字体与行高
-        let font_pt = cfg().appearance.font_size.max(8);
-        if font_pt != self.font_pt.get() {
-            if !self.font.0.is_null() {
-                unsafe {
-                    DeleteObject(HGDIOBJ(self.font.0));
-                }
-            }
-            let (font, row_h) = create_font(font_pt);
-            self.font = font;
-            self.row_h = row_h;
-            self.font_pt.set(font_pt);
-        }
         *self.items.borrow_mut() = items;
         *self.comments.borrow_mut() = comments;
         self.selected.set(selected);
@@ -341,6 +359,8 @@ impl CandidateWindow {
         if let Some(o) = origin {
             self.origin.set(o);
         }
+        // 字号或所在显示器 DPI 变化时重建字体与行高
+        self.ensure_font_for(self.origin.get());
         self.position_and_show();
         unsafe {
             InvalidateRect(Some(self.hwnd), None, true);
@@ -360,7 +380,7 @@ impl CandidateWindow {
     }
 
     /// 组合期间定时重算光标位置并跟随（鼠标点击/方向键/滚动）。
-    fn on_timer(&self) {
+    fn on_timer(&mut self) {
         if !self.shown.get() {
             unsafe {
                 KillTimer(Some(self.hwnd), CARET_TIMER_ID);
@@ -416,6 +436,8 @@ impl CandidateWindow {
             if o != self.origin.get() {
                 self.origin.set(o);
                 self.positioned.set(true);
+                // 跟随到别的显示器时按该屏 DPI 重排
+                self.ensure_font_for(o);
                 self.position_and_show();
             }
             }
@@ -746,17 +768,29 @@ fn create_hwnd() -> HWND {
     }
 }
 
-/// 创建界面字体并按 DPI 缩放行高。
-fn create_font(font_pt: u32) -> (HFONT, i32) {
+/// 取某点所在显示器的 DPI（多显示器不同缩放下各自适配）。
+fn dpi_for_point(x: i32, y: i32) -> i32 {
     unsafe {
-        let dc = GetDC(None);
-        let dpi = if dc.0.is_null() {
-            96
-        } else {
-            let d = GetDeviceCaps(Some(dc), LOGPIXELSY);
-            ReleaseDC(None, dc);
-            d.max(96)
-        };
+        let mon = MonitorFromPoint(POINT { x, y }, MONITOR_DEFAULTTONEAREST);
+        let mut mi = MONITORINFOEXW::default();
+        mi.monitorInfo.cbSize = size_of::<MONITORINFOEXW>() as u32;
+        if !GetMonitorInfoW(mon, &mut mi.monitorInfo).as_bool() {
+            return 96;
+        }
+        let dc = CreateDCW(PCWSTR(mi.szDevice.as_ptr()), PCWSTR(mi.szDevice.as_ptr()), None, None);
+        if dc.0.is_null() {
+            return 96;
+        }
+        let dpi = GetDeviceCaps(Some(dc), LOGPIXELSY).max(96);
+        DeleteDC(dc);
+        dpi
+    }
+}
+
+/// 创建界面字体并按给定显示器 DPI 缩放行高。
+fn create_font(font_pt: u32, dpi: i32) -> (HFONT, i32) {
+    unsafe {
+        let dpi = dpi.max(96);
         let height = -(dpi * font_pt as i32 / 72);
         let name: Vec<u16> = "Microsoft YaHei UI"
             .encode_utf16()
@@ -826,7 +860,8 @@ extern "system" fn wnd_proc(
         if userdata == 0 {
             return DefWindowProcW(hwnd, msg, wparam, lparam);
         }
-        let this = &*(userdata as *const CandidateWindow);
+        // 候选窗只由 TSF 线程创建与访问（静态互斥锁串行化），此处可变借用安全。
+        let this = &mut *(userdata as *mut CandidateWindow);
         match msg {
             WM_PAINT => {
                 this.paint();
