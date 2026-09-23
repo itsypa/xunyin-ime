@@ -1,37 +1,36 @@
 #![allow(unused_must_use)]
 
-//! 搜狗式状态栏（抗锯齿预渲染 + 逐像素合成 + UpdateLayeredWindow）。
+//! 状态栏（参照 WindInput 工具栏规格实现）。
 //!
-//! 界面资源由 tools/gen-statusbar-assets.ps1 预渲染为 BGRA 二进制（圆角、
-//! 渐变、阴影、悬停态全部抗锯齿）；运行时不画任何 GDI 图形，只把背景帧与
-//! 动态字形（中/英、全/半、标点）做 alpha 合成，再整帧交给
-//! UpdateLayeredWindow（per-pixel alpha）。悬停只是换一帧，不会变形。
+//! 形制：横向圆角小条，条厚 30dp，左侧 12dp 拖动柄（2×3 点阵），
+//! 之后每格 30dp：中/英（文字，中文模式蓝底白字）、标点（矢量图标，全/半角换图）、
+//! 全半角（满月=全角 / 弯月=半角）、设置（齿轮，颜色更淡）。
 //!
-//! 状态栏运行在独立 UI 线程（自带 GetMessage 消息循环），与宿主进程的
-//! TSF 输入线程完全隔离，鼠标悬停/拖动不会受按键处理挤压而"转圈"。
-//! TSF 线程通过 PostMessage 下发显示/隐藏/刷新命令。
+//! 渲染：资源按 2 倍分辨率预渲染（白底 245 alpha、圆角=厚度×0.3、1dp 同色边框、
+//! 格内高亮胶囊内缩 4dp）；图标与文字为**单色 alpha 蒙版**，运行时按状态 tint，
+//! 再整帧交给 UpdateLayeredWindow（per-pixel alpha），并按显示器 DPI 缩放。
 //!
-//! 行为：默认右下角紧贴任务栏上方与右缘；可拖动（会话内记忆，重启回默认）；
-//! 点击按钮切换模式；右键或点 Logo 打开设置中心；失焦/切换输入法自动隐藏。
+//! 行为：默认右下角贴工作区边缘；可拖动（会话内记忆，重启回默认）；
+//! 左键点格切换状态，右键任意位置打开设置中心；失焦/切换输入法自动隐藏。
 
 use crate::engine;
 use crate::text_service::SharedState;
 use std::mem::size_of;
 use std::os::windows::process::CommandExt;
 use std::sync::{Arc, Mutex, OnceLock};
-use windows::Win32::Foundation::{COLORREF, HINSTANCE, HWND, LPARAM, LRESULT, POINT, RECT, SIZE, WPARAM};
+use windows::Win32::Foundation::{
+    COLORREF, HINSTANCE, HMODULE, HWND, LPARAM, LRESULT, POINT, RECT, SIZE, WPARAM,
+};
 use windows::Win32::Graphics::Gdi::{
     BeginPaint, CreateCompatibleDC, CreateDIBSection, DeleteDC, DeleteObject, EndPaint, GetDC,
     GetDeviceCaps, GetMonitorInfoW, HBRUSH, MonitorFromPoint, ReleaseDC, SelectObject,
     AC_SRC_ALPHA, AC_SRC_OVER, BITMAPINFO, BITMAPINFOHEADER, BLENDFUNCTION, DIB_RGB_COLORS,
     HGDIOBJ, LOGPIXELSX, MONITORINFO, MONITOR_DEFAULTTONEAREST, PAINTSTRUCT,
 };
-use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::System::LibraryLoader::{
-    GetModuleFileNameW, GetModuleHandleExW, GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS,
+    GetModuleFileNameW, GetModuleHandleExW, GetModuleHandleW, GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS,
     GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
 };
-use windows::Win32::Foundation::HMODULE;
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     ReleaseCapture, SetCapture, TrackMouseEvent, TME_LEAVE, TRACKMOUSEEVENT,
 };
@@ -39,78 +38,47 @@ use windows::Win32::UI::WindowsAndMessaging::*;
 use windows_core::{w, PCWSTR};
 
 const WND_CLASS: &str = "Lingxi.StatusBar";
-const WIDTH: i32 = 170;
-const HEIGHT: i32 = 34;
-// 资源按 2 倍分辨率预渲染（逻辑 194x34 @96dpi → 388x68）
-const ASSET_W: usize = 340;
-const ASSET_H: usize = 68;
 
-// 交互区域：0=背景，1=模式，2=全半角，3=标点，4=菜单，5=Logo，6=中段图标区
-const BTN_MODE: i32 = 1;
-const BTN_WIDTH: i32 = 2;
-const BTN_MENU: i32 = 3;
-const BTN_LOGO: i32 = 4;
+// ── 几何（逻辑 dp；资源为 2 倍）─────────────────────────────────────────────
+const GRIP_W: i32 = 12; // 拖动柄宽度
+const CELL_W: i32 = 30; // 每格宽度
+const HEIGHT: i32 = 30; // 条厚
+const WIDTH: i32 = GRIP_W + CELL_W * 4; // 132：柄 + 4 格
+const ASSET_W: usize = (WIDTH as usize) * 2;
+const ASSET_H: usize = (HEIGHT as usize) * 2;
+const TILE: usize = (CELL_W as usize) * 2; // 单格 tile 尺寸（2 倍）
+
+// 格序号
+const CELL_MODE: i32 = 0;
+const CELL_PUNCT: i32 = 1;
+const CELL_WIDTH: i32 = 2;
+const CELL_SETTINGS: i32 = 3;
+const CELL_COUNT: i32 = 4;
+
+// ── 配色（对齐 WindInput 默认主题）──────────────────────────────────────────
+const FG: [u8; 3] = [72, 72, 78]; // 常态内容
+const HL_FG: [u8; 3] = [255, 255, 255]; // 激活格内容
+const SETTINGS_FG: [u8; 3] = [140, 140, 148]; // 设置齿轮更淡
 
 // 自定义窗口消息（TSF 线程 → UI 线程）
 const MSG_SHOW: u32 = WM_APP + 1; // WPARAM 位：1=ascii 2=full 4=punct
 const MSG_HIDE: u32 = WM_APP + 2;
 
-fn btn_rect(btn: i32) -> (i32, i32, i32, i32) {
-    match btn {
-        BTN_MODE => (48, 3, 84, HEIGHT - 3),
-        BTN_WIDTH => (88, 3, 122, HEIGHT - 3),
-        BTN_MENU => (134, 3, 156, HEIGHT - 3),
-        _ => (0, 0, 0, 0),
-    }
+fn cell_x(i: i32) -> i32 {
+    GRIP_W + i * CELL_W
 }
 
-fn hit_test(x: i32, y: i32, s: f32) -> i32 {
-    let l = |v: i32| ((v as f32) * s).round() as i32;
-    if x >= l(14) && x <= l(36) && y >= l(5) && y <= l(29) {
-        return BTN_LOGO;
+/// 命中测试（逻辑坐标）：返回格序号，拖动柄或条外返回 -1。
+fn hit_cell(x: i32, y: i32) -> i32 {
+    if y < 0 || y >= HEIGHT || x < GRIP_W || x >= WIDTH {
+        return -1;
     }
-    for b in [BTN_MODE, BTN_WIDTH, BTN_MENU] {
-        let (l0, t0, r0, b0) = btn_rect(b);
-        if x >= l(l0) && x <= l(r0) && y >= l(t0) && y <= l(b0) {
-            return b;
-        }
+    let i = (x - GRIP_W) / CELL_W;
+    if i < 0 || i >= CELL_COUNT {
+        -1
+    } else {
+        i
     }
-    0
-}
-
-/// 双线性缩放 BGRA 帧（2x 资源 → 目标窗口像素尺寸）。
-fn scale_frame(src: &[u8], sw: usize, sh: usize, dw: usize, dh: usize) -> Vec<u8> {
-    let mut out = vec![0u8; dw * dh * 4];
-    if dw == 0 || dh == 0 {
-        return out;
-    }
-    for y in 0..dh {
-        let sy = (y as f32 + 0.5) * sh as f32 / dh as f32 - 0.5;
-        let y0f = sy.max(0.0).floor();
-        let y0 = (y0f as usize).min(sh - 1);
-        let y1 = (y0 + 1).min(sh - 1);
-        let fy = (sy - y0f).clamp(0.0, 1.0);
-        for x in 0..dw {
-            let sx = (x as f32 + 0.5) * sw as f32 / dw as f32 - 0.5;
-            let x0f = sx.max(0.0).floor();
-            let x0 = (x0f as usize).min(sw - 1);
-            let x1 = (x0 + 1).min(sw - 1);
-            let fx = (sx - x0f).clamp(0.0, 1.0);
-            let o = (y * dw + x) * 4;
-            for c in 0..4 {
-                let p00 = src[(y0 * sw + x0) * 4 + c] as f32;
-                let p10 = src[(y0 * sw + x1) * 4 + c] as f32;
-                let p01 = src[(y1 * sw + x0) * 4 + c] as f32;
-                let p11 = src[(y1 * sw + x1) * 4 + c] as f32;
-                let v = p00 * (1.0 - fx) * (1.0 - fy)
-                    + p10 * fx * (1.0 - fy)
-                    + p01 * (1.0 - fx) * fy
-                    + p11 * fx * fy;
-                out[o + c] = v.round().clamp(0.0, 255.0) as u8;
-            }
-        }
-    }
-    out
 }
 
 fn mem_pos_get() -> Option<(i32, i32)> {
@@ -130,78 +98,152 @@ fn mem_pos_set(p: (i32, i32)) {
 // ---------------- 预渲染资源 ----------------
 
 struct Assets {
-    bg_normal: &'static [u8],
-    bg_hover_mode: &'static [u8],
-    bg_hover_width: &'static [u8],
-    bg_hover_menu: &'static [u8],
-    bg_hover_logo: &'static [u8],
+    bar_bg: &'static [u8],
+    cell_hover: &'static [u8],
+    cell_active: &'static [u8],
+    icon_width_full: &'static [u8],
+    icon_width_half: &'static [u8],
+    icon_punct_full: &'static [u8],
+    icon_punct_half: &'static [u8],
+    icon_gear: &'static [u8],
     glyph_zhong: &'static [u8],
     glyph_ying: &'static [u8],
-    glyph_quan: &'static [u8],
-    glyph_ban: &'static [u8],
 }
 
 fn assets() -> &'static Assets {
     static A: OnceLock<Assets> = OnceLock::new();
     A.get_or_init(|| Assets {
-        bg_normal: include_bytes!("assets/bg_normal.bin"),
-        bg_hover_mode: include_bytes!("assets/bg_hover_mode.bin"),
-        bg_hover_width: include_bytes!("assets/bg_hover_width.bin"),
-        bg_hover_menu: include_bytes!("assets/bg_hover_menu.bin"),
-        bg_hover_logo: include_bytes!("assets/bg_hover_logo.bin"),
+        bar_bg: include_bytes!("assets/bar_bg.bin"),
+        cell_hover: include_bytes!("assets/cell_hover.bin"),
+        cell_active: include_bytes!("assets/cell_active.bin"),
+        icon_width_full: include_bytes!("assets/icon_width_full.bin"),
+        icon_width_half: include_bytes!("assets/icon_width_half.bin"),
+        icon_punct_full: include_bytes!("assets/icon_punct_full.bin"),
+        icon_punct_half: include_bytes!("assets/icon_punct_half.bin"),
+        icon_gear: include_bytes!("assets/icon_gear.bin"),
         glyph_zhong: include_bytes!("assets/glyph_zhong.bin"),
         glyph_ying: include_bytes!("assets/glyph_ying.bin"),
-        glyph_quan: include_bytes!("assets/glyph_quan.bin"),
-        glyph_ban: include_bytes!("assets/glyph_ban.bin"),
     })
 }
 
-/// 解码 BGRA 帧（文件头：u32 w + u32 h + BGRA 像素，自顶向下）。
+/// 解码 BGRA 资源（文件头：u32 w + u32 h + BGRA 像素，自顶向下）。
 fn decode(data: &[u8]) -> Vec<u8> {
-    let w = u32::from_le_bytes(data[0..4].try_into().unwrap()) as usize;
-    let h = u32::from_le_bytes(data[4..8].try_into().unwrap()) as usize;
-    let _ = (w, h);
     data[8..].to_vec()
 }
 
-/// alpha 合成：把字形帧叠到背景帧上（全帧尺寸一致）。
-fn blend(dst: &mut [u8], src: &[u8]) {
-    for (d, s) in dst.chunks_exact_mut(4).zip(src.chunks_exact(4)) {
-        let sa = s[3] as u32;
-        if sa == 0 {
-            continue;
+/// 把 tile（TILE×TILE BGRA）以 source-over 混合到整帧 dst（dst_w 宽）的 (ox, oy)。
+fn blit_over(dst: &mut [u8], dst_w: usize, tile: &[u8], ox: usize, oy: usize) {
+    for ty in 0..TILE {
+        let dy = oy + ty;
+        if dy >= ASSET_H {
+            break;
         }
-        if sa == 255 {
-            d.copy_from_slice(s);
-            continue;
-        }
-        let da = d[3] as u32;
-        let oa = sa + da * (255 - sa) / 255;
-        if oa > 0 {
-            let ia = 255 - sa;
-            d[0] = ((s[0] as u32 * sa + d[0] as u32 * da * ia / 255) / oa) as u8;
-            d[1] = ((s[1] as u32 * sa + d[1] as u32 * da * ia / 255) / oa) as u8;
-            d[2] = ((s[2] as u32 * sa + d[2] as u32 * da * ia / 255) / oa) as u8;
-            d[3] = oa as u8;
+        for tx in 0..TILE {
+            let dx = ox + tx;
+            if dx >= dst_w {
+                break;
+            }
+            let si = (ty * TILE + tx) * 4;
+            let di = (dy * dst_w + dx) * 4;
+            let sa = tile[si + 3] as u32;
+            if sa == 0 {
+                continue;
+            }
+            if sa == 255 {
+                dst[di] = tile[si];
+                dst[di + 1] = tile[si + 1];
+                dst[di + 2] = tile[si + 2];
+                dst[di + 3] = 255;
+                continue;
+            }
+            let da = dst[di + 3] as u32;
+            let oa = sa + da * (255 - sa) / 255;
+            if oa > 0 {
+                let ia = 255 - sa;
+                dst[di] = ((tile[si] as u32 * sa + dst[di] as u32 * da * ia / 255) / oa) as u8;
+                dst[di + 1] =
+                    ((tile[si + 1] as u32 * sa + dst[di + 1] as u32 * da * ia / 255) / oa) as u8;
+                dst[di + 2] =
+                    ((tile[si + 2] as u32 * sa + dst[di + 2] as u32 * da * ia / 255) / oa) as u8;
+                dst[di + 3] = oa as u8;
+            }
         }
     }
 }
 
-/// 按当前状态合成一帧（背景 + 三个动态字形）。
-fn composite_frame(hover: i32, ascii: bool, full: bool) -> Vec<u8> {
+/// 把**单色蒙版** tile 按 tint 上色后 source-over 混合到整帧。
+/// 蒙版只用其 alpha（预渲染为白色），颜色完全由 tint 决定——与 WindInput 的
+/// "SVG 仅作 alpha 蒙版、由工具栏按主题 tint" 同一模型。
+fn blit_tinted(dst: &mut [u8], dst_w: usize, mask: &[u8], ox: usize, oy: usize, tint: [u8; 3]) {
+    for ty in 0..TILE {
+        let dy = oy + ty;
+        if dy >= ASSET_H {
+            break;
+        }
+        for tx in 0..TILE {
+            let dx = ox + tx;
+            if dx >= dst_w {
+                break;
+            }
+            let sa = mask[(ty * TILE + tx) * 4 + 3] as u32;
+            if sa == 0 {
+                continue;
+            }
+            let di = (dy * dst_w + dx) * 4;
+            if sa == 255 {
+                dst[di] = tint[0];
+                dst[di + 1] = tint[1];
+                dst[di + 2] = tint[2];
+                continue; // 底色不透明，保持 255
+            }
+            let da = dst[di + 3] as u32;
+            let oa = sa + da * (255 - sa) / 255;
+            if oa > 0 {
+                let ia = 255 - sa;
+                dst[di] = ((tint[0] as u32 * sa + dst[di] as u32 * da * ia / 255) / oa) as u8;
+                dst[di + 1] =
+                    ((tint[1] as u32 * sa + dst[di + 1] as u32 * da * ia / 255) / oa) as u8;
+                dst[di + 2] =
+                    ((tint[2] as u32 * sa + dst[di + 2] as u32 * da * ia / 255) / oa) as u8;
+                dst[di + 3] = oa as u8;
+            }
+        }
+    }
+}
+
+/// 合成一帧：整条背景 + 各格高亮/悬停 + 各格内容（图标/文字按状态 tint）。
+fn composite_frame(hover: i32, ascii: bool, full: bool, punct: bool) -> Vec<u8> {
     let a = assets();
-    let bg = match hover {
-        BTN_MODE => a.bg_hover_mode,
-        BTN_WIDTH => a.bg_hover_width,
-        BTN_MENU => a.bg_hover_menu,
-        BTN_LOGO => a.bg_hover_logo,
-        _ => a.bg_normal,
-    };
-    let mut f = decode(bg);
-    blend(&mut f, decode(if ascii { a.glyph_ying } else { a.glyph_zhong }).as_slice());
-    blend(&mut f, decode(if full { a.glyph_quan } else { a.glyph_ban }).as_slice());
+    let mut f = decode(a.bar_bg);
+    for i in 0..CELL_COUNT {
+        let ox = (cell_x(i) as usize) * 2;
+        let active = i == CELL_MODE && !ascii; // 中文模式：蓝底白字
+        if active {
+            blit_over(&mut f, ASSET_W, &decode(a.cell_active), ox, 0);
+        } else if hover == i {
+            blit_over(&mut f, ASSET_W, &decode(a.cell_hover), ox, 0);
+        }
+        let (mask, tint) = match i {
+            CELL_MODE => (
+                if ascii { a.glyph_ying } else { a.glyph_zhong },
+                if active { HL_FG } else { FG },
+            ),
+            CELL_PUNCT => (
+                if punct { a.icon_punct_half } else { a.icon_punct_full },
+                FG,
+            ),
+            CELL_WIDTH => (
+                if full { a.icon_width_full } else { a.icon_width_half },
+                FG,
+            ),
+            _ => (a.icon_gear, SETTINGS_FG),
+        };
+        blit_tinted(&mut f, ASSET_W, mask, ox, 0, tint);
+    }
     f
 }
+
+// ---------------- 窗口 ----------------
 
 fn ensure_window_class() -> bool {
     static ATOM: OnceLock<u16> = OnceLock::new();
@@ -243,6 +285,7 @@ struct StatusBar {
     dragged: std::cell::Cell<bool>,
 }
 
+// StatusBar 只在其专属 UI 线程上访问；静态 Mutex 仅用于持有。
 unsafe impl Send for StatusBar {}
 unsafe impl Sync for StatusBar {}
 
@@ -254,7 +297,7 @@ impl StatusBar {
             ascii: std::cell::Cell::new(false),
             full: std::cell::Cell::new(false),
             punct: std::cell::Cell::new(false),
-            hover: std::cell::Cell::new(0),
+            hover: std::cell::Cell::new(-1),
             dragging: std::cell::Cell::new(false),
             drag_off: std::cell::Cell::new((0, 0)),
             dragged: std::cell::Cell::new(false),
@@ -299,7 +342,7 @@ impl StatusBar {
         if let Some(p) = mem_pos_get() {
             return p;
         }
-        // 默认：右下角，紧贴任务栏上方与右侧屏幕边缘
+        // 默认：工作区右下角，紧贴任务栏上方与右侧边缘
         let r = work_area();
         let (ww, wh) = self.win_size();
         let p = (r.right - ww - 2, r.bottom - wh - 2);
@@ -340,8 +383,12 @@ impl StatusBar {
 
     /// 合成当前帧并 UpdateLayeredWindow 到 (x, y)。
     fn push_at(&self, x: i32, y: i32) {
-        let frame2x =
-        composite_frame(self.hover.get(), self.ascii.get(), self.full.get());
+        let frame2x = composite_frame(
+            self.hover.get(),
+            self.ascii.get(),
+            self.full.get(),
+            self.punct.get(),
+        );
         let (ww, wh) = self.win_size();
         let frame = if ww as usize == ASSET_W && wh as usize == ASSET_H {
             frame2x
@@ -403,21 +450,26 @@ impl StatusBar {
         }
     }
 
-    fn on_click(&self, btn: i32) {
+    /// 左键点格：按格序号切换状态 / 打开设置。
+    fn on_click(&self, cell: i32) {
+        if cell == CELL_SETTINGS {
+            self.open_settings();
+            return;
+        }
         let Some(eng) = engine::engine() else { return };
         let Ok(mut e) = eng.lock() else { return };
-        match btn {
-            BTN_MODE => {
+        match cell {
+            CELL_MODE => {
                 let mode = e.get_option("ascii_mode");
                 e.set_option("ascii_mode", !mode);
                 if let Some(sh) = latest_shared() {
                     if let Ok(mut st) = sh.lock() {
-                    st.ascii_mode = !mode;
+                        st.ascii_mode = !mode;
                     }
                 }
                 self.update(!mode, self.full.get(), self.punct.get());
             }
-            BTN_WIDTH => {
+            CELL_WIDTH => {
                 let mut cfg = lingxi_rime::config::load_config();
                 cfg.input.full_shape = !cfg.input.full_shape;
                 let _ = lingxi_rime::config::save_config(&cfg);
@@ -429,22 +481,34 @@ impl StatusBar {
                 }
                 self.update(self.ascii.get(), cfg.input.full_shape, self.punct.get());
             }
-            _ => {
-                // Logo/菜单 → 打开设置中心（按 DLL 所在位置定位，避免写死路径）
-                if let Some(exe) = settings_exe_path() {
-                    let _ = std::process::Command::new(exe)
-                        .creation_flags(0x0800_0000) // CREATE_NO_WINDOW：避免控制台黑框
-                        .spawn();
+            CELL_PUNCT => {
+                let mut cfg = lingxi_rime::config::load_config();
+                cfg.input.ascii_punct = !cfg.input.ascii_punct;
+                let _ = lingxi_rime::config::save_config(&cfg);
+                e.refresh_options(vec![("ascii_punct".into(), cfg.input.ascii_punct)]);
+                if let Some(sh) = latest_shared() {
+                    if let Ok(mut st) = sh.lock() {
+                        st.ascii_punct = cfg.input.ascii_punct;
+                    }
                 }
+                self.update(self.ascii.get(), self.full.get(), cfg.input.ascii_punct);
             }
+            _ => {}
+        }
+    }
+
+    fn open_settings(&self) {
+        if let Some(exe) = settings_exe_path() {
+            let _ = std::process::Command::new(exe)
+                .creation_flags(0x0800_0000) // CREATE_NO_WINDOW：避免控制台黑框
+                .spawn();
         }
     }
 }
 
 /// 定位设置中心可执行文件，兼容两种布局：
-/// - 安装布局：DLL 在 <安装目录>\tsf\ 下，设置程序在 <安装目录>\lingxi-ime.exe；
-/// - 开发布局：DLL 在 lingxi-tsf\target\...\ 下，设置程序在
-///   lingxi-ime\src-tauri\target\debug\lingxi-ime.exe。
+/// - 安装布局：<安装目录>\lingxi-ime.exe（TSF DLL 在 tsf\ 或 tsf-x86\ 子目录）；
+/// - 开发布局：lingxi-ime\src-tauri\target\debug\lingxi-ime.exe。
 fn settings_exe_path() -> Option<std::path::PathBuf> {
     unsafe {
         let mut hmod: HMODULE = core::mem::zeroed();
@@ -534,6 +598,41 @@ fn work_area() -> RECT {
     }
 }
 
+/// 双线性缩放 BGRA 帧（2 倍资源 → 目标窗口像素尺寸）。
+fn scale_frame(src: &[u8], sw: usize, sh: usize, dw: usize, dh: usize) -> Vec<u8> {
+    let mut out = vec![0u8; dw * dh * 4];
+    if dw == 0 || dh == 0 {
+        return out;
+    }
+    for y in 0..dh {
+        let sy = (y as f32 + 0.5) * sh as f32 / dh as f32 - 0.5;
+        let y0f = sy.max(0.0).floor();
+        let y0 = (y0f as usize).min(sh - 1);
+        let y1 = (y0 + 1).min(sh - 1);
+        let fy = (sy - y0f).clamp(0.0, 1.0);
+        for x in 0..dw {
+            let sx = (x as f32 + 0.5) * sw as f32 / dw as f32 - 0.5;
+            let x0f = sx.max(0.0).floor();
+            let x0 = (x0f as usize).min(sw - 1);
+            let x1 = (x0 + 1).min(sw - 1);
+            let fx = (sx - x0f).clamp(0.0, 1.0);
+            let o = (y * dw + x) * 4;
+            for c in 0..4 {
+                let p00 = src[(y0 * sw + x0) * 4 + c] as f32;
+                let p10 = src[(y0 * sw + x1) * 4 + c] as f32;
+                let p01 = src[(y1 * sw + x0) * 4 + c] as f32;
+                let p11 = src[(y1 * sw + x1) * 4 + c] as f32;
+                let v = p00 * (1.0 - fx) * (1.0 - fy)
+                    + p10 * fx * (1.0 - fy)
+                    + p01 * (1.0 - fx) * fy
+                    + p11 * fx * fy;
+                out[o + c] = v.round().clamp(0.0, 255.0) as u8;
+            }
+        }
+    }
+    out
+}
+
 extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     unsafe {
         let userdata = GetWindowLongPtrW(hwnd, GWLP_USERDATA);
@@ -544,11 +643,7 @@ extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM
         match msg {
             MSG_SHOW => {
                 let flags = wparam.0 as usize;
-                this.update(
-                    flags & 1 != 0,
-                    flags & 2 != 0,
-                    flags & 4 != 0,
-                );
+                this.update(flags & 1 != 0, flags & 2 != 0, flags & 4 != 0);
                 this.show();
                 LRESULT(0)
             }
@@ -582,35 +677,40 @@ extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM
             }
             WM_MOUSEMOVE => {
                 if this.dragging.get() {
-                    this.dragged.set(true);
                     let sx = (lparam.0 & 0xFFFF) as i32;
                     let sy = ((lparam.0 >> 16) & 0xFFFF) as i32;
                     let (off_x, off_y) = this.drag_off.get();
-                    let (mut x, mut y) = mem_pos_get().unwrap_or((0, 0));
-                    x += sx - off_x;
-                    y += sy - off_y;
-                    let wa = work_area();
-                    let (ww, wh) = this.win_size();
-                    x = x.clamp(wa.left - ww + 24, wa.right - 24);
-                    y = y.clamp(wa.top - 10, wa.bottom - wh + 10);
-                    mem_pos_set((x, y));
-                    // 内容由 ULW 提供，纯移动不重绘，避免闪烁
-                    SetWindowPos(
-                        hwnd,
-                        Some(HWND_TOPMOST),
-                        x,
-                        y,
-                        ww,
-                        wh,
-                        SWP_NOACTIVATE | SWP_NOREDRAW,
-                    );
+                    if !this.dragged.get() && (sx - off_x).abs() + (sy - off_y).abs() > 3 {
+                        this.dragged.set(true);
+                        if this.hover.replace(-1) != -1 {
+                            this.push();
+                        }
+                    }
+                    if this.dragged.get() {
+                        let (mut x, mut y) = mem_pos_get().unwrap_or((0, 0));
+                        x += sx - off_x;
+                        y += sy - off_y;
+                        let wa = work_area();
+                        let (ww, wh) = this.win_size();
+                        x = x.clamp(wa.left - ww + 24, wa.right - 24);
+                        y = y.clamp(wa.top - 10, wa.bottom - wh + 10);
+                        mem_pos_set((x, y));
+                        // 内容由 ULW 提供，纯移动不重绘，避免闪烁
+                        SetWindowPos(
+                            hwnd,
+                            Some(HWND_TOPMOST),
+                            x,
+                            y,
+                            ww,
+                            wh,
+                            SWP_NOACTIVATE | SWP_NOREDRAW,
+                        );
+                    }
                 } else {
                     let s = this.dpi_scale();
-                    let h = hit_test(
-                        (lparam.0 & 0xFFFF) as i32,
-                        ((lparam.0 >> 16) & 0xFFFF) as i32,
-                        s,
-                    );
+                    let lx = ((lparam.0 & 0xFFFF) as f32 / s) as i32;
+                    let ly = (((lparam.0 >> 16) & 0xFFFF) as f32 / s) as i32;
+                    let h = hit_cell(lx, ly);
                     if h != this.hover.get() {
                         this.hover.set(h);
                         this.push();
@@ -628,24 +728,29 @@ extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM
             WM_LBUTTONUP => {
                 if this.dragging.replace(false) {
                     ReleaseCapture();
-                    if !this.dragged.get() {
-                        let x = (lparam.0 & 0xFFFF) as i32;
-                        let y = ((lparam.0 >> 16) & 0xFFFF) as i32;
-                        this.on_click(hit_test(x, y, this.dpi_scale()));
-                    } else {
+                    if this.dragged.get() {
                         // 拖动结束：按新位置所在显示器的 DPI 重新渲染
                         this.push();
+                    } else {
+                        let s = this.dpi_scale();
+                        let lx = ((lparam.0 & 0xFFFF) as f32 / s) as i32;
+                        let ly = (((lparam.0 >> 16) & 0xFFFF) as f32 / s) as i32;
+                        let cell = hit_cell(lx, ly);
+                        if cell >= 0 {
+                            this.on_click(cell);
+                        }
                     }
                 }
                 LRESULT(0)
             }
             WM_RBUTTONUP => {
-                this.on_click(BTN_MENU);
+                // 右键任意位置 → 打开设置中心（对齐 WindInput：右键弹主菜单）
+                this.open_settings();
                 LRESULT(0)
             }
             0x02A3 => {
                 // WM_MOUSELEAVE
-                if this.hover.replace(0) != 0 {
+                if this.hover.replace(-1) != -1 {
                     this.push();
                 }
                 LRESULT(0)
@@ -760,7 +865,7 @@ pub fn show_status_bar(shared: Arc<Mutex<SharedState>>, ascii: bool, full: bool,
     if let Some(hwnd) = bar_hwnd() {
         let flags = (ascii as usize) | ((full as usize) << 1) | ((punct as usize) << 2);
         unsafe {
-            PostMessageW(Some(hwnd), MSG_SHOW, WPARAM(flags as usize), LPARAM(0));
+            PostMessageW(Some(hwnd), MSG_SHOW, WPARAM(flags), LPARAM(0));
         }
     }
 }

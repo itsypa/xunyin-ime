@@ -5,22 +5,35 @@ param(
 $ErrorActionPreference = "Stop"
 Add-Type -AssemblyName System.Drawing
 
-# 搜狗默认配色 + 现代药丸：浅灰底 #F7F7F7、灰边框、两端半圆、橙色圆 Logo、
-# 蓝色文字按钮（中/英、全/半、标点）+ 软键盘 + 菜单。全部从零绘制，无重叠。
-# 资源按 2 倍分辨率渲染（逻辑 170x34 @96dpi → 340x68），运行时按实际 DPI 缩放，
-# 保证 125%/150%/200% 缩放下文字依然清晰（解决"像素抠图/字体难看"）。
+# 状态栏资源生成（参照 WindInput 工具栏规格）：
+#   条厚 30dp、左侧拖动柄 12dp、每格 30dp；白底 245 alpha、圆角 = 厚度×0.3、1dp 同色边框；
+#   格内高亮胶囊内缩（横条：左右各 inset/2、上下各 inset，inset=4）；
+#   中文模式格 = 主题蓝底 + 白字；悬停 = 极淡黑（alpha 13）。
+#   图标为单色 alpha 蒙版（运行时按主题/激活色 tint），文字同理。
+# 资源按 2 倍分辨率渲染（逻辑 132x30 @96dpi → 264x60），运行时按显示器 DPI 缩放。
+
 $S = 2
-$W = 170 * $S   # 340
-$H = 34 * $S    # 68
-$R = 17 * $S    # 半圆端
+$CELL = 30
+$GRIP = 12
+$H = 30
+$W = $GRIP + $CELL * 4          # 132：拖动柄 + 中/英 + 标点 + 全半角 + 设置
+$AW = $W * $S                    # 264
+$AH = $H * $S                    # 60
+$Tile = $CELL * $S               # 60（单格 tile 尺寸）
+
 $out = $OutDir
 New-Item -ItemType Directory -Force -Path $out | Out-Null
 
-$Blue = [System.Drawing.Color]::FromArgb(255, 76, 163, 224)
-$Dark = [System.Drawing.Color]::FromArgb(255, 51, 51, 51)
+# 颜色（对齐 WindInput toolbar.rs 默认主题）
+$BG    = [System.Drawing.Color]::FromArgb(245, 255, 255, 255)   # 白色半透明底
+$SEP   = [System.Drawing.Color]::FromArgb(255, 214, 214, 220)   # 边框/分隔线
+$GRIPC = [System.Drawing.Color]::FromArgb(255, 186, 186, 194)   # 拖动柄点
+$HL_BG = [System.Drawing.Color]::FromArgb(255, 66, 133, 244)    # 激活蓝
+$HOVER = [System.Drawing.Color]::FromArgb(13, 0, 0, 0)          # 悬停极淡黑
+$CLEAR = [System.Drawing.Color]::FromArgb(0, 0, 0, 0)
 
-function New-Bmp() {
-    $b = New-Object System.Drawing.Bitmap($W, $H, [System.Drawing.Imaging.PixelFormat]::Format32bppArgb)
+function New-Bmp([int]$bw, [int]$bh) {
+    $b = New-Object System.Drawing.Bitmap($bw, $bh, [System.Drawing.Imaging.PixelFormat]::Format32bppArgb)
     $g = [System.Drawing.Graphics]::FromImage($b)
     $g.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::AntiAlias
     $g.TextRenderingHint = [System.Drawing.Text.TextRenderingHint]::AntiAliasGridFit
@@ -36,16 +49,18 @@ function Save-Bgra($ctx, [string]$name) {
     [System.Runtime.InteropServices.Marshal]::Copy($data.Scan0, $bytes, 0, $bytes.Length)
     $b.UnlockBits($data)
     $fs = [System.IO.File]::Create((Join-Path $out "$name.bin"))
-    $bw2 = New-Object System.IO.BinaryWriter($fs)
-    $bw2.Write([uint32]$bw); $bw2.Write([uint32]$bh)
-    $bw2.Write($bytes)
-    $bw2.Close()
+    $w = New-Object System.IO.BinaryWriter($fs)
+    $w.Write([uint32]$bw); $w.Write([uint32]$bh)
+    $w.Write($bytes)
+    $w.Close()
     $ctx.G.Dispose(); $b.Dispose()
 }
 
 function RoundRect([float]$x, [float]$y, [float]$w, [float]$h, [float]$r) {
     $p = New-Object System.Drawing.Drawing2D.GraphicsPath
     $d = 2 * $r
+    if ($d -gt $w) { $d = $w }
+    if ($d -gt $h) { $d = $h }
     $p.AddArc($x, $y, $d, $d, 180, 90)
     $p.AddArc($x + $w - $d, $y, $d, $d, 270, 90)
     $p.AddArc($x + $w - $d, $y + $h - $d, $d, $d, 0, 90)
@@ -54,131 +69,143 @@ function RoundRect([float]$x, [float]$y, [float]$w, [float]$h, [float]$r) {
     return $p
 }
 
-function Draw-Bar($g, $hoverId) {
-    # 柔和投影（两层）
-    foreach ($shd in @(@{dx=0; dy=2; a=26}, @{dx=1; dy=3; a=14})) {
-        $sh = RoundRect (0.5 + $shd.dx) (0.5 + $shd.dy) ($W - 1) ($H - 1) $R
-        $sb = New-Object System.Drawing.SolidBrush([System.Drawing.Color]::FromArgb($shd.a, 30, 45, 70))
-        $g.FillPath($sb, $sh)
-        $sb.Dispose(); $sh.Dispose()
-    }
-    # 药丸：浅灰底 + 灰边框（半圆端）
-    $body = RoundRect 0.5 0.5 ($W - 1) ($H - 1) $R
-    $g.FillPath((New-Object System.Drawing.SolidBrush([System.Drawing.Color]::FromArgb(255, 247, 247, 247))), $body)
-    $pen = New-Object System.Drawing.Pen([System.Drawing.Color]::FromArgb(255, 189, 189, 189), 1)
+# ── 整条背景：白底圆角 + 1px 边框 + 左侧拖动柄点阵 ──────────────────────────
+function Make-BarBg() {
+    $ctx = New-Bmp $AW $AH
+    $g = $ctx.G
+    $radius = $AH * 0.30
+    $body = RoundRect 0.5 0.5 ($AW - 1) ($AH - 1) $radius
+    $g.FillPath((New-Object System.Drawing.SolidBrush($BG)), $body)
+    $pen = New-Object System.Drawing.Pen($SEP, 1)
     $g.DrawPath($pen, $body)
     $pen.Dispose(); $body.Dispose()
-
-    # 悬停：浅蓝圆角高亮（仅 Logo/中英/全半/菜单 四项）
-    $btns = @(
-        @{ id = 0; x = 14; w = 22 },
-        @{ id = 1; x = 48; w = 36 },
-        @{ id = 2; x = 88; w = 34 },
-        @{ id = 3; x = 134; w = 22 }
-    )
-    foreach ($b in $btns) {
-        if ($hoverId -eq $b.id) {
-            $hl = RoundRect (($b.x - 1) * $S) (4 * $S) (($b.w + 2) * $S) ($H - 8 * $S) (11 * $S)
-            $hb = New-Object System.Drawing.SolidBrush([System.Drawing.Color]::FromArgb(255, 217, 233, 247))
-            $g.FillPath($hb, $hl)
-            $hb.Dispose()
-            $hp = New-Object System.Drawing.Pen([System.Drawing.Color]::FromArgb(255, 183, 211, 236), 1)
-            $g.DrawPath($hp, $hl)
-            $hp.Dispose(); $hl.Dispose()
+    # 拖动柄：2 列 × 3 行，点径 2dp、间距 4dp，居中于 12dp 宽的柄区
+    $dot = 2.0 * $S
+    $gap = 4.0 * $S
+    $cx = ($GRIP * $S) / 2.0
+    $cy = $AH / 2.0
+    $brush = New-Object System.Drawing.SolidBrush($GRIPC)
+    for ($row = 0; $row -lt 3; $row++) {
+        for ($col = 0; $col -lt 2; $col++) {
+            $x = $cx + ($col - 0.5) * $gap - $dot / 2
+            $y = $cy + ($row - 1) * $gap - $dot / 2
+            $g.FillEllipse($brush, $x, $y, $dot, $dot)
         }
     }
-
-    $sf = New-Object System.Drawing.StringFormat
-    $sf.Alignment = [System.Drawing.StringAlignment]::Center
-    $sf.LineAlignment = [System.Drawing.StringAlignment]::Center
-
-    # 橙色圆 Logo + 白色「灵」
-    $logoRect = New-Object System.Drawing.RectangleF((14 * $S), (6 * $S), (22 * $S), (22 * $S))
-    $lg = New-Object System.Drawing.Drawing2D.LinearGradientBrush(
-        (New-Object System.Drawing.PointF((14 * $S), (6 * $S))),
-        (New-Object System.Drawing.PointF((36 * $S), (28 * $S))),
-        [System.Drawing.Color]::FromArgb(255, 255, 138, 8),
-        [System.Drawing.Color]::FromArgb(255, 247, 77, 24))
-    $g.FillEllipse($lg, $logoRect)
-    $lg.Dispose()
-    $fLogo = New-Object System.Drawing.Font("Microsoft YaHei UI", (13 * $S), [System.Drawing.FontStyle]::Bold, [System.Drawing.GraphicsUnit]::Pixel)
-    $g.DrawString("灵", $fLogo, [System.Drawing.Brushes]::White, $logoRect, $sf)
-    $fLogo.Dispose()
-
-    # 菜单 ≡（三条横杠 = 设置入口）
-    $fMenu = New-Object System.Drawing.Font("Segoe UI Symbol", (13 * $S), [System.Drawing.FontStyle]::Regular, [System.Drawing.GraphicsUnit]::Pixel)
-    $mb = New-Object System.Drawing.SolidBrush([System.Drawing.Color]::FromArgb(255, 110, 120, 132))
-    $g.DrawString("≡", $fMenu, $mb, (New-Object System.Drawing.RectangleF((134 * $S), (3 * $S), (22 * $S), (28 * $S))), $sf)
-    $mb.Dispose(); $fMenu.Dispose()
+    $brush.Dispose()
+    Save-Bgra $ctx "bar_bg"
 }
 
-function Draw-Glyph([string]$text, [string]$name, [int]$gx, [int]$gw) {
-    $ctx = New-Bmp
-    $sf = New-Object System.Drawing.StringFormat
-    $sf.Alignment = [System.Drawing.StringAlignment]::Center
-    $sf.LineAlignment = [System.Drawing.StringAlignment]::Center
-    $f = New-Object System.Drawing.Font("Microsoft YaHei UI", (14 * $S), [System.Drawing.FontStyle]::Regular, [System.Drawing.GraphicsUnit]::Pixel)
-    $b = New-Object System.Drawing.SolidBrush($Blue)
-    $ctx.G.DrawString($text, $f, $b, (New-Object System.Drawing.RectangleF(($gx * $S), (3 * $S), ($gw * $S), (28 * $S))), $sf)
-    $b.Dispose(); $f.Dispose()
+# ── 单格高亮 tile（悬停 / 激活）：横条胶囊内缩 inset=4 ──────────────────────
+function Make-CellTile([string]$name, [System.Drawing.Color]$color) {
+    $ctx = New-Bmp $Tile $Tile
+    $g = $ctx.G
+    $inset = 4 * $S
+    $x = $inset / 2.0
+    $y = [float]$inset
+    $w = $Tile - $inset
+    $hh = $Tile - $inset * 2
+    $r = [Math]::Min($w, $hh) * 0.30
+    $p = RoundRect $x $y $w $hh $r
+    $g.FillPath((New-Object System.Drawing.SolidBrush($color)), $p)
+    $p.Dispose()
     Save-Bgra $ctx $name
 }
 
-# 背景：normal + 悬停（Logo/中/全/菜单）
-$c = New-Bmp; Draw-Bar $c.G -1; Save-Bgra $c "bg_normal"
-foreach ($hid in 0..3) {
-    $c = New-Bmp; Draw-Bar $c.G $hid
-    $tag = @("logo","mode","width","menu")[$hid]
-    Save-Bgra $c "bg_hover_$tag"
+# ── 图标蒙版（白色 + alpha，运行时 tint）────────────────────────────────────
+function Make-Icon([string]$name, [scriptblock]$draw) {
+    $ctx = New-Bmp $Tile $Tile
+    $g = $ctx.G
+    $size = 12.0 * $S
+    $cx = $Tile / 2.0
+    $cy = $Tile / 2.0
+    $white = New-Object System.Drawing.SolidBrush([System.Drawing.Color]::White)
+    & $draw $g $cx $cy $size $white
+    $white.Dispose()
+    Save-Bgra $ctx $name
 }
 
-# 动态字形
-Draw-Glyph "中" "glyph_zhong" 48 36
-Draw-Glyph "英" "glyph_ying" 48 36
-Draw-Glyph "全" "glyph_quan" 88 34
-Draw-Glyph "半" "glyph_ban" 88 34
+Make-BarBg
+Make-CellTile "cell_hover" $HOVER
+Make-CellTile "cell_active" $HL_BG
 
-# 预览
-function Read-Bgra([string]$name) {
-    $fs = [System.IO.File]::OpenRead((Join-Path $out "$name.bin"))
-    $br = New-Object System.IO.BinaryReader($fs)
-    $w0 = $br.ReadUInt32(); $h0 = $br.ReadUInt32()
-    $px = $br.ReadBytes([int]($w0 * $h0 * 4))
-    $br.Close()
-    return @{ W = [int]$w0; H = [int]$h0; Px = $px }
+# 全角：实心圆 ●
+Make-Icon "icon_width_full" {
+    param($g, $cx, $cy, $size, $brush)
+    $r = $size / 2.0
+    $g.FillEllipse($brush, $cx - $r, $cy - $r, $size, $size)
 }
-function Blend-Over([byte[]]$dst, [byte[]]$src) {
-    for ($i = 0; $i -lt $src.Length; $i += 4) {
-        $sa = $src[$i + 3]
-        if ($sa -eq 0) { continue }
-        if ($sa -eq 255) { $dst[$i]=$src[$i]; $dst[$i+1]=$src[$i+1]; $dst[$i+2]=$src[$i+2]; $dst[$i+3]=255; continue }
-        $da = $dst[$i+3]; $oa = $sa + $da * (255 - $sa) / 255
-        if ($oa -gt 0) {
-            $dst[$i]   = [byte](($src[$i]*$sa + $dst[$i]*$da*(255-$sa)/255)/$oa)
-            $dst[$i+1] = [byte](($src[$i+1]*$sa + $dst[$i+1]*$da*(255-$sa)/255)/$oa)
-            $dst[$i+2] = [byte](($src[$i+2]*$sa + $dst[$i+2]*$da*(255-$sa)/255)/$oa)
-            $dst[$i+3] = [byte]$oa
-        }
+
+# 半角：弯月（实心圆挖掉偏移圆）
+Make-Icon "icon_width_half" {
+    param($g, $cx, $cy, $size, $brush)
+    $r = $size / 2.0
+    $g.FillEllipse($brush, $cx - $r, $cy - $r, $size, $size)
+    $g.CompositingMode = [System.Drawing.Drawing2D.CompositingMode]::SourceCopy
+    $er = New-Object System.Drawing.SolidBrush([System.Drawing.Color]::FromArgb(0, 0, 0, 0))
+    $r2 = $r * 0.86
+    $off = $r * 0.42
+    $g.FillEllipse($er, $cx - $r2 + $off, $cy - $r2 - $off * 0.35, $r2 * 2, $r2 * 2)
+    $er.Dispose()
+    $g.CompositingMode = [System.Drawing.Drawing2D.CompositingMode]::SourceOver
+}
+
+# 全角标点：圆环 。（中文句号）
+Make-Icon "icon_punct_full" {
+    param($g, $cx, $cy, $size, $brush)
+    $r = $size * 0.40
+    $pen = New-Object System.Drawing.Pen([System.Drawing.Color]::White, (2.2 * $S))
+    $g.DrawEllipse($pen, $cx - $r, $cy - $r, $r * 2, $r * 2)
+    $pen.Dispose()
+}
+
+# 半角标点：实心小圆点 .（英文句号）
+Make-Icon "icon_punct_half" {
+    param($g, $cx, $cy, $size, $brush)
+    $r = $size * 0.22
+    $g.FillEllipse($brush, $cx - $r, $cy - $r + $size * 0.14, $r * 2, $r * 2)
+}
+
+# 设置：齿轮（8 齿 + 中心镂空）
+Make-Icon "icon_gear" {
+    param($g, $cx, $cy, $size, $brush)
+    $r = $size * 0.34
+    $g.FillEllipse($brush, $cx - $r, $cy - $r, $r * 2, $r * 2)
+    $toothW = $size * 0.20
+    $toothH = $size * 0.26
+    for ($i = 0; $i -lt 8; $i++) {
+        $ang = $i * 45.0 * [Math]::PI / 180.0
+        $tx = $cx + [Math]::Cos($ang) * ($r * 1.12)
+        $ty = $cy + [Math]::Sin($ang) * ($r * 1.12)
+        $state = $g.Save()
+        $g.TranslateTransform([float]$tx, [float]$ty)
+        $g.RotateTransform([float]($i * 45.0))
+        $g.FillRectangle($brush, [float](-$toothW / 2), [float](-$toothH / 2), [float]$toothW, [float]$toothH)
+        $g.Restore($state)
     }
+    $g.CompositingMode = [System.Drawing.Drawing2D.CompositingMode]::SourceCopy
+    $er = New-Object System.Drawing.SolidBrush([System.Drawing.Color]::FromArgb(0, 0, 0, 0))
+    $hr = $size * 0.16
+    $g.FillEllipse($er, $cx - $hr, $cy - $hr, $hr * 2, $hr * 2)
+    $er.Dispose()
+    $g.CompositingMode = [System.Drawing.Drawing2D.CompositingMode]::SourceOver
 }
-$bg = Read-Bgra "bg_normal"
-$frame = [byte[]]($bg.Px.Clone())
-Blend-Over $frame (Read-Bgra "glyph_zhong").Px
-Blend-Over $frame (Read-Bgra "glyph_quan").Px
-$previewSrc = New-Object System.Drawing.Bitmap($bg.W, $bg.H, [System.Drawing.Imaging.PixelFormat]::Format32bppArgb)
-$rect = New-Object System.Drawing.Rectangle(0, 0, $bg.W, $bg.H)
-$data = $previewSrc.LockBits($rect, [System.Drawing.Imaging.ImageLockMode]::WriteOnly, [System.Drawing.Imaging.PixelFormat]::Format32bppArgb)
-[System.Runtime.InteropServices.Marshal]::Copy($frame, 0, $data.Scan0, $frame.Length)
-$previewSrc.UnlockBits($data)
-$pw = $W * 3; $ph = $H * 3
-$preview = New-Object System.Drawing.Bitmap($pw, $ph, [System.Drawing.Imaging.PixelFormat]::Format32bppArgb)
-$pg = [System.Drawing.Graphics]::FromImage($preview)
-$pg.Clear([System.Drawing.Color]::White)
-$pg.InterpolationMode = [System.Drawing.Drawing2D.InterpolationMode]::NearestNeighbor
-$pg.DrawImage($previewSrc, 0, 0, $pw, $ph)
-$pg.Dispose()
-$preview.Save("D:\灵犀输入法\tools\statusbar_preview.png", [System.Drawing.Imaging.ImageFormat]::Png)
-$preview.Dispose(); $previewSrc.Dispose()
+
+# ── 文字蒙版：中 / 英（白色 + alpha，15dp 字号）──────────────────────────────
+function Make-Glyph([string]$text, [string]$name) {
+    $ctx = New-Bmp $Tile $Tile
+    $g = $ctx.G
+    $sf = New-Object System.Drawing.StringFormat
+    $sf.Alignment = [System.Drawing.StringAlignment]::Center
+    $sf.LineAlignment = [System.Drawing.StringAlignment]::Center
+    $f = New-Object System.Drawing.Font("Microsoft YaHei UI", (15.0 * $S), [System.Drawing.FontStyle]::Regular, [System.Drawing.GraphicsUnit]::Pixel)
+    $g.DrawString($text, $f, [System.Drawing.Brushes]::White, (New-Object System.Drawing.RectangleF(0, 0, $Tile, $Tile)), $sf)
+    $f.Dispose()
+    Save-Bgra $ctx $name
+}
+
+Make-Glyph "中" "glyph_zhong"
+Make-Glyph "英" "glyph_ying"
 
 Get-ChildItem $out -Filter *.bin | Select-Object Name, Length
 Write-Output "assets generated -> $out"
