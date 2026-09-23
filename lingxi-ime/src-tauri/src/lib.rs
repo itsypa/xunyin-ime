@@ -333,6 +333,130 @@ fn open_data_dir() -> Result<(), String> {
         .map_err(|e| e.to_string())
 }
 
+// ---------------- 用户词库备份 / 恢复 ----------------
+//
+// 用户打字学到的词存在 Rime 的 LevelDB 目录 `*.userdb/` 里，是二进制目录，
+// 整目录复制即完整备份（Rime 自己的 --backup/--restore 也是这么做的）。
+// 这里不引入 zip 依赖：备份落成带时间戳的文件夹，路径直接告诉用户。
+
+/// 递归复制目录（源为目录）。
+fn copy_dir_all(src: &std::path::Path, dst: &std::path::Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(dst)?;
+    for entry in std::fs::read_dir(src)? {
+        let entry = entry?;
+        let target = dst.join(entry.file_name());
+        if entry.file_type()?.is_dir() {
+            copy_dir_all(&entry.path(), &target)?;
+        } else {
+            std::fs::copy(entry.path(), target)?;
+        }
+    }
+    Ok(())
+}
+
+/// 用户词库备份根目录：<用户数据目录>\backup\
+fn backup_root() -> std::path::PathBuf {
+    user_data_dir().join("backup")
+}
+
+/// 需要纳入备份的用户侧文件（非 userdb 目录）。
+fn user_dict_files(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let mut v = Vec::new();
+    let phrase = dir.join("custom_phrase.txt");
+    if phrase.exists() {
+        v.push(phrase);
+    }
+    if let Ok(rd) = std::fs::read_dir(dir) {
+        for e in rd.flatten() {
+            let name = e.file_name().to_string_lossy().into_owned();
+            if name.ends_with(".custom.yaml") {
+                v.push(e.path());
+            }
+        }
+    }
+    v
+}
+
+/// 备份用户词库（userdb 目录 + 自造词/自定义配置），返回备份目录路径。
+#[tauri::command]
+fn backup_user_dict() -> Result<String, String> {
+    let dir = user_data_dir();
+    let dst = backup_root().join(format!("userdict_{}", chrono_like_stamp()));
+    std::fs::create_dir_all(&dst).map_err(|e| e.to_string())?;
+    let mut dicts = 0usize;
+    for entry in std::fs::read_dir(&dir).map_err(|e| e.to_string())?.flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if name.ends_with(".userdb") && entry.path().is_dir() {
+            copy_dir_all(&entry.path(), &dst.join(&name)).map_err(|e| e.to_string())?;
+            dicts += 1;
+        }
+    }
+    for f in user_dict_files(&dir) {
+        if let Some(name) = f.file_name() {
+            std::fs::copy(&f, dst.join(name)).map_err(|e| e.to_string())?;
+        }
+    }
+    if dicts == 0 {
+        return Err("没有找到用户词库（还没有打字学习过词？）".into());
+    }
+    Ok(dst.to_string_lossy().into_owned())
+}
+
+/// 列出已有备份目录（按名称倒序，新的在前）。
+#[tauri::command]
+fn list_user_dict_backups() -> Result<Vec<String>, String> {
+    let root = backup_root();
+    let mut v = Vec::new();
+    if let Ok(rd) = std::fs::read_dir(&root) {
+        for e in rd.flatten() {
+            if e.path().is_dir() {
+                v.push(e.path().to_string_lossy().into_owned());
+            }
+        }
+    }
+    v.sort();
+    v.reverse();
+    Ok(v)
+}
+
+/// 从备份目录恢复用户词库；恢复前先把当前词库另存一份，避免误操作丢词。
+#[tauri::command]
+fn restore_user_dict(dir: String) -> Result<String, String> {
+    let src = std::path::PathBuf::from(&dir);
+    if !src.is_dir() {
+        return Err(format!("备份目录不存在：{dir}"));
+    }
+    let user = user_data_dir();
+    // 先保护性备份当前状态
+    let safe = backup_root().join(format!("before_restore_{}", chrono_like_stamp()));
+    std::fs::create_dir_all(&safe).map_err(|e| e.to_string())?;
+    for entry in std::fs::read_dir(&user).map_err(|e| e.to_string())?.flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if name.ends_with(".userdb") && entry.path().is_dir() {
+            copy_dir_all(&entry.path(), &safe.join(&name)).map_err(|e| e.to_string())?;
+        }
+    }
+    // 覆盖恢复：先删旧的同名 userdb，再整目录拷回
+    let mut restored = 0usize;
+    for entry in std::fs::read_dir(&src).map_err(|e| e.to_string())?.flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let target = user.join(&name);
+        if entry.path().is_dir() && name.ends_with(".userdb") {
+            if target.exists() {
+                std::fs::remove_dir_all(&target).map_err(|e| e.to_string())?;
+            }
+            copy_dir_all(&entry.path(), &target).map_err(|e| e.to_string())?;
+            restored += 1;
+        } else if entry.path().is_file() {
+            std::fs::copy(entry.path(), &target).map_err(|e| e.to_string())?;
+        }
+    }
+    Ok(format!(
+        "已恢复 {restored} 个词库；恢复前的词库已备份到 {}",
+        safe.to_string_lossy()
+    ))
+}
+
 pub fn run() {
     tauri::Builder::default()
         .setup(|app| {
@@ -358,6 +482,9 @@ pub fn run() {
             import_dict_content,
             export_dict,
             open_data_dir,
+            backup_user_dict,
+            list_user_dict_backups,
+            restore_user_dict,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
