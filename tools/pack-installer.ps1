@@ -1,7 +1,15 @@
 ﻿param(
     [string]$Version = "",
+    # 目前只出 x64 安装包：32 位 stub 依赖的上游 GUI 库 windui 在 i686 下编译不过
+    # （SetWindowLongPtrW 的 isize/i32 与 packed struct 未对齐两类硬错误）。
+    # 32 位 Windows 请用发布页的便携 zip + tools\register-ime.ps1（见 README）。
+    [ValidateSet("x64", "x86")]
+    [string]$Arch = "x64",
     [ValidateSet("lzma", "zstd")]
     [string]$Compression = "lzma",
+    [switch]$Sign,
+    [string]$PfxPath = "",
+    [string]$PfxPassword = "",
     [switch]$SkipBuild
 )
 
@@ -33,9 +41,12 @@ if (-not $SkipBuild) {
         try { cargo build --release --features custom-protocol } finally { Pop-Location }
     } finally { Pop-Location }
 
-    # 安装器 stub / 卸载器 / 打包器
+    # 安装器 stub / 卸载器 / 打包器（x64 打包器通吃两种架构的产物）
     Push-Location $installerDir
-    try { cargo build --release --features packer } finally { Pop-Location }
+    try {
+        cargo build --release --features packer
+        cargo build --release --features packer --target i686-pc-windows-msvc
+    } finally { Pop-Location }
 }
 
 # ── 2. 组装 payload ────────────────────────────────────────────────────────
@@ -87,13 +98,64 @@ Write-Host "payload 校验通过（$($required.Count) 项必要文件齐备）"
 # ── 3. 生成安装包 ──────────────────────────────────────────────────────────
 New-Item -ItemType Directory -Force $distDir | Out-Null
 $packer = Join-Path $installerDir "target\release\wind-packer.exe"
-$stub = Join-Path $installerDir "target\release\wind-installer.exe"
 $config = Join-Path $installerDir "app.toml"
-$output = Join-Path $distDir "LingxiIME-Setup-$Version.exe"
+if (-not (Test-Path $packer)) { throw "缺少打包器: $packer" }
 
-& $packer build --config $config --version $Version --source-dir $payloadDir --stub $stub `
-    --compression $Compression --output $output
-if ($LASTEXITCODE -ne 0) { throw "wind-packer 失败 (exit $LASTEXITCODE)" }
+# 找 signtool（Windows SDK 自带，按版本从高到低取）。
+function Get-SignTool {
+    $kits = Join-Path ${env:ProgramFiles(x86)} "Windows Kits\10\bin"
+    if (Test-Path $kits) {
+        $found = Get-ChildItem $kits -Directory -ErrorAction SilentlyContinue |
+            Sort-Object Name -Descending |
+            ForEach-Object { Join-Path $_.FullName "x64\signtool.exe" } |
+            Where-Object { Test-Path $_ } |
+            Select-Object -First 1
+        if ($found) { return $found }
+    }
+    $cmd = Get-Command signtool.exe -ErrorAction SilentlyContinue
+    if ($cmd) { return $cmd.Source }
+    return $null
+}
 
-$pkg = Get-Item $output
-Write-Host ("安装包: {0} ({1:N1} MB)" -f $pkg.FullName, ($pkg.Length / 1MB))
+# 对单个文件签名（SHA256 + RFC3161 时间戳）。
+function Sign-File([string]$path) {
+    if (-not $path -or -not (Test-Path $path)) { throw "待签名文件不存在: $path" }
+    $signtool = Get-SignTool
+    if (-not $signtool) { throw "未找到 signtool.exe（需要 Windows SDK）" }
+    $toolArgs = @("sign", "/fd", "SHA256", "/f", $PfxPath)
+    if ($PfxPassword) { $toolArgs += @("/p", $PfxPassword) }
+    $toolArgs += @("/tr", "http://timestamp.digicert.com", "/td", "SHA256", $path)
+    & $signtool @toolArgs | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw "签名失败: $path (exit $LASTEXITCODE)" }
+    Write-Host "已签名: $path"
+}
+
+function Pack-One([string]$arch) {
+    $sub = if ($arch -eq "x86") { "i686-pc-windows-msvc\release" } else { "release" }
+    $stub = Join-Path $installerDir "target\$sub\wind-installer.exe"
+    if (-not (Test-Path $stub)) { throw "缺少 $arch 安装器 stub: $stub" }
+    $output = Join-Path $distDir "LingxiIME-Setup-$Version-$arch.exe"
+    if ($Sign) {
+        if (-not (Test-Path $PfxPath)) { throw "签名证书不存在: $PfxPath" }
+        # 官方推荐顺序：先加工卸载器（写版本信息/图标）→ 签名 → 打包 → 签名安装包。
+        # 卸载器一旦签名就不能再改，所以加工必须在签名之前完成。
+        & $packer prep-uninstaller --config $config --version $Version --source-dir $payloadDir
+        if ($LASTEXITCODE -ne 0) { throw "wind-packer prep-uninstaller 失败 ($arch)" }
+        Sign-File (Join-Path $payloadDir "uninstall.exe")
+        $archive = Join-Path $distDir "LingxiIME-$Version-$arch.bin"
+        & $packer pack --config $config --version $Version --source-dir $payloadDir `
+            --compression $Compression --output $archive --require-prepared-uninstaller
+        if ($LASTEXITCODE -ne 0) { throw "wind-packer pack 失败 ($arch)" }
+        & $packer bundle --config $config --version $Version --stub $stub --archive $archive --output $output
+        if ($LASTEXITCODE -ne 0) { throw "wind-packer bundle 失败 ($arch)" }
+        Sign-File $output
+    } else {
+        & $packer build --config $config --version $Version --source-dir $payloadDir --stub $stub `
+            --compression $Compression --output $output
+        if ($LASTEXITCODE -ne 0) { throw "wind-packer 失败 ($arch, exit $LASTEXITCODE)" }
+    }
+    $pkg = Get-Item $output
+    Write-Host ("安装包({0}): {1} ({2:N1} MB)" -f $arch, $pkg.FullName, ($pkg.Length / 1MB))
+}
+
+Pack-One $Arch

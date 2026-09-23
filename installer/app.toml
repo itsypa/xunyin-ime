@@ -84,6 +84,15 @@ location = "start_menu"
 prestart = true
 exe      = "lingxi-ime.exe"
 
+# ── 本机数据目录清理（卸载时）─────────────────────────────────────────────
+# 设置中心的 WebView2 运行时把缓存写在 %LOCALAPPDATA%\com.lingxi.ime\EBWebView
+# （实测约 57 MB）。它是可重建的缓存，卸载时随「清除本地词库缓存」一并删除；
+# 用户词库与配置在 %APPDATA%\com.lingxi.ime，由「删除用户数据」控制，不在此列。
+[localdata]
+cache_dirs  = ["EBWebView"]
+state_files = []
+remove_dir_when_empty = true
+
 # ── 打包参数（仅 wind-packer 使用）───────────────────────────────────────
 [package]
 compression = "lzma"

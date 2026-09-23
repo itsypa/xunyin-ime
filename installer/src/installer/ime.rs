@@ -59,8 +59,11 @@ pub fn register_com(install_dir: &Path) -> ComRegistration {
         }
     }
 
+    // 32 位安装器跑在 32 位 Windows 上时没有 x64 视图可言（x64 DLL 无法加载）：
+    // 那个系统里唯一的视图就是 x86，跳过 x64 分支以免留下必然失败的告警。
+    let skip_x64 = cfg!(target_pointer_width = "32") && !is_64bit_windows();
     let x64 = install_dir.join(&ime.dll_x64);
-    if x64.exists() {
+    if !skip_x64 && x64.exists() {
         let target = system_deploy_path(ime, &ime.dll_x64, false).unwrap_or_else(|| x64.clone());
         match deploy_and_register(&x64, &target, false) {
             Ok(()) => out.registered.push((target, false)),
@@ -80,6 +83,15 @@ pub fn register_com(install_dir: &Path) -> ComRegistration {
     }
 
     out
+}
+
+/// 是否为 64 位 Windows。
+///
+/// 判据取 `%WINDIR%\Sysnative` 或 `SysWOW64` 是否存在：两者都只在 64 位系统上出现
+/// （Sysnative 是 32 位进程访问真 System32 的别名，64 位进程看不到）。
+fn is_64bit_windows() -> bool {
+    let windir = std::env::var("WINDIR").unwrap_or_else(|_| r"C:\Windows".to_string());
+    Path::new(&windir).join("Sysnative").exists() || Path::new(&windir).join("SysWOW64").exists()
 }
 
 /// 复制到系统目录 → 授予 AppContainer 读权限 → 对系统副本注册。
@@ -195,9 +207,19 @@ fn remove_system_copy(path: &Path) {
 
 /// 调用 regsvr32 注册/反注册单个 DLL，检查退出码。
 fn run_regsvr32(dll: &Path, wow64: bool, unregister: bool) -> Result<(), String> {
+    let windir = std::env::var("WINDIR").unwrap_or_else(|_| r"C:\Windows".to_string());
     let program = if wow64 {
-        let windir = std::env::var("WINDIR").unwrap_or_else(|_| r"C:\Windows".to_string());
         Path::new(&windir).join("SysWOW64").join("regsvr32.exe")
+    } else if cfg!(target_pointer_width = "32") {
+        // 32 位安装器在 64 位 Windows 上跑时，%WINDIR%\System32 会被 WOW64 重定向到
+        // SysWOW64（32 位 regsvr32）——那样永远注册不了 x64 视图。必须走 Sysnative。
+        // 32 位 Windows 上没有 Sysnative，此时退回 PATH（本机也只有 32 位 regsvr32）。
+        let sysnative = Path::new(&windir).join("Sysnative").join("regsvr32.exe");
+        if sysnative.exists() {
+            sysnative
+        } else {
+            PathBuf::from("regsvr32")
+        }
     } else {
         PathBuf::from("regsvr32")
     };

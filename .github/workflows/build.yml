@@ -64,10 +64,38 @@ jobs:
         working-directory: installer
         run: cargo build --release --features packer
 
+      - name: 导入签名证书（如已配置 secrets）
+        if: ${{ secrets.SIGN_PFX_BASE64 != '' }}
+        shell: powershell
+        run: |
+          $bytes = [Convert]::FromBase64String("${{ secrets.SIGN_PFX_BASE64 }}")
+          $pfx = Join-Path $env:RUNNER_TEMP "sign.pfx"
+          [IO.File]::WriteAllBytes($pfx, $bytes)
+          "SIGN_PFX=$pfx" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "SIGN_PFX_PASSWORD=${{ secrets.SIGN_PFX_PASSWORD }}" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
       - name: 生成安装包（wind-installer）
         shell: powershell
         run: |
-          .\tools\pack-installer.ps1 -SkipBuild -Version "0.1.$env:GITHUB_RUN_NUMBER" -Compression lzma
+          $params = @("-SkipBuild", "-Arch", "x64", "-Version", "0.1.$env:GITHUB_RUN_NUMBER", "-Compression", "lzma")
+          if ($env:SIGN_PFX) {
+            $params += @("-Sign", "-PfxPath", $env:SIGN_PFX, "-PfxPassword", $env:SIGN_PFX_PASSWORD)
+            Write-Host "已启用代码签名"
+          } else {
+            Write-Host "未配置签名证书（secrets.SIGN_PFX_BASE64），跳过签名"
+          }
+          .\tools\pack-installer.ps1 @params
+
+      - name: 生成便携包（含 32 位注册脚本）
+        shell: powershell
+        run: |
+          $stage = "build/portable"
+          Remove-Item $stage -Recurse -Force -ErrorAction SilentlyContinue
+          New-Item -ItemType Directory -Force $stage | Out-Null
+          Copy-Item "build/installer-payload/*" $stage -Recurse -Force
+          Remove-Item "$stage/uninstall.exe" -Force -ErrorAction SilentlyContinue
+          Copy-Item "tools/register-ime.ps1" $stage -Force
+          Compress-Archive -Path "$stage/*" -DestinationPath "build/LingxiIME-0.1.$env:GITHUB_RUN_NUMBER-portable.zip" -Force
 
       - name: 上传安装包
         uses: actions/upload-artifact@v4
@@ -75,6 +103,7 @@ jobs:
           name: lingxi-ime-windows
           path: |
             build/installer-dist/*.exe
+            build/*-portable.zip
             lingxi-tsf/target/release/lingxi_tsf.dll
             lingxi-tsf/target/i686-pc-windows-msvc/release/lingxi_tsf.dll
 
@@ -87,8 +116,10 @@ jobs:
             Auto-built Windows installer (commit ${{ github.sha }})
 
             - Setup: installs the IME, registers both x64/x86 TSF views, includes an uninstaller
+            - Portable zip: unzip, then run `register-ime.ps1` as admin (also for 32-bit Windows)
           files: |
             build/installer-dist/*.exe
+            build/*-portable.zip
           fail_on_unmatched_files: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

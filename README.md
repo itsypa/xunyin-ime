@@ -7,9 +7,11 @@
 
 - **系统级 TSF 输入**：在任意应用（记事本、Edge、ChatGPT 等）中直接输入，无需全局钩子。
 - **Rime 拼音引擎**：内置大规模词库（含细胞词库、英文词库、Emoji），本地运行。
-- **搜狗式状态栏**：橙圆 Logo + 中/英 + 全/半 + 设置入口，可拖动，按显示器 DPI 自适应缩放。
+- **仿 WindInput 状态栏**：拖动柄 + 中/英 + 标点 + 全/半 + 简/繁 + 设置齿轮，
+  中文模式与简入繁出为蓝底白字；右键弹开关菜单；按显示器 DPI 自适应缩放。
 - **候选框**：光标跟随、候选数量可调、点击/数字键/空格选词。
-- **设置中心**（Tauri）：字体大小、候选数量、全/半角、中英标点、词库导入导出等。
+- **设置中心**（Tauri）：字号、候选数、全/半角、中英标点、简繁、主题与自定义颜色、
+  自定义短语导入导出、**用户词库备份/恢复**；设置自动保存，约 1 秒后对新会话生效。
 - **x86 / x64 双架构**：32 位与 64 位应用均可用。
 
 ## 目录结构
@@ -63,12 +65,12 @@ tools/         部署、签名、状态栏资源生成脚本与测试页
 1. 编译 `lingxi-tsf`（x64 + x86 release）；
 2. 编译设置中心（Tauri release + 前端 dist）；
 3. 用 [wind-installer](https://github.com/huanfeng/wind-installer)（清单驱动）生成
-   **安装器 + 卸载器**：`LingxiIME-Setup-<版本>.exe`；
+   **安装器 + 卸载器**：`LingxiIME-Setup-<版本>-x64.exe`；
 4. 上传产物并在 Release 中发布。
 
 构建成功后还会自动发布 **GitHub Release**：每次构建注入唯一版本号
 `0.1.<构建序号>`（合法 semver），Release 名称与安装包文件名均为英文
-（`LingxiIME v0.1.<序号>` / `LingxiIME-Setup-0.1.<序号>.exe`），避免中文
+（`LingxiIME v0.1.<序号>` / `LingxiIME-Setup-0.1.<序号>-x64.exe` 等），避免中文
 编码显示问题；应用本身安装后仍显示中文名「灵犀输入法」。以后想手动控制版本时，
 可以改为按 `v*` 标签触发。
 
@@ -86,9 +88,10 @@ uninstall.exe                    卸载器（控制面板/设置里可卸载）
 ## 本地打包安装器
 
 ```powershell
-.\tools\pack-installer.ps1                      # 版本号取自 tauri.conf.json
+.\tools\pack-installer.ps1                        # 版本号取自 tauri.conf.json
 .\tools\pack-installer.ps1 -Version 0.2.0 -Compression zstd
-.\tools\pack-installer.ps1 -SkipBuild           # 复用已构建产物，只重新打包
+.\tools\pack-installer.ps1 -Arch x64              # 只出 x64 安装包
+.\tools\pack-installer.ps1 -SkipBuild             # 复用已构建产物，只重新打包
 ```
 
 安装器清单在 [installer/app.toml](installer/app.toml)（应用信息、TSF 注册的
@@ -101,9 +104,30 @@ CLSID/GUID、快捷方式、启动行为、文案等）。安装器支持 `--sil
 
 ## 状态栏
 
-状态栏（搜狗式）位于右下角，含：Logo（打开设置）、中/英、全/半、≡（设置入口）。
-可拖动（会话内记忆位置，重启回默认）。界面资源由 `tools/gen-statusbar-assets.ps1`
-按 2 倍分辨率预渲染，运行时按显示器 DPI 自适应缩放。
+状态栏位于工作区右下角，自左至右：**拖动柄**、中/英、标点（全角画圆环 / 半角画句点）、
+全/半角（满月=全角 / 弯月=半角）、简/繁（蓝底=简入繁出已启用）、设置齿轮。
+
+- 左键点格切换对应状态；中文模式格与繁出格为蓝底白字；
+- **右键任意位置**弹出开关菜单（中文模式 / 全角 / 中文标点 / 简入繁出 / 打开设置）；
+- 可拖动（会话内记忆位置，重启回默认）；失焦或切换输入法自动隐藏；
+- 界面资源由 `tools/gen-statusbar-assets.ps1` 按 2 倍分辨率预渲染，运行时按显示器 DPI 缩放。
+
+## 安装方式
+
+| 方式 | 适用 | 说明 |
+|---|---|---|
+| `LingxiIME-Setup-<版本>-x64.exe` | 64 位 Windows | 安装器：注册双架构 TSF、建快捷方式、写卸载项，装完自动打开设置中心 |
+| `LingxiIME-<版本>-portable.zip` | 任意 Windows（含 32 位） | 解压后以管理员运行其中的 `register-ime.ps1` 注册输入法 |
+
+卸载：安装版走「设置 → 应用 → 灵犀输入法」，也可直接运行安装目录下的 `uninstall.exe`
+（支持 `--silent`、`--keep-user-data`）；便携版用 `register-ime.ps1 -Unregister`。
+
+### 代码签名（可选）
+
+未签名时 Windows 会弹 SmartScreen 提示。要启用签名，在仓库设置里加两个 secrets：
+`SIGN_PFX_BASE64`（PFX 证书的 Base64）与 `SIGN_PFX_PASSWORD`，CI 会自动按
+「加工卸载器 → 签名 → 打包 → 签名安装包」的顺序产出已签名安装包；
+本地则用 `tools\pack-installer.ps1 -Sign -PfxPath <证书> -PfxPassword <口令>`。
 
 ## 测试
 
