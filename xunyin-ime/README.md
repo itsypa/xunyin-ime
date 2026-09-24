@@ -10,7 +10,7 @@
 仓库布局：
 
 ```
-D:\迅音输入法\
+<项目根>\
 ├── xunyin-tsf\     系统级 TSF 文本服务 DLL（输入核心，cdylib，x64/x86 双架构）
 ├── xunyin-rime\    共享 Rime 引擎封装 crate（TSF 与伴侣应用共用）
 ├── xunyin-ime\     设置中心（native\ = 原生 Win32 应用；rime\ = 共享词库数据）
