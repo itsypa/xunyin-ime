@@ -1,6 +1,9 @@
 ﻿param(
     [ValidateSet("x64", "x86")]
     [string]$Arch = "x64",
+    # 出 release 版：启动快得多（实测窗口出现 60~100ms vs 调试版 ~2.1s），
+    # 状态栏齿轮拉起的就是它；开发迭代用默认的 debug 即可。
+    [switch]$Release,
     [switch]$SkipFrontend,
     [switch]$SkipBuild,
     [switch]$SkipSign,
@@ -27,10 +30,10 @@ if (-not $SkipFrontend) {
 }
 
 $targetArg = @()
-$outSub = "debug"
+$outSub = if ($Release) { "release" } else { "debug" }
 if ($Arch -eq "x86") {
     $targetArg = @("--target", "i686-pc-windows-msvc")
-    $outSub = "i686-pc-windows-msvc\debug"
+    $outSub = if ($Release) { "i686-pc-windows-msvc\release" } else { "i686-pc-windows-msvc\debug" }
 }
 
 if (-not $SkipBuild) {
@@ -39,7 +42,8 @@ if (-not $SkipBuild) {
         # 注意：必须启用 custom-protocol 特性，否则 exe 会去找 Vite 开发服务器
         # （devUrl=http://localhost:1420），导致设置中心"localhost 拒绝连接"。
         $ErrorActionPreference = "Continue"
-        cargo build @targetArg --features custom-protocol 2>&1 | Out-Host
+        $profileArg = if ($Release) { @("--release") } else { @() }
+        cargo build @targetArg @profileArg --features custom-protocol 2>&1 | Out-Host
         $code = $LASTEXITCODE
         $ErrorActionPreference = "Stop"
         if ($code -ne 0) { throw "cargo build failed ($Arch)" }

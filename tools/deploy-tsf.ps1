@@ -1,7 +1,7 @@
 ﻿param(
     [ValidateSet("x64", "x86")]
     [string]$Arch = "x64",
-    [string]$DllName = "lingxi_tsf_v64.dll",
+    [string]$DllName = "lingxi_tsf_v65.dll",
     [switch]$SkipBuild,
     [switch]$SkipSign,
     [switch]$SkipRestart
