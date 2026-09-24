@@ -427,6 +427,29 @@ body {
   box-shadow: 0 8px 24px rgba(30, 41, 80, 0.14);
 }
 
+/*
+ * 外观页的预览卡吸附在滚动区顶部：调下面的「显示」「自定义颜色」时，
+ * 效果一直可见，不必再往上滚回去看（小屏幕尤其明显）。
+ * z-index + 不透明底色保证滚动内容从它下面穿过去。
+ */
+.card.sticky-preview {
+  position: sticky;
+  top: 6px;
+  z-index: 20;
+  padding: 12px 16px 14px;
+  background: var(--card);
+  box-shadow: 0 10px 26px rgba(25, 35, 70, 0.12);
+}
+
+.card.sticky-preview h2 {
+  margin-bottom: 8px;
+}
+
+.card.sticky-preview .preview-window {
+  /* 只收窄，不改高度：5 行候选用 17px 字号时约 164px，压低会被裁切 */
+  width: 264px;
+}
+
 /* 悬停浮层里的演示窗：不裁剪、随字号自然长大（绝对定位，不影响页面布局） */
 .preview-window.compact {
   width: 190px;

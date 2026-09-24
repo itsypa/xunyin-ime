@@ -695,7 +695,7 @@ function App() {
               </div>
             </div>
 
-            <div className="card">
+            <div className="card sticky-preview">
               <h2>候选窗预览</h2>
               <p className="hint" style={{ marginTop: 0 }}>
                 这里演示配色、圆角、序号与透明度（固定尺寸，不随字号变化）。
