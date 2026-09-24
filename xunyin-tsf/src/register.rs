@@ -51,12 +51,21 @@ pub fn register_server() -> windows_core::Result<()> {
 
     unsafe { profiles.Register(&CLSID_XUNYIN_TSF)? };
     let desc: Vec<u16> = "迅音输入法".encode_utf16().collect();
+    // 语言栏/任务栏图标：把 DLL 同目录的 xunyin.ico 作为**档案图标**传给 API。
+    // 只写注册表 IconFile 时，语言栏仍显示语言默认的「简体」——图标必须经
+    // AddLanguageProfile 的 bstrIconFile 参数注册才会被采用。
+    let icon_u16: Vec<u16> = std::path::Path::new(&dll_path)
+        .parent()
+        .map(|d| d.join("xunyin.ico"))
+        .filter(|p| p.exists())
+        .map(|p| p.to_string_lossy().encode_utf16().collect())
+        .unwrap_or_default();
     unsafe { profiles.AddLanguageProfile(
         &CLSID_XUNYIN_TSF,
         LANGID_ZH_CN,
         &GUID_XUNYIN_PROFILE,
         &desc,
-        &[0u16],
+        &icon_u16,
         0,
     )? };
 
