@@ -43,7 +43,13 @@ tools/         部署、签名、状态栏资源生成脚本与测试页
    .\tools\deploy-tsf.ps1 -Arch x86
    ```
 
-   脚本会自动编译、签名、注册 CLSID/TIP 档案并重启 ctfmon。
+   脚本会把产物复制到**固定路径**的暂存布局 `build\dev-deploy\`（与安装包布局一致：
+   `tsf\lingxi_tsf_x64.dll`、`tsf-x86\lingxi_tsf_x86.dll`），签名后注册 CLSID/TIP 档案。
+
+   > 注册表只指向这个固定路径，**不会**指向 `target\debug`：TSF 会把输入法 DLL 加载进
+   > **每一个正在输入的进程**，而 cargo 每次构建都会重写 `target\debug`，路径一变就会出现
+   > "已打开的进程持着旧 DLL、注册表已是新 DLL"的错位，症状是**所有输入法都打不出中文**。
+   > 脚本也**不再强杀 ctfmon / TextInputHost**（强杀会把已打开应用的输入法状态打断）。
 
 2. 构建设置中心（需 `custom-protocol` 特性，否则前端走 localhost）：
 

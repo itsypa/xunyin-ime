@@ -56,9 +56,12 @@ D:\灵犀输入法\
 ### 一键部署（推荐）
 
 ```powershell
-# 编译 + 签名 + 注册 + 重启输入服务（x64 与 x86 分别执行）
-powershell -File tools/deploy-tsf.ps1 -Arch x64 -DllName lingxi_tsf_v13.dll
-powershell -File tools/deploy-tsf.ps1 -Arch x86 -DllName lingxi_tsf_v13.dll
+# 编译 + 签名 + 复制到固定暂存路径 + 注册 TSF（x64 与 x86 分别执行）
+# 产物落到 build\dev-deploy\{tsf,tsf-x86}\，注册表只认这个固定路径：
+# 不再指向 target\debug，也不再使用 v13 这类版本号文件名（路径每次都变 = 老进程挂着旧 DLL）。
+# 脚本不杀 ctfmon；改完 DLL 请重开已打开的应用，或注销重登。
+powershell -File tools/deploy-tsf.ps1 -Arch x64
+powershell -File tools/deploy-tsf.ps1 -Arch x86
 
 # 设置中心（务必启用 custom-protocol 特性，否则会去连 Vite 开发服务器）
 powershell -File tools/deploy-settings.ps1 -Arch x64
