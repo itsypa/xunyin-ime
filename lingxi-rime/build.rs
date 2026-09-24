@@ -31,3 +31,5 @@ fn main() {
     }
     println!("cargo:rerun-if-changed={}", dll_dst.display());
 }
+
+// 强制重新链接：librime 升级后需要重新拷贝 rime.dll
