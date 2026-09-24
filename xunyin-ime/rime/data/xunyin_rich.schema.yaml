@@ -5,10 +5,10 @@
 ---
 schema:
   schema_id: xunyin_rich
-  name: 迅音拼音（增强词库）
+  name: 迅音输入
   version: "0.2"
   description: |
-    搜狗级词库的拼音输入方案：基础词库 + 扩展词库 + 细胞词库 + 墨奇语言模型。
+    迅音输入法：拼音输入方案（基础词库 + 扩展词库 + 细胞词库 + 中英混输 + emoji）。
 
 switches:
   - name: ascii_mode

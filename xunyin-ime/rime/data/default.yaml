@@ -5,7 +5,6 @@ config_version: "0.16.xunyin"
 
 schema_list:
   - schema: xunyin_rich
-  - schema: xunyin_pinyin
 
 switcher:
   caption: 〔方案選單〕
