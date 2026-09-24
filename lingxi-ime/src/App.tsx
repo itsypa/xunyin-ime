@@ -54,6 +54,11 @@ const DEFAULT_CONFIG: LingxiConfig = {
     page_size: 5,
     beep: false,
     punct_map: [],
+    enter_behavior: "commit",
+    toggle_key: "shift",
+    pinyin_separator: "'",
+    fuzzy: [],
+    enable_user_dict: true,
   },
   appearance: {
     font_size: 13,
@@ -68,12 +73,51 @@ const DEFAULT_CONFIG: LingxiConfig = {
     corner_radius: 6,
     opacity: 100,
     show_index: true,
+    show_status_bar: true,
   },
   dict: { custom_phrase_file: "custom_phrase.txt" },
   version: 1,
 };
 
 const PREVIEW_ITEMS = ["你", "您", "牛", "鸟", "捏"];
+
+/** 模糊音组（id 必须与 lingxi-rime::config::FUZZY_GROUPS 一致）。 */
+const FUZZY_GROUPS: { id: string; label: string }[] = [
+  { id: "zh_z", label: "zh ↔ z" },
+  { id: "ch_c", label: "ch ↔ c" },
+  { id: "sh_s", label: "sh ↔ s" },
+  { id: "n_l", label: "n ↔ l" },
+  { id: "f_h", label: "f ↔ h" },
+  { id: "r_l", label: "r ↔ l" },
+  { id: "an_ang", label: "an ↔ ang" },
+  { id: "en_eng", label: "en ↔ eng" },
+  { id: "in_ing", label: "in ↔ ing" },
+  { id: "ian_iang", label: "ian ↔ iang" },
+  { id: "uan_uang", label: "uan ↔ uang" },
+];
+
+/** 回车键行为选项。 */
+const ENTER_OPTIONS = [
+  { value: "commit", label: "上屏输错的拼音（默认）" },
+  { value: "clear", label: "丢弃当前输入" },
+  { value: "newline", label: "丢弃当前输入并换行" },
+];
+
+/** 中英切换键选项。 */
+const TOGGLE_KEY_OPTIONS = [
+  { value: "shift", label: "Shift（默认）" },
+  { value: "ctrl_space", label: "Ctrl + 空格" },
+  { value: "none", label: "不切换（英文走候选/手动）" },
+];
+
+/** 拼音分隔符选项。 */
+const SEPARATOR_OPTIONS = [
+  { value: "'", label: "撇号 ' （ni'hao，默认）" },
+  { value: "-", label: "连字符 - （ni-hao）" },
+  { value: ",", label: "逗号 , （ni,hao）" },
+  { value: " ", label: "空格 （ni hao）" },
+  { value: "", label: "不显示分隔（nihao）" },
+];
 
 function App() {
   const [page, setPage] = useState<Page>("input");
@@ -246,6 +290,32 @@ function App() {
 
   const patchAppearance = (patch: Partial<AppearanceConfig>) =>
     saveConfig({ ...config, appearance: { ...config.appearance, ...patch } }, true);
+
+  // 诊断与维护
+  const handleOpenDataDir = async () => {
+    try {
+      await api.openDataDir();
+    } catch (e) {
+      toastMsg("打开失败：" + String(e));
+    }
+  };
+
+  const handleOpenLogDir = async () => {
+    try {
+      await api.openLogDir();
+    } catch (e) {
+      toastMsg("打开失败：" + String(e));
+    }
+  };
+
+  const handleClearLogs = async () => {
+    try {
+      const freed = await api.clearLogs();
+      toastMsg(`已清空日志（释放 ${Math.round(freed / 1024)} KB）`);
+    } catch (e) {
+      toastMsg("清空失败：" + String(e));
+    }
+  };
 
   const applyPreset = (key: string) => {
     const preset = THEME_PRESETS[key];
@@ -496,6 +566,105 @@ function App() {
                 }
               />
             </div>
+
+            <div className="card">
+              <h2>按键行为</h2>
+              <Row
+                label="回车键"
+                desc="组合中按回车的行为（空格始终用于选词）"
+                control={
+                  <select
+                    className="select"
+                    style={{ minWidth: 210 }}
+                    value={config.input.enter_behavior}
+                    onChange={(e) => patchInput({ enter_behavior: e.target.value })}
+                  >
+                    {ENTER_OPTIONS.map((o) => (
+                      <option key={o.value} value={o.value}>
+                        {o.label}
+                      </option>
+                    ))}
+                  </select>
+                }
+              />
+              <Row
+                label="中英切换键"
+                desc="未组合时按该键在中文/英文之间切换"
+                control={
+                  <select
+                    className="select"
+                    style={{ minWidth: 210 }}
+                    value={config.input.toggle_key}
+                    onChange={(e) => patchInput({ toggle_key: e.target.value })}
+                  >
+                    {TOGGLE_KEY_OPTIONS.map((o) => (
+                      <option key={o.value} value={o.value}>
+                        {o.label}
+                      </option>
+                    ))}
+                  </select>
+                }
+              />
+              <Row
+                label="拼音分隔符"
+                desc="组合串里音节之间的显示符号（不影响候选）"
+                control={
+                  <select
+                    className="select"
+                    style={{ minWidth: 210 }}
+                    value={config.input.pinyin_separator}
+                    onChange={(e) => patchInput({ pinyin_separator: e.target.value })}
+                  >
+                    {SEPARATOR_OPTIONS.map((o) => (
+                      <option key={o.value} value={o.value}>
+                        {o.label}
+                      </option>
+                    ))}
+                  </select>
+                }
+              />
+            </div>
+
+            <div className="card">
+              <h2>模糊音</h2>
+              <p className="hint">
+                勾选后不标准读音也能出字（如勾上 zh↔z，输入 zongguo 也能出「中国」）。
+                保存后会自动重建索引，对新输入会话生效。
+              </p>
+              <div className="fuzzy-grid">
+                {FUZZY_GROUPS.map((g) => (
+                  <label className="fuzzy-item" key={g.id}>
+                    <input
+                      type="checkbox"
+                      checked={(config.input.fuzzy ?? []).includes(g.id)}
+                      onChange={(e) => {
+                        const cur = config.input.fuzzy ?? [];
+                        const next = e.target.checked
+                          ? [...cur, g.id]
+                          : cur.filter((x) => x !== g.id);
+                        patchInput({ fuzzy: next });
+                      }}
+                    />
+                    <span>{g.label}</span>
+                  </label>
+                ))}
+              </div>
+            </div>
+
+            <div className="card">
+              <h2>词库学习</h2>
+              <Row
+                label="用户词典自学习"
+                desc="记住你常选的词并调整词频（关闭后不再学习新词）"
+                control={
+                  <Toggle
+                    checked={config.input.enable_user_dict}
+                    labels={["关闭", "开启"]}
+                    onChange={(v) => patchInput({ enable_user_dict: v })}
+                  />
+                }
+              />
+            </div>
           </section>
         )}
 
@@ -567,6 +736,17 @@ function App() {
                     checked={a.show_index}
                     labels={["隐藏", "显示"]}
                     onChange={(v) => patchAppearance({ show_index: v })}
+                  />
+                }
+              />
+              <Row
+                label="显示状态栏"
+                desc="右下角悬浮条（中/英、标点、全/半角、符号、设置）"
+                control={
+                  <Toggle
+                    checked={a.show_status_bar}
+                    labels={["隐藏", "显示"]}
+                    onChange={(v) => patchAppearance({ show_status_bar: v })}
                   />
                 }
               />
@@ -719,31 +899,50 @@ function App() {
                 <span>本地运行</span>
                 <span>数据自主</span>
               </div>
-              <div className="card">
-                <h2>更新</h2>
-                <p className="hint">
+            <div className="card">
+              <h2>更新</h2>
+              <p className="hint">
                   本输入法不联网自检。点下面的按钮用浏览器打开发布页，
                   对照最新版本号（当前 {version}）决定是否升级。
-                </p>
-                <div className="btn-row">
-                  <button
-                    className="btn"
-                    onClick={() =>
-                      openUrl("https://github.com/itsypa/lingxi-ime/releases/latest").catch((e) =>
-                        toastMsg("打开失败：" + String(e))
-                      )
-                    }
-                  >
-                    查看最新版本
-                  </button>
-                </div>
+              </p>
+              <div className="btn-row">
+                <button
+                  className="btn"
+                  onClick={() =>
+                    openUrl("https://github.com/itsypa/lingxi-ime/releases/latest").catch((e) =>
+                      toastMsg("打开失败：" + String(e))
+                    )
+                  }
+                >
+                  查看最新版本
+                </button>
               </div>
+            </div>
+
+            <div className="card">
+              <h2>诊断与维护</h2>
+              <p className="hint">
+                输入异常时先看日志：日志记录按键、组合、候选与状态栏事件，
+                出问题把它发到 issue 里即可定位。
+              </p>
+              <div className="btn-row">
+                <button className="btn small" onClick={handleOpenDataDir}>
+                  打开数据目录
+                </button>
+                <button className="btn small" onClick={handleOpenLogDir}>
+                  打开日志目录
+                </button>
+                <button className="btn small" onClick={handleClearLogs}>
+                  清空日志
+                </button>
+              </div>
+            </div>
             <div className="card">
               <h2>快捷键</h2>
               <table className="keys">
                 <tbody>
-                  <tr><td>Shift</td><td>组合中上屏拼音；未组合切换中/英</td></tr>
-                  <tr><td>回车</td><td>直接把拼音上屏（不选词）</td></tr>
+                  <tr><td>Shift</td><td>组合中上屏拼音；未组合切换中/英（切换键可在输入设置里改）</td></tr>
+                  <tr><td>回车</td><td>默认把拼音原样上屏（不选词），行为可在输入设置里改</td></tr>
                   <tr><td>空格</td><td>确认高亮候选词</td></tr>
                   <tr><td>1-9</td><td>选择对应候选</td></tr>
                     <tr><td>Ctrl+.</td><td>切换中英标点</td></tr>

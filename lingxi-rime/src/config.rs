@@ -30,6 +30,17 @@ pub struct InputConfig {
     /// Rime 的 punctuator，而是先上屏当前组合、再上屏这里配置的文本。
     /// 留空（默认）即完全沿用 Rime 内置标点表。
     pub punct_map: Vec<PunctPair>,
+    /// 回车键行为：`commit`=把拼音原样上屏（默认，与 Shift 一致）｜
+    /// `clear`=丢弃当前输入｜`newline`=丢弃输入并换行（把回车交给宿主）。
+    pub enter_behavior: String,
+    /// 中英切换键：`shift`=裸按 Shift（默认）｜`ctrl_space`=Ctrl+空格｜`none`=关闭。
+    pub toggle_key: String,
+    /// 拼音音节分隔符：`'`（默认）｜`-`｜`,`｜空格｜空字符串（不显示分隔）。
+    pub pinyin_separator: String,
+    /// 模糊音：启用的等价组 id 列表（见 [`InputConfig::fuzzy_rules`]）。
+    pub fuzzy: Vec<String>,
+    /// 用户词典自学习（记新词 / 调频）总开关。
+    pub enable_user_dict: bool,
 }
 
 /// 一条自定义标点映射。
@@ -52,9 +63,52 @@ impl Default for InputConfig {
             page_size: 5,
             beep: false,
             punct_map: Vec::new(),
+            enter_behavior: "commit".into(),
+            toggle_key: "shift".into(),
+            pinyin_separator: "'".into(),
+            fuzzy: Vec::new(),
+            enable_user_dict: true,
         }
     }
 }
+
+/// 模糊音可选组：id、设置页显示名、对应的 Rime algebra 规则。
+///
+/// 规则用 `derive`（派生读音）而不是 `xform`（改写读音）：模糊音应当**同时**
+/// 保留标准读音，即"zhu/zhu 都能出主/猪"，而不是把 zhu 变成 zu。
+pub const FUZZY_GROUPS: &[(&str, &str, &[&str])] = &[
+    ("zh_z", "zh ↔ z（知/资）", &["derive/^zh/z/", "derive/^z/zh/"]),
+    ("ch_c", "ch ↔ c（吃/次）", &["derive/^ch/c/", "derive/^c/ch/"]),
+    ("sh_s", "sh ↔ s（诗/思）", &["derive/^sh/s/", "derive/^s/sh/"]),
+    ("n_l", "n ↔ l（南/兰）", &["derive/^n/l/", "derive/^l/n/"]),
+    ("f_h", "f ↔ h（福/湖）", &["derive/^f/h/", "derive/^h/f/"]),
+    ("r_l", "r ↔ l（热/乐）", &["derive/^r/l/", "derive/^l/r/"]),
+    (
+        "an_ang",
+        "an ↔ ang（三/桑）",
+        &["derive/(.*)an$/$1ang/", "derive/(.*)ang$/$1an/"],
+    ),
+    (
+        "en_eng",
+        "en ↔ eng（森/僧）",
+        &["derive/(.*)en$/$1eng/", "derive/(.*)eng$/$1en/"],
+    ),
+    (
+        "in_ing",
+        "in ↔ ing（金/京）",
+        &["derive/(.*)in$/$1ing/", "derive/(.*)ing$/$1in/"],
+    ),
+    (
+        "ian_iang",
+        "ian ↔ iang（先/香）",
+        &["derive/(.*)ian$/$1iang/", "derive/(.*)iang$/$1ian/"],
+    ),
+    (
+        "uan_uang",
+        "uan ↔ uang（专/装）",
+        &["derive/(.*)uan$/$1uang/", "derive/(.*)uang$/$1uan/"],
+    ),
+];
 
 impl InputConfig {
     /// 查自定义标点：命中返回 Some(输出文本)；未命中/空配置返回 None（走 Rime 内置）。
@@ -68,6 +122,53 @@ impl InputConfig {
             .iter()
             .find(|p| p.key == k)
             .map(|p| p.out.clone())
+    }
+
+    /// 有效分隔符（非法值一律回退默认 `'`）。
+    pub fn separator(&self) -> &'static str {
+        match self.pinyin_separator.as_str() {
+            "-" => "-",
+            "," => ",",
+            " " => " ",
+            "" => "",
+            _ => "'",
+        }
+    }
+
+    /// 启用的模糊音规则（按 FUZZY_GROUPS 顺序展开）。
+    pub fn fuzzy_rules(&self) -> Vec<String> {
+        let mut out = Vec::new();
+        for (id, _, rules) in FUZZY_GROUPS {
+            if self.fuzzy.iter().any(|f| f == id) {
+                out.extend(rules.iter().map(|r| (*r).to_string()));
+            }
+        }
+        out
+    }
+
+    /// 生成 `<schema>.custom.yaml` 的内容（模糊音 + 用户词典开关 + 基础 algebra）。
+    ///
+    /// `base_algebra` 为随包 schema 里 `speller/algebra` 的原始规则：Rime 的 `patch`
+    /// 对列表是**整体替换**，所以必须把基础规则一并写回，否则模糊音会把缩略/纠错等
+    /// 内置规则挤掉。
+    pub fn schema_patch_yaml(&self, base_algebra: &[String]) -> Option<String> {
+        let fuzzy = self.fuzzy_rules();
+        if fuzzy.is_empty() && self.enable_user_dict {
+            return None; // 无需补丁
+        }
+        let mut s = String::from("# 由灵犀输入法设置中心生成；手工修改会在下次保存设置时被覆盖。\npatch:\n");
+        if !fuzzy.is_empty() {
+            s.push_str("  speller/algebra:\n");
+            for r in fuzzy.iter().chain(base_algebra.iter()) {
+                s.push_str("    - ");
+                s.push_str(r);
+                s.push('\n');
+            }
+        }
+        if !self.enable_user_dict {
+            s.push_str("  translator/enable_user_dict: false\n");
+        }
+        Some(s)
     }
 }
 
@@ -99,6 +200,8 @@ pub struct AppearanceConfig {
     pub opacity: u8,
     /// 是否在候选窗显示序号。
     pub show_index: bool,
+    /// 是否显示右下角状态栏。
+    pub show_status_bar: bool,
 }
 
 impl Default for AppearanceConfig {
@@ -116,6 +219,7 @@ impl Default for AppearanceConfig {
             corner_radius: 6,
             opacity: 100,
             show_index: true,
+            show_status_bar: true,
         }
     }
 }
@@ -169,6 +273,56 @@ pub fn user_data_dir() -> PathBuf {
 /// 配置文件路径。
 pub fn config_path() -> PathBuf {
     user_data_dir().join("config.json")
+}
+
+/// 从随包 schema（`<schema_id>.schema.yaml`）里取出 `speller/algebra` 的规则列表。
+///
+/// 只做缩进解析（不引入 YAML 依赖）：定位 `speller:` 段下的 `algebra:`，收集其后
+/// 缩进更深的 `- xxx` 行，直到遇到同级或更浅的键。
+pub fn read_schema_algebra(schema_path: &std::path::Path) -> Vec<String> {
+    let Ok(text) = fs::read_to_string(schema_path) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    let mut in_speller = false;
+    let mut in_algebra = false;
+    let mut algebra_indent = 0usize;
+    for raw in text.lines() {
+        let line = raw.trim_end();
+        let trimmed = line.trim_start();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+        let indent = line.len() - trimmed.len();
+        if !in_speller {
+            if trimmed == "speller:" && indent == 0 {
+                in_speller = true;
+            }
+            continue;
+        }
+        if !in_algebra {
+            if indent == 0 {
+                break; // 出了 speller 段
+            }
+            if trimmed == "algebra:" {
+                in_algebra = true;
+                algebra_indent = indent;
+            }
+            continue;
+        }
+        if indent <= algebra_indent {
+            break; // algebra 列表结束
+        }
+        if let Some(rule) = trimmed.strip_prefix("- ") {
+            // 去掉可能的行内注释与引号
+            let rule = rule.split(" #").next().unwrap_or(rule).trim();
+            let rule = rule.trim_matches('"').trim_matches('\'');
+            if !rule.is_empty() {
+                out.push(rule.to_string());
+            }
+        }
+    }
+    out
 }
 
 /// 从磁盘读取配置；文件不存在或损坏时返回默认值。
@@ -270,5 +424,90 @@ mod tests {
         assert_eq!(back.input.punct_lookup(',').as_deref(), Some("，"));
         assert_eq!(back.input.punct_lookup('-').as_deref(), Some("——"));
         assert!(back.input.punct_lookup('.').is_none());
+    }
+
+    /// 新增字段同样必须向后兼容（旧 config.json 里没有它们）。
+    #[test]
+    fn new_input_fields_default_on_old_config() {
+        let json = r#"{ "input": { "schema": "lingxi_rich" }, "version": 1 }"#;
+        let cfg: LingxiConfig = serde_json::from_str(json).expect("旧配置应能解析");
+        assert_eq!(cfg.input.enter_behavior, "commit");
+        assert_eq!(cfg.input.toggle_key, "shift");
+        assert_eq!(cfg.input.separator(), "'");
+        assert!(cfg.input.enable_user_dict);
+        assert!(cfg.appearance.show_status_bar);
+        assert!(cfg.input.fuzzy.is_empty());
+    }
+
+    /// 分隔符：非法值回退默认，空串表示不显示分隔。
+    #[test]
+    fn separator_normalization() {
+        let mut cfg = InputConfig::default();
+        cfg.pinyin_separator = "-".into();
+        assert_eq!(cfg.separator(), "-");
+        cfg.pinyin_separator = "".into();
+        assert_eq!(cfg.separator(), "");
+        cfg.pinyin_separator = "？？".into();
+        assert_eq!(cfg.separator(), "'");
+    }
+
+    /// 模糊音规则：按组顺序展开，未启用的组不出规则。
+    #[test]
+    fn fuzzy_rules_expand_in_order() {
+        let mut cfg = InputConfig::default();
+        cfg.fuzzy = vec!["sh_s".into(), "zh_z".into()];
+        let rules = cfg.fuzzy_rules();
+        assert_eq!(
+            rules,
+            vec![
+                "derive/^zh/z/".to_string(),
+                "derive/^z/zh/".to_string(),
+                "derive/^sh/s/".to_string(),
+                "derive/^s/sh/".to_string(),
+            ]
+        );
+    }
+
+    /// 无模糊音 + 自学习开启 = 不需要补丁；否则补丁必须带上基础 algebra（Rime 的
+    /// patch 对列表是整体替换，漏了会把缩略等内置规则挤掉）。
+    #[test]
+    fn schema_patch_yaml_content() {
+        let base = vec!["abbrev/^([a-z]).+$/$1/".to_string()];
+        let mut cfg = InputConfig::default();
+        assert!(cfg.schema_patch_yaml(&base).is_none(), "无需补丁时不应写文件");
+
+        cfg.fuzzy = vec!["zh_z".into()];
+        let yaml = cfg.schema_patch_yaml(&base).expect("应生成补丁");
+        let z = yaml.find("derive/^zh/z/").expect("含模糊规则");
+        let b = yaml.find("abbrev/^([a-z]).+$/$1/").expect("含基础规则");
+        assert!(z < b, "模糊规则应排在内置规则之前");
+        assert!(!yaml.contains("enable_user_dict"), "自学习默认开，不该写进补丁");
+
+        cfg.fuzzy.clear();
+        cfg.enable_user_dict = false;
+        let yaml = cfg.schema_patch_yaml(&base).expect("应生成补丁");
+        assert!(yaml.contains("translator/enable_user_dict: false"));
+        assert!(!yaml.contains("speller/algebra"), "无模糊音时不写 algebra");
+    }
+
+    /// schema algebra 解析：只取 speller 段下 algebra 的列表项。
+    #[test]
+    fn read_schema_algebra_parses_list() {
+        let mut p = std::env::temp_dir();
+        p.push(format!("lingxi-algebra-test-{}.yaml", std::process::id()));
+        std::fs::write(
+            &p,
+            "schema:\n  schema_id: t\nspeller:\n  alphabet: abc\n  algebra:\n    - erase/^hm$/\n    - abbrev/^([a-z]).+$/$1/   # 注释\npunctuator:\n  x: y\n",
+        )
+        .expect("写临时 schema");
+        let got = read_schema_algebra(&p);
+        let _ = std::fs::remove_file(&p);
+        assert_eq!(
+            got,
+            vec![
+                "erase/^hm$/".to_string(),
+                "abbrev/^([a-z]).+$/$1/".to_string()
+            ]
+        );
     }
 }

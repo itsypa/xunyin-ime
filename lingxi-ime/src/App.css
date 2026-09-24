@@ -693,6 +693,41 @@ body {
   width: 8px;
 }
 
+/* ---------- 模糊音勾选网格 ---------- */
+.fuzzy-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(132px, 1fr));
+  gap: 8px 12px;
+  margin-top: 10px;
+}
+
+.fuzzy-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 10px;
+  border: 1px solid #e3e7ef;
+  border-radius: 8px;
+  background: #fafbfd;
+  font-size: 13px;
+  color: #333a45;
+  cursor: pointer;
+  user-select: none;
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+
+.fuzzy-item:hover {
+  border-color: #b9cdf3;
+  background: #f3f7ff;
+}
+
+.fuzzy-item input[type="checkbox"] {
+  width: 15px;
+  height: 15px;
+  accent-color: #2a6fdb;
+  cursor: pointer;
+}
+
 .content::-webkit-scrollbar-thumb {
   background: #d4d9e5;
   border-radius: 4px;

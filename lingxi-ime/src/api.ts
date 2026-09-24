@@ -11,6 +11,16 @@ export interface InputConfig {
   beep: boolean;
   /** 自定义中文标点：按键 → 上屏文本（为空即沿用 Rime 内置标点表）。 */
   punct_map: PunctPair[];
+  /** 回车键：commit=拼音原样上屏 ｜ clear=丢弃输入 ｜ newline=丢弃并换行。 */
+  enter_behavior: string;
+  /** 中英切换键：shift=裸按 Shift ｜ ctrl_space=Ctrl+空格 ｜ none=不切换。 */
+  toggle_key: string;
+  /** 拼音音节分隔符："'" ｜ "-" ｜ "," ｜ " " ｜ ""。 */
+  pinyin_separator: string;
+  /** 模糊音：启用的等价组 id。 */
+  fuzzy: string[];
+  /** 用户词典自学习（记新词 / 调频）总开关。 */
+  enable_user_dict: boolean;
 }
 
 export interface PunctPair {
@@ -31,6 +41,8 @@ export interface AppearanceConfig {
   corner_radius: number;
   opacity: number;
   show_index: boolean;
+  /** 是否显示右下角状态栏。 */
+  show_status_bar: boolean;
 }
 
 export interface DictConfig {
@@ -102,6 +114,16 @@ export function exportDict(): Promise<string> {
 
 export function openDataDir(): Promise<void> {
   return invoke("open_data_dir");
+}
+
+/** 打开日志目录（诊断用）。 */
+export function openLogDir(): Promise<void> {
+  return invoke("open_log_dir");
+}
+
+/** 清空日志，返回释放的字节数。 */
+export function clearLogs(): Promise<number> {
+  return invoke("clear_logs");
 }
 
 /** 备份用户词库（userdb 目录 + 自造词），返回备份目录路径。 */

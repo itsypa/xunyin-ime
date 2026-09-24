@@ -10,10 +10,56 @@ use windows::Win32::Foundation::{LPARAM, WPARAM};
 use windows::Win32::UI::TextServices::*;
 use windows_core::{implement, Interface, IUnknownImpl, Ref, Result, BOOL, GUID};
 
-/// 把拼音音节间的分隔空格换成微软拼音风格的分隔符（"ni hao" → "ni'hao"）。
-/// 空格与 "'"(U+0027) 均为单字节，替换后字节长度不变，光标偏移无需调整。
-fn format_preedit(text: &str, caret_byte: usize) -> (String, usize) {
-    (text.replace(' ', "'"), caret_byte.min(text.len()))
+/// 分隔符可配置后，"拼音串（Rime 用空格分音节）"与"显示串"之间需要双向换算：
+/// - TSF 组合串要用显示串、显示光标（`to_display`：原始位置 → 显示位置）
+/// - 方向键移动后要回写 Rime 的 `set_caret_pos`（`to_raw`：显示位置 → 原始位置）
+///
+/// 分隔符可以是空串或多个字节，长度不再等于空格，所以必须老老实实建映射表。
+struct Preedit {
+    display: String,
+    /// 下标 = 显示字节位置，值 = 对应原始字节位置（长度 = display.len() + 1）
+    to_raw: Vec<usize>,
+    /// 下标 = 原始字节位置，值 = 对应显示字节位置（长度 = text.len() + 1）
+    to_display: Vec<usize>,
+}
+
+fn build_preedit(text: &str, sep: &str) -> Preedit {
+    let mut display = String::with_capacity(text.len() + 8);
+    let mut to_raw: Vec<usize> = Vec::with_capacity(text.len() + 1);
+    let mut to_display: Vec<usize> = vec![0usize; text.len() + 1];
+    for (i, ch) in text.char_indices() {
+        to_display[i] = display.len();
+        if ch == ' ' {
+            for _ in 0..sep.len() {
+                to_raw.push(i);
+            }
+            display.push_str(sep);
+        } else {
+            for b in 0..ch.len_utf8() {
+                to_display[i + b] = display.len();
+                to_raw.push(i + b);
+            }
+            display.push(ch);
+        }
+    }
+    to_display[text.len()] = display.len();
+    to_raw.push(text.len());
+    Preedit {
+        display,
+        to_raw,
+        to_display,
+    }
+}
+
+/// 显示串（含分隔符）与显示光标位置。
+fn format_preedit(text: &str, caret_byte: usize, sep: &str) -> (String, usize) {
+    let p = build_preedit(text, sep);
+    let caret = p
+        .to_display
+        .get(caret_byte.min(text.len()))
+        .copied()
+        .unwrap_or(p.display.len());
+    (p.display, caret)
 }
 
 /// 进程内缓存的配置（每秒至多读一次文件），供按键热路径查询自定义标点等。
@@ -253,6 +299,21 @@ impl TextService_Impl {
                 );
                 return true;
             }
+            // Ctrl+空格 切换中英（可选设置；默认关，用裸 Shift 切换）
+            if vk == 0x20 && cached_cfg().input.toggle_key == "ctrl_space" {
+                if let Some(engine_arc) = engine::ensure_engine() {
+                    if let Ok(mut e) = engine_arc.lock() {
+                        let mode = e.get_option("ascii_mode");
+                        e.set_option("ascii_mode", !mode);
+                        if let Ok(mut st) = self.shared.lock() {
+                            st.ascii_mode = !mode;
+                        }
+                        crate::tsf_log!("keydown: Ctrl+Space -> ascii_mode {} -> {}", mode, !mode);
+                        crate::status_bar::refresh_status_bar(&self.shared);
+                    }
+                }
+                return true;
+            }
             return false;
         }
         if mask & (kRimeModifierControl | kRimeModifierAlt) != 0 {
@@ -334,8 +395,34 @@ impl TextService_Impl {
         // 自定义中文标点（设置 → 输入设置 → 标点自定义）优先于 Rime 内置标点表：
         // 命中时先把当前组合原样上屏，再上屏配置的文本；英文模式/英文标点下不生效。
         let mut custom_commit: Option<String> = None;
-        let consumed = match key::vk_to_punct(vk, shift) {
-            Some(ch) => {
+        // 回车键行为（设置 → 输入设置 → 回车键）：
+        //   commit = 把拼音原样上屏（Rime 原生，与裸 Shift 一致，默认）
+        //   clear  = 丢弃当前输入
+        //   newline= 丢弃当前输入并把回车交给宿主（换行）
+        let mut enter_override: Option<bool> = None;
+        if vk == 0x0D {
+            match cached_cfg().input.enter_behavior.as_str() {
+                "clear" => {
+                    if eng.is_composing() {
+                        eng.clear_composition();
+                    }
+                    crate::tsf_log!("keydown: Enter -> clear");
+                    enter_override = Some(true);
+                }
+                "newline" => {
+                    if eng.is_composing() {
+                        eng.clear_composition();
+                        crate::tsf_log!("keydown: Enter -> clear + newline");
+                    }
+                    enter_override = Some(false);
+                }
+                _ => {}
+            }
+        }
+        let consumed = match enter_override {
+            Some(c) => c,
+            None => match key::vk_to_punct(vk, shift) {
+                Some(ch) => {
                 let cfg = cached_cfg();
                 let ascii_now = eng
                     .get_status()
@@ -362,6 +449,7 @@ impl TextService_Impl {
                 }
             }
             None => eng.process_key(keycode, mask),
+            },
         };
         crate::tsf_log!(
             "keydown: vk=0x{vk:02X} shift={shift} keycode=0x{keycode:X} mask=0x{mask:X} consumed={consumed}"
@@ -413,9 +501,10 @@ impl TextService_Impl {
             );
         }
         // 拼音音节间加分隔符号（"ni hao" → "ni'hao"，微软拼音风格）
+        let sep = cached_cfg().input.separator();
         let (preedit, caret) = snapshot
             .as_ref()
-            .map(|s| format_preedit(&s.preedit, s.cursor_pos.min(s.preedit.len())))
+            .map(|s| format_preedit(&s.preedit, s.cursor_pos.min(s.preedit.len()), sep))
             .unwrap_or_default();
         let cands: Vec<(String, String)> = snapshot
             .as_ref()
@@ -478,11 +567,15 @@ impl TextService_Impl {
         let Some(s) = eng.get_context() else {
             return true;
         };
-        let (display, caret) =
-            format_preedit(&s.preedit, s.cursor_pos.min(s.preedit.len()));
+        let sep = cached_cfg().input.separator();
+        let p = build_preedit(&s.preedit, sep);
+        let display = p.display;
+        let map = p.to_raw;
+        let caret = p.to_display[s.cursor_pos.min(s.preedit.len())];
         let bytes = display.as_bytes();
         let len = bytes.len();
-        let is_sep = |i: usize| bytes[i] == b'\'';
+        // 显示位置 i 是不是分隔符的起始字节（分隔符可空，长度可不为 1）
+        let is_sep = |i: usize| !sep.is_empty() && bytes[i..].starts_with(sep.as_bytes());
         // 位置 P 有效：光标左侧紧邻的不是分隔符（分隔符归到左侧音节，
         // "ni'|hao" 不算停靠位，每个字母仍保有各自的停靠点）。
         let valid = |p: usize| {
@@ -507,9 +600,8 @@ impl TextService_Impl {
                 }
             }
         }
-        // 原始光标 = 显示位置 - 前面分隔符数量（"'" 与空格同为 1 字节）
-        let seps_before = bytes[..p].iter().filter(|b| **b == b'\'').count();
-        let raw = p - seps_before;
+        // 显示位置 → 原始光标：直接查映射表（分隔符长度与空格不同，不能再靠减数量）
+        let raw = map.get(p).copied().unwrap_or(s.preedit.len());
         eng.set_caret_pos(raw);
         if let Ok(mut st) = self.shared.lock() {
             st.pending_caret = p;
@@ -631,7 +723,12 @@ impl ITfTextInputProcessor_Impl for TextService_Impl {
                 },
                 None => (cfg.input.ascii_mode, cfg.input.full_shape, cfg.input.ascii_punct),
             };
-            crate::status_bar::show_status_bar(self.shared.clone(), ascii, full, punct);
+            // 状态栏总开关（设置 → 外观主题 → 状态栏）
+            if cfg.appearance.show_status_bar {
+                crate::status_bar::show_status_bar(self.shared.clone(), ascii, full, punct);
+            } else {
+                crate::status_bar::hide_status_bar();
+            }
         }
         crate::tsf_log!("TSF Activate: done");
         Ok(())
@@ -741,7 +838,7 @@ impl ITfKeyEventSink_Impl for TextService_Impl {
             "OnKeyFocus: foreground={}",
             fforeground.as_bool()
         );
-        if fforeground.as_bool() {
+        if fforeground.as_bool() && cached_cfg().appearance.show_status_bar {
             crate::status_bar::refresh_status_bar(&self.shared);
         } else {
             crate::status_bar::hide_status_bar();
@@ -831,7 +928,8 @@ impl ITfKeyEventSink_Impl for TextService_Impl {
                     Err(_) => false,
                 }
             };
-            if bare {
+            // 中英切换键设为 Ctrl+空格/关闭时，裸 Shift 不再承担切换职责
+            if bare && cached_cfg().input.toggle_key == "shift" {
                 crate::tsf_log!("OnKeyUp: bare Shift");
                 if let Some(eng) = engine::engine() {
                     if let Ok(mut e) = eng.lock() {
@@ -920,14 +1018,42 @@ mod tests {
     #[test]
     fn format_preedit_logic() {
         // 音节空格换成 "'"（字节长度不变，光标偏移保持不变）
-        assert_eq!(format_preedit("ni hao", 6), ("ni'hao".into(), 6));
-        assert_eq!(format_preedit("ni hao", 0), ("ni'hao".into(), 0));
+        assert_eq!(format_preedit("ni hao", 6, "'"), ("ni'hao".into(), 6));
+        assert_eq!(format_preedit("ni hao", 0, "'"), ("ni'hao".into(), 0));
         // 光标在 "ni h|ao"（字节 4）：替换后仍指向同一位置
-        assert_eq!(format_preedit("ni hao", 4), ("ni'hao".into(), 4));
+        assert_eq!(format_preedit("ni hao", 4, "'"), ("ni'hao".into(), 4));
         // 无空格不受影响
-        assert_eq!(format_preedit("nihao", 3), ("nihao".into(), 3));
+        assert_eq!(format_preedit("nihao", 3, "'"), ("nihao".into(), 3));
         // 空串
-        assert_eq!(format_preedit("", 0), (String::new(), 0));
+        assert_eq!(format_preedit("", 0, "'"), (String::new(), 0));
+    }
+
+    /// 分隔符可选：空串（不留分隔）与其它单字节分隔符下，光标都要落在正确位置。
+    #[test]
+    fn format_preedit_with_configurable_separator() {
+        // 空格样式：显示仍是 "ni hao"，光标在 "ni |hao" 位置 3
+        assert_eq!(format_preedit("ni hao", 3, " "), ("ni hao".into(), 3));
+        // 连字符
+        assert_eq!(format_preedit("ni hao", 4, "-"), ("ni-hao".into(), 4));
+        // 逗号
+        assert_eq!(format_preedit("xuan ting", 9, ","), ("xuan,ting".into(), 9));
+        // 不留分隔：显示变短，光标必须跟着回退（原始 "ni |hao"=3 → 显示 "ni|hao"=2）
+        assert_eq!(format_preedit("ni hao", 3, ""), ("nihao".into(), 2));
+        assert_eq!(format_preedit("ni hao", 4, ""), ("nihao".into(), 3));
+        assert_eq!(format_preedit("ni hao", 6, ""), ("nihao".into(), 5));
+        // 映射表本身：显示位置 → 原始位置
+        let p = build_preedit("ni hao", "'");
+        assert_eq!(p.display, "ni'hao");
+        assert_eq!(p.to_raw.len(), p.display.len() + 1);
+        assert_eq!(p.to_raw[0], 0);
+        assert_eq!(p.to_raw[2], 2); // 分隔符本身
+        assert_eq!(p.to_raw[3], 3); // 'h'
+        assert_eq!(*p.to_raw.last().unwrap(), 6);
+        // 不留分隔时：原始位置之间被"吃掉"的空格不占显示位
+        let q = build_preedit("ni hao", "");
+        assert_eq!(q.display, "nihao");
+        assert_eq!(q.to_raw, vec![0, 1, 3, 4, 5, 6]);
+        assert_eq!(q.to_display, vec![0, 1, 2, 2, 3, 4, 5]);
     }
 
     /// 验证 TextService 的多接口 vtable：每个 TSF 接口都能从同一 COM 对象 QI 出来

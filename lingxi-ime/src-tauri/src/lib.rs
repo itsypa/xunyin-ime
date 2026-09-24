@@ -136,6 +136,7 @@ fn reset_config(state: tauri::State<'_, AppState>) -> Result<LingxiConfig, Strin
     let cfg = LingxiConfig::default();
     save_config(&cfg).map_err(|e| e.to_string())?;
     write_page_size(cfg.input.page_size)?;
+    let _ = write_schema_patch(&cfg, &state.shared_data_dir)?;
     start_redeploy(&state)?;
     eprintln!("[lingxi-settings] reset_config -> defaults applied");
     Ok(cfg)
@@ -147,10 +148,88 @@ fn set_config(cfg: LingxiConfig, state: tauri::State<'_, AppState>) -> Result<()
     let old = load_config();
     save_config(&cfg).map_err(|e| e.to_string())?;
     write_page_size(cfg.input.page_size)?;
-    if old.input.page_size != cfg.input.page_size {
+    let patch_changed = write_schema_patch(&cfg, &state.shared_data_dir)?;
+    if old.input.page_size != cfg.input.page_size || patch_changed {
         start_redeploy(&state)?;
     }
     Ok(())
+}
+
+/// 把模糊音 / 自学习开关写进用户目录的 `<schema>.custom.yaml`（Rime 部署时合并）。
+///
+/// 返回「文件是否发生变化」——变了才需要重建索引，否则每次改字号都会白跑一次部署。
+fn write_schema_patch(cfg: &LingxiConfig, shared: &std::path::Path) -> Result<bool, String> {
+    let dir = user_data_dir();
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let schema_id = cfg.input.schema.trim();
+    if schema_id.is_empty() {
+        return Ok(false);
+    }
+    let file = dir.join(format!("{schema_id}.custom.yaml"));
+    let base = lingxi_rime::config::read_schema_algebra(
+        &shared.join(format!("{schema_id}.schema.yaml")),
+    );
+    match cfg.input.schema_patch_yaml(&base) {
+        Some(content) => {
+            let unchanged = std::fs::read_to_string(&file)
+                .map(|cur| cur == content)
+                .unwrap_or(false);
+            if unchanged {
+                return Ok(false);
+            }
+            std::fs::write(&file, content).map_err(|e| e.to_string())?;
+            eprintln!("[lingxi-settings] schema patch written: {}", file.display());
+            Ok(true)
+        }
+        None => {
+            // 关闭模糊音 / 重新打开自学习：删掉旧补丁，否则"关不掉"
+            if file.exists() {
+                std::fs::remove_file(&file).map_err(|e| e.to_string())?;
+                eprintln!("[lingxi-settings] schema patch removed: {}", file.display());
+                return Ok(true);
+            }
+            Ok(false)
+        }
+    }
+}
+
+/// 打开日志目录（诊断用）。
+#[tauri::command]
+fn open_log_dir() -> Result<(), String> {
+    let dir = user_data_dir().join("logs");
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    std::process::Command::new("explorer.exe")
+        .arg(&dir)
+        .spawn()
+        .map(|_| ())
+        .map_err(|e| e.to_string())
+}
+
+/// 清空日志（tsf.log / tsf.log.1 / 兜底文件），返回释放的字节数。
+#[tauri::command]
+fn clear_logs() -> Result<u64, String> {
+    let mut freed = 0u64;
+    let dir = user_data_dir().join("logs");
+    let mut targets: Vec<std::path::PathBuf> = Vec::new();
+    if let Ok(rd) = std::fs::read_dir(&dir) {
+        for e in rd.flatten() {
+            let p = e.path();
+            if p.is_file() {
+                targets.push(p);
+            }
+        }
+    }
+    if let Ok(tmp) = std::env::var("TEMP") {
+        targets.push(std::path::Path::new(&tmp).join("lingxi-tsf.log"));
+    }
+    for p in targets {
+        if let Ok(md) = std::fs::metadata(&p) {
+            freed += md.len();
+        }
+        let _ = std::fs::remove_file(&p);
+    }
+    eprintln!("[lingxi-settings] clear_logs freed {freed} bytes");
+    Ok(freed)
 }
 
 /// 把每页候选数写入用户目录 default.custom.yaml（Rime 合并生效）。
@@ -549,6 +628,8 @@ pub fn run() {
             backup_user_dict,
             list_user_dict_backups,
             restore_user_dict,
+            open_log_dir,
+            clear_logs,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
