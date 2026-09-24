@@ -98,18 +98,23 @@ fn hit_cell(x: i32, y: i32) -> i32 {
     }
 }
 
+/// 会话内记忆的位置。
+///
+/// 注意：这两个函数必须共用**同一个** static —— 早前各自声明一个 `static POS`，
+/// 结果 set 写进 A、get 永远读空的 B，表现为「拖不动」：按下后基准位置取成 (0,0)
+/// 让状态栏瞬移到左上角，松手时又被 push() 按默认右下角复位。
+static MEM_POS: OnceLock<Mutex<Option<(i32, i32)>>> = OnceLock::new();
+
+fn mem_pos() -> &'static Mutex<Option<(i32, i32)>> {
+    MEM_POS.get_or_init(|| Mutex::new(None))
+}
+
 fn mem_pos_get() -> Option<(i32, i32)> {
-    static POS: OnceLock<Mutex<Option<(i32, i32)>>> = OnceLock::new();
-    *POS.get_or_init(|| Mutex::new(None))
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
+    *mem_pos().lock().unwrap_or_else(|e| e.into_inner())
 }
 
 fn mem_pos_set(p: (i32, i32)) {
-    static POS: OnceLock<Mutex<Option<(i32, i32)>>> = OnceLock::new();
-    *POS.get_or_init(|| Mutex::new(None))
-        .lock()
-        .unwrap_or_else(|e| e.into_inner()) = Some(p);
+    *mem_pos().lock().unwrap_or_else(|e| e.into_inner()) = Some(p);
 }
 
 // ---------------- 预渲染资源 ----------------
@@ -302,7 +307,12 @@ struct StatusBar {
     punct: std::cell::Cell<bool>,
     hover: std::cell::Cell<i32>,
     dragging: std::cell::Cell<bool>,
+    /// 按下点的**客户区**坐标（只用来说明"点在哪一格"）
     drag_off: std::cell::Cell<(i32, i32)>,
+    /// 拖动锚点：按下时的窗口左上角（屏幕坐标）
+    drag_win: std::cell::Cell<(i32, i32)>,
+    /// 拖动锚点：按下时的光标位置（屏幕坐标）
+    drag_cur: std::cell::Cell<(i32, i32)>,
     dragged: std::cell::Cell<bool>,
 }
 
@@ -321,6 +331,8 @@ impl StatusBar {
             hover: std::cell::Cell::new(-1),
             dragging: std::cell::Cell::new(false),
             drag_off: std::cell::Cell::new((0, 0)),
+            drag_win: std::cell::Cell::new((0, 0)),
+            drag_cur: std::cell::Cell::new((0, 0)),
             dragged: std::cell::Cell::new(false),
         }
     }
@@ -799,22 +811,29 @@ extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM
             WM_LBUTTONDOWN => {
                 let x = (lparam.0 & 0xFFFF) as i32;
                 let y = ((lparam.0 >> 16) & 0xFFFF) as i32;
+                let mut pt = POINT::default();
+                GetCursorPos(&mut pt);
+                // 拖动以「窗口左上角 + 光标屏幕位移」计算：客户端坐标会随窗口移动而变化，
+                // 用它做增量会让状态栏边拖边跳。
+                let win0 = mem_pos_get().unwrap_or_else(|| this.pos());
                 this.dragging.set(true);
                 this.dragged.set(false);
                 this.drag_off.set((x, y));
+                this.drag_win.set(win0);
+                this.drag_cur.set((pt.x, pt.y));
                 SetCapture(hwnd);
                 LRESULT(0)
             }
             WM_MOUSEMOVE => {
                 if this.dragging.get() {
-                    let sx = (lparam.0 & 0xFFFF) as i32;
-                    let sy = ((lparam.0 >> 16) & 0xFFFF) as i32;
-                    let (off_x, off_y) = this.drag_off.get();
+                    let mut pt = POINT::default();
+                    GetCursorPos(&mut pt);
+                    let (cur_x, cur_y) = this.drag_cur.get();
                     // 拖动判定用系统拖拽阈值（SM_CXDRAG/SM_CYDRAG），避免轻微抖动把点击吞掉
                     let thr_x = GetSystemMetrics(SM_CXDRAG).max(2);
                     let thr_y = GetSystemMetrics(SM_CYDRAG).max(2);
                     if !this.dragged.get()
-                        && ((sx - off_x).abs() > thr_x || (sy - off_y).abs() > thr_y)
+                        && ((pt.x - cur_x).abs() > thr_x || (pt.y - cur_y).abs() > thr_y)
                     {
                         this.dragged.set(true);
                         if this.hover.replace(-1) != -1 {
@@ -822,9 +841,9 @@ extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM
                         }
                     }
                     if this.dragged.get() {
-                        let (mut x, mut y) = mem_pos_get().unwrap_or((0, 0));
-                        x += sx - off_x;
-                        y += sy - off_y;
+                        let (win_x, win_y) = this.drag_win.get();
+                        let mut x = win_x + (pt.x - cur_x);
+                        let mut y = win_y + (pt.y - cur_y);
                         let wa = work_area();
                         let (ww, wh) = this.win_size();
                         x = x.clamp(wa.left - ww + 24, wa.right - 24);
@@ -847,6 +866,8 @@ extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM
                     let ly = (((lparam.0 >> 16) & 0xFFFF) as f32 / s) as i32;
                     let h = hit_cell(lx, ly);
                     if h != this.hover.get() {
+                        // 悬停态变化留一行日志，便于排查"悬停没反应"类反馈
+                        crate::tsf_log!("status bar: hover {} -> {} (lx={lx} ly={ly})", this.hover.get(), h);
                         this.hover.set(h);
                         this.push();
                     }

@@ -29,7 +29,9 @@ $BG    = [System.Drawing.Color]::FromArgb(245, 255, 255, 255)   # 白色半透�
 $SEP   = [System.Drawing.Color]::FromArgb(255, 214, 214, 220)   # 边框/分隔线
 $GRIPC = [System.Drawing.Color]::FromArgb(255, 186, 186, 194)   # 拖动柄点
 $HL_BG = [System.Drawing.Color]::FromArgb(255, 66, 133, 244)    # 激活蓝
-$HOVER = [System.Drawing.Color]::FromArgb(13, 0, 0, 0)          # 悬停极淡黑
+# 悬停胶囊：原来只有 13/255 的黑（≈5% 压暗，肉眼几乎看不出，用户反馈"不支持悬停"），
+# 改成与主题蓝同族的淡蓝灰，悬停时一眼能看出高亮
+$HOVER = [System.Drawing.Color]::FromArgb(255, 232, 240, 254)    # 悬停淡蓝 #F0E8FE(BGR)
 $CLEAR = [System.Drawing.Color]::FromArgb(0, 0, 0, 0)
 
 function New-Bmp([int]$bw, [int]$bh) {

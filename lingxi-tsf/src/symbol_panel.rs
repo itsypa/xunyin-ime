@@ -117,6 +117,8 @@ struct Panel {
     pressed: i32,
     dragging: bool,
     drag_off: (i32, i32),
+    drag_win: (i32, i32),
+    drag_cur: (i32, i32),
     dragged: bool,
     font: HFONT,
     font_fn: HFONT,
@@ -166,18 +168,19 @@ fn hit_symbol(p: &Panel, x: i32, y: i32) -> i32 {
     -1
 }
 
+/// 会话内记忆的面板位置（必须共用同一个 static，理由见状态栏 mem_pos 注释）。
+static MEM_POS: OnceLock<Mutex<Option<(i32, i32)>>> = OnceLock::new();
+
+fn mem_pos() -> &'static Mutex<Option<(i32, i32)>> {
+    MEM_POS.get_or_init(|| Mutex::new(None))
+}
+
 fn mem_pos_get() -> Option<(i32, i32)> {
-    static POS: OnceLock<Mutex<Option<(i32, i32)>>> = OnceLock::new();
-    *POS.get_or_init(|| Mutex::new(None))
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
+    *mem_pos().lock().unwrap_or_else(|e| e.into_inner())
 }
 
 fn mem_pos_set(v: (i32, i32)) {
-    static POS: OnceLock<Mutex<Option<(i32, i32)>>> = OnceLock::new();
-    *POS.get_or_init(|| Mutex::new(None))
-        .lock()
-        .unwrap_or_else(|e| e.into_inner()) = Some(v);
+    *mem_pos().lock().unwrap_or_else(|e| e.into_inner()) = Some(v);
 }
 
 fn work_area() -> RECT {
@@ -318,6 +321,8 @@ impl Panel {
             pressed: -1,
             dragging: false,
             drag_off: (0, 0),
+            drag_win: (0, 0),
+            drag_cur: (0, 0),
             dragged: false,
             font: make_font(scale, false),
             font_fn: make_font(scale, true),
@@ -582,6 +587,11 @@ extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM
                 p.dragging = true;
                 p.dragged = false;
                 p.drag_off = ((mx as f32 / s) as i32, (my as f32 / s) as i32);
+                // 拖动锚点用屏幕坐标（客户区坐标会随窗口移动而变，做增量会抖）
+                let mut pt = POINT::default();
+                GetCursorPos(&mut pt);
+                p.drag_win = mem_pos_get().unwrap_or((0, 0));
+                p.drag_cur = (pt.x, pt.y);
                 p.pressed = hit_symbol(p, mx, my);
                 SetCapture(hwnd);
                 InvalidateRect(Some(hwnd), None, true);
@@ -590,17 +600,17 @@ extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM
             WM_MOUSEMOVE => {
                 let mx = (lparam.0 & 0xFFFF) as i32;
                 let my = ((lparam.0 >> 16) & 0xFFFF) as i32;
-                let s = p.scale;
                 if p.dragging {
-                    let (dx, dy) = p.drag_off;
-                    let (cx, cy) = ((mx as f32 / s) as i32, (my as f32 / s) as i32);
-                    if !p.dragged && (cx - dx).abs() + (cy - dy).abs() > 3 {
+                    let mut pt = POINT::default();
+                    GetCursorPos(&mut pt);
+                    let (cur_x, cur_y) = p.drag_cur;
+                    if !p.dragged && (pt.x - cur_x).abs() + (pt.y - cur_y).abs() > 3 {
                         p.dragged = true;
                     }
                     if p.dragged {
-                        let (mut x, mut y) = mem_pos_get().unwrap_or((0, 0));
-                        x += cx - dx;
-                        y += cy - dy;
+                        let (win_x, win_y) = p.drag_win;
+                        let mut x = win_x + (pt.x - cur_x);
+                        let mut y = win_y + (pt.y - cur_y);
                         let wa = work_area();
                         let (w, h) = p.win_size();
                         x = x.clamp(wa.left - w + 40, wa.right - 40);
