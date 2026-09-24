@@ -16,6 +16,12 @@ fn format_preedit(text: &str, caret_byte: usize) -> (String, usize) {
     (text.replace(' ', "'"), caret_byte.min(text.len()))
 }
 
+/// 进程内缓存的配置（每秒至多读一次文件），供按键热路径查询自定义标点等。
+fn cached_cfg() -> lingxi_rime::config::LingxiConfig {
+    static CFG: std::sync::OnceLock<lingxi_rime::config::CachedConfig> = std::sync::OnceLock::new();
+    CFG.get_or_init(lingxi_rime::config::CachedConfig::new).get()
+}
+
 /// 文本服务共享状态。
 ///
 /// 所有字段只允许在 TSF 线程（激活文本服务的线程）访问；
@@ -326,7 +332,39 @@ impl TextService_Impl {
         let keycode = key::char_keycode(vk, shift);
         // 回车走 Rime 原生逻辑：组合中把拼音原样上屏（与 Shift 一致）；
         // 选词（确认候选）只由空格承担。
-        let consumed = eng.process_key(keycode, mask);
+        //
+        // 自定义中文标点（设置 → 输入设置 → 标点自定义）优先于 Rime 内置标点表：
+        // 命中时先把当前组合原样上屏，再上屏配置的文本；英文模式/英文标点下不生效。
+        let mut custom_commit: Option<String> = None;
+        let consumed = match key::vk_to_punct(vk, shift) {
+            Some(ch) => {
+                let cfg = cached_cfg();
+                let ascii_now = eng
+                    .get_status()
+                    .map(|s| s.is_ascii_mode)
+                    .unwrap_or(false);
+                let hit = if cfg.input.ascii_punct || ascii_now {
+                    None
+                } else {
+                    cfg.input.punct_lookup(ch)
+                };
+                match hit {
+                    Some(out) => {
+                        let mut text = String::new();
+                        if eng.is_composing() {
+                            let _ = eng.commit_composition();
+                            text.push_str(&eng.get_commit_text());
+                        }
+                        text.push_str(&out);
+                        crate::tsf_log!("keydown: punct_map {ch:?} -> {text:?}");
+                        custom_commit = Some(text);
+                        true
+                    }
+                    None => eng.process_key(keycode, mask),
+                }
+            }
+            None => eng.process_key(keycode, mask),
+        };
         crate::tsf_log!(
             "keydown: vk=0x{vk:02X} shift={shift} keycode=0x{keycode:X} mask=0x{mask:X} consumed={consumed}"
         );
@@ -357,7 +395,7 @@ impl TextService_Impl {
                 }
             }
         }
-        let commit = eng.get_commit_text();
+        let commit = custom_commit.unwrap_or_else(|| eng.get_commit_text());
         let snapshot = eng.get_context();
         // 记录当前模式（候选窗状态标记：中/英、全/半角）
         if let Ok(mut st) = self.shared.lock() {

@@ -10,6 +10,13 @@ export interface InputConfig {
   simplification: boolean;
   page_size: number;
   beep: boolean;
+  /** 自定义中文标点：按键 → 上屏文本（为空即沿用 Rime 内置标点表）。 */
+  punct_map: PunctPair[];
+}
+
+export interface PunctPair {
+  key: string;
+  out: string;
 }
 
 export interface AppearanceConfig {
@@ -111,4 +118,14 @@ export function listUserDictBackups(): Promise<string[]> {
 /** 从备份目录恢复用户词库（恢复前会自动另存当前词库）。 */
 export function restoreUserDict(dir: string): Promise<string> {
   return invoke("restore_user_dict", { dir });
+}
+
+/** 导出当前外观为皮肤文件，返回文件路径。 */
+export function exportSkin(): Promise<string> {
+  return invoke("export_skin");
+}
+
+/** 从皮肤文件内容导入外观设置，返回套用后的完整配置。 */
+export function importSkin(content: string): Promise<LingxiConfig> {
+  return invoke("import_skin", { content });
 }

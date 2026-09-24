@@ -26,6 +26,21 @@ pub struct InputConfig {
     pub page_size: u32,
     /// 候选提示音（预留，默认关闭）。
     pub beep: bool,
+    /// 自定义中文标点：按键字符 → 上屏文本。
+    ///
+    /// 仅在**中文标点**模式（`ascii_punct = false`）下生效；命中的按键不再交给
+    /// Rime 的 punctuator，而是先上屏当前组合、再上屏这里配置的文本。
+    /// 留空（默认）即完全沿用 Rime 内置标点表。
+    pub punct_map: Vec<PunctPair>,
+}
+
+/// 一条自定义标点映射。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PunctPair {
+    /// 按键：单个 ASCII 字符（如 "," "." "?" ";" "[" "]" "~" 等）。
+    pub key: String,
+    /// 上屏文本（可多字，如 "——" 或 "……"）。
+    pub out: String,
 }
 
 impl Default for InputConfig {
@@ -39,7 +54,23 @@ impl Default for InputConfig {
             simplification: true,
             page_size: 5,
             beep: false,
+            punct_map: Vec::new(),
         }
+    }
+}
+
+impl InputConfig {
+    /// 查自定义标点：命中返回 Some(输出文本)；未命中/空配置返回 None（走 Rime 内置）。
+    pub fn punct_lookup(&self, key: char) -> Option<String> {
+        if self.punct_map.is_empty() {
+            return None;
+        }
+        let mut k = String::new();
+        k.push(key);
+        self.punct_map
+            .iter()
+            .find(|p| p.key == k)
+            .map(|p| p.out.clone())
     }
 }
 

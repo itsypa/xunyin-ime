@@ -54,6 +54,7 @@ const DEFAULT_CONFIG: LingxiConfig = {
     simplification: true,
     page_size: 5,
     beep: false,
+    punct_map: [],
   },
   appearance: {
     font_size: 13,
@@ -88,6 +89,7 @@ function App() {
   const [version, setVersion] = useState("0.1.0");
   const saveTimer = useRef<number | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
+  const skinFileRef = useRef<HTMLInputElement>(null);
 
   const toastMsg = (msg: string) => {
     setToast(msg);
@@ -200,6 +202,46 @@ function App() {
       toastMsg("已从磁盘重新载入配置");
     } catch (e) {
       toastMsg("重载失败：" + String(e));
+    }
+  };
+
+  // ---- 标点自定义 ----
+  const punctList = config.input.punct_map ?? [];
+  const patchPunct = (list: { key: string; out: string }[]) =>
+    saveConfig({ ...config, input: { ...config.input, punct_map: list } });
+  const addPunct = () => patchPunct([...punctList, { key: "", out: "" }]);
+  const updatePunct = (i: number, field: "key" | "out", value: string) => {
+    const list = punctList.map((p, idx) => (idx === i ? { ...p, [field]: value } : p));
+    patchPunct(list);
+  };
+  const removePunct = (i: number) => {
+    const list = punctList.filter((_, idx) => idx !== i);
+    patchPunct(list);
+  };
+
+  // ---- 皮肤导入导出 ----
+  const handleExportSkin = async () => {
+    setBusy(true);
+    try {
+      toastMsg("皮肤已导出：" + (await api.exportSkin()));
+    } catch (e) {
+      toastMsg("导出失败：" + String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleImportSkin = async (file?: File | null) => {
+    if (!file) return;
+    setBusy(true);
+    try {
+      const cfg = await api.importSkin(await file.text());
+      setConfigState(cfg);
+      toastMsg("皮肤已导入并套用");
+    } catch (e) {
+      toastMsg("导入失败：" + String(e));
+    } finally {
+      setBusy(false);
     }
   };
 
@@ -403,6 +445,54 @@ function App() {
             </div>
 
             <div className="card">
+              <h2>标点自定义</h2>
+              <p className="hint">
+                仅对**中文标点**模式生效：把某个按键改成上屏你指定的文本
+                （例如把 “ 键改成「）。留空即沿用 Rime 内置标点表；组合中按该键会先上屏拼音，
+                再上屏自定义标点。
+              </p>
+              {punctList.length === 0 && (
+                <p className="hint" style={{ marginTop: 8 }}>
+                  暂无自定义（使用内置标点表）。
+                </p>
+              )}
+              {punctList.map((p, i) => (
+                <div className="row" key={i} style={{ marginTop: 8 }}>
+                  <input
+                    className="input"
+                    style={{ width: 72, textAlign: "center" }}
+                    maxLength={1}
+                    placeholder="按键"
+                    value={p.key}
+                    onChange={(e) => updatePunct(i, "key", e.target.value)}
+                  />
+                  <span className="row-desc" style={{ margin: "0 8px" }}>
+                    →
+                  </span>
+                  <input
+                    className="input"
+                    style={{ flex: 1 }}
+                    placeholder="上屏文本（可多字）"
+                    value={p.out}
+                    onChange={(e) => updatePunct(i, "out", e.target.value)}
+                  />
+                  <button
+                    className="btn small"
+                    style={{ marginLeft: 8 }}
+                    onClick={() => removePunct(i)}
+                  >
+                    删除
+                  </button>
+                </div>
+              ))}
+              <div className="btn-row" style={{ marginTop: 10 }}>
+                <button className="btn small" onClick={addPunct}>
+                  添加一条
+                </button>
+              </div>
+            </div>
+
+            <div className="card">
               <h2>候选窗</h2>
               <Row
                 label="每页候选数"
@@ -504,6 +594,33 @@ function App() {
                 <ColorField label="选中文字" value={a.selected_text} onChange={(v) => patchAppearance({ selected_text: v, theme: "custom" })} />
                 <ColorField label="注释颜色" value={a.comment} onChange={(v) => patchAppearance({ comment: v, theme: "custom" })} />
                 <ColorField label="边框颜色" value={a.border} onChange={(v) => patchAppearance({ border: v, theme: "custom" })} />
+              </div>
+            </div>
+
+            <div className="card">
+              <h2>皮肤导入导出</h2>
+              <p className="hint">
+                皮肤文件保存当前外观（主题、配色、字号、圆角、透明度、序号），
+                可备份、换机迁移或分享给他人；导入会立即套用。
+              </p>
+              <div className="btn-row">
+                <button className="btn primary" disabled={busy} onClick={handleExportSkin}>
+                  导出皮肤
+                </button>
+                <button
+                  className="btn"
+                  disabled={busy}
+                  onClick={() => skinFileRef.current?.click()}
+                >
+                  导入皮肤
+                </button>
+                <input
+                  ref={skinFileRef}
+                  type="file"
+                  accept=".json,application/json"
+                  hidden
+                  onChange={(e) => handleImportSkin(e.target.files?.[0])}
+                />
               </div>
             </div>
           </section>
