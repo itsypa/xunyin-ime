@@ -64,10 +64,34 @@ impl Core {
 
     pub fn redeploy(&self) {
         let engine_arc = self.engine.clone();
+        let shared = self.shared_data_dir.clone();
+        let page_size = load_config().input.page_size;
         std::thread::spawn(move || {
-            if let Ok(e) = engine_arc.lock() {
-                let _ = e.deploy();
+            // 先收录新装的方案（拷进来的 *.schema.yaml 不进 schema_list 就不会生效）
+            let user = user_data_dir();
+            match xunyin_rime::schema_list::sync_default_patch(&shared, &user, page_size) {
+                Ok(true) => println!("xunyin: 发现新方案，已加入方案清单"),
+                Ok(false) => {}
+                Err(e) => eprintln!("xunyin: 方案清单更新失败：{e}"),
             }
+            if let Ok(e) = engine_arc.lock() {
+                // 完整检查式部署：会扫描到新方案、新词库（与「重新部署」语义一致）
+                if !e.deploy_full() {
+                    // 引擎不可用时也要通知一次：宿主进程会自行重建
+                    xunyin_rime::reload::mark(xunyin_rime::reload::REQUEST_RELOAD);
+                    return;
+                }
+                // 等索引编译完再通知：宿主进程重载后会立刻读 build 目录，
+                // 半成品索引会让新方案/新词库看起来没生效。
+                let done = e.wait_deploy(300_000);
+                if !done {
+                    eprintln!("xunyin: 重新部署超时（索引可能仍在编译）");
+                }
+            }
+            // 写重载请求：所有正在运行的应用（记事本 / Edge / ChatGPT …）
+            // 都会自己重建引擎，不用重启。
+            let ok = xunyin_rime::reload::mark(xunyin_rime::reload::REQUEST_RELOAD);
+            println!("xunyin: 重新部署完成，已通知宿主进程重载 ({ok})");
         });
     }
 
@@ -87,15 +111,22 @@ impl Core {
     /// 保存配置；返回 true 表示需要重建索引（模糊音/候选数变化）。
     pub fn save_config(&self, cfg: &XunyinConfig, old: &XunyinConfig) -> Result<bool, String> {
         save_config(cfg).map_err(|e| e.to_string())?;
-        write_page_size(cfg.input.page_size)?;
+        write_page_size(cfg.input.page_size, &self.shared_data_dir)?;
         let patch_changed = write_schema_patch(cfg, &self.shared_data_dir)?;
-        Ok(patch_changed || old.input.page_size != cfg.input.page_size)
+        let needs_deploy = patch_changed || old.input.page_size != cfg.input.page_size;
+        // 不需要重建索引的改动（候选数以外的外观 / 按键行为等）：
+        // 直接通知宿主进程重载配置，正在打字的应用立刻用新设置。
+        // 需要重建索引时由 redeploy() 在编译完成后统一通知。
+        if !needs_deploy {
+            xunyin_rime::reload::mark(xunyin_rime::reload::REQUEST_RELOAD);
+        }
+        Ok(needs_deploy)
     }
 
     pub fn reset_config(&self) -> XunyinConfig {
         let cfg = XunyinConfig::default();
         let _ = save_config(&cfg);
-        let _ = write_page_size(cfg.input.page_size);
+        let _ = write_page_size(cfg.input.page_size, &self.shared_data_dir);
         let _ = write_schema_patch(&cfg, &self.shared_data_dir);
         self.redeploy();
         cfg
@@ -298,6 +329,8 @@ impl Core {
         let mut cfg = load_config();
         cfg.appearance = appearance;
         save_config(&cfg).map_err(|e| e.to_string())?;
+        // 换皮肤后通知宿主进程重载，正在输入的应用立刻换配色
+        xunyin_rime::reload::mark(xunyin_rime::reload::REQUEST_RELOAD);
         Ok(cfg)
     }
 
@@ -366,12 +399,17 @@ pub fn resolve_data_dirs() -> (PathBuf, PathBuf) {
     (PathBuf::from("rime").join("data"), user)
 }
 
-/// 把每页候选数写进用户目录 `default.custom.yaml`（Rime 部署时合并）。
-fn write_page_size(page_size: u32) -> Result<(), String> {
-    let dir = user_data_dir();
-    let content = format!("patch:\n  menu/page_size: {}\n", page_size.clamp(1, 20));
-    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    std::fs::write(dir.join("default.custom.yaml"), content).map_err(|e| e.to_string())
+/// 重写用户目录 `default.custom.yaml`：每页候选数 + 自动收录所有已安装方案
+/// （「把新方案文件拷进数据目录 → 重新部署」就能用，不用手改 yaml）。
+fn write_page_size(page_size: u32, shared: &Path) -> Result<(), String> {
+    let user = user_data_dir();
+    std::fs::create_dir_all(&user).map_err(|e| e.to_string())?;
+    let changed = xunyin_rime::schema_list::sync_default_patch(shared, &user, page_size)
+        .map_err(|e| e.to_string())?;
+    if changed {
+        println!("xunyin: default.custom.yaml 已更新（每页 {page_size} 个候选 + 收录已安装方案）");
+    }
+    Ok(())
 }
 
 /// 把模糊音 / 自学习开关写进 `<schema>.custom.yaml`；返回文件是否变化。

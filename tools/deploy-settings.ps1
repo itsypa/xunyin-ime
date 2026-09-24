@@ -27,8 +27,12 @@ if (-not $SkipBuild) {
     try {
         # native 命令写 stderr 时不要抛错（$ErrorActionPreference=Stop 会把它当终止错误）
         $ErrorActionPreference = "Continue"
-        $profileArg = if ($Debug) { @() } else { @("--release") }
-        cargo build @targetArg @profileArg 2>&1 | Out-Host
+        # 注意：空数组用 @var 展开时会多传一个空参数，cargo 会报 “unexpected argument '-'”。
+        # 用参数数组拼接，只在实际有内容时才带上。
+        $cargoArgs = @("build")
+        if ($targetArg.Count -gt 0) { $cargoArgs += $targetArg }
+        if (-not $Debug) { $cargoArgs += "--release" }
+        & cargo @cargoArgs 2>&1 | Out-Host
         $code = $LASTEXITCODE
         $ErrorActionPreference = "Stop"
         if ($code -ne 0) { throw "cargo build failed ($Arch)" }

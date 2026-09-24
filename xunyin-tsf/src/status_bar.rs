@@ -92,6 +92,7 @@ const CMD_OPEN_DATA: usize = 1173;
 const CMD_OPEN_LOGS: usize = 1174;
 const CMD_CLEAR_LOGS: usize = 1175;
 const CMD_UPDATE: usize = 1176;
+const CMD_RELOAD: usize = 1177;
 
 const THEME_PRESETS: [(&str, [&str; 8]); 3] = [
     (
@@ -698,7 +699,8 @@ impl StatusBar {
                 "符号面板",
             );
             AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null()).ok();
-            add(menu, MF_STRING, CMD_REDEPLOY, "重建词库索引");
+            add(menu, MF_STRING, CMD_RELOAD, "重载配置");
+            add(menu, MF_STRING, CMD_REDEPLOY, "重新部署（重建索引）");
             add(menu, MF_STRING, CMD_OPEN_DATA, "打开数据目录");
             add(menu, MF_STRING, CMD_OPEN_LOGS, "打开日志目录");
             add(menu, MF_STRING, CMD_CLEAR_LOGS, "清空日志");
@@ -728,14 +730,15 @@ impl StatusBar {
                 CMD_LEARN => self.menu_toggle_learn(),
                 CMD_STATUSBAR => self.menu_toggle_status_bar(),
                 CMD_REDEPLOY => {
-                    crate::tsf_log!("status bar menu: 重建词库索引");
-                    if let Some(eng) = engine::engine() {
-                        std::thread::spawn(move || {
-                            if let Ok(e) = eng.lock() {
-                                let _ = e.deploy();
-                            }
-                        });
-                    }
+                    // 重建索引 + 本进程重载 + 通知其他宿主进程重载（无需重启应用）
+                    crate::tsf_log!("status bar menu: 重新部署（重建索引）");
+                    engine::deploy_here_then_notify_others();
+                }
+                CMD_RELOAD => {
+                    crate::tsf_log!("status bar menu: 重载配置");
+                    engine::request_reload("reload");
+                    // 本进程立刻响应，不等下一轮轮询
+                    engine::poll_reload();
                 }
                 CMD_OPEN_DATA => open_dir(&xunyin_rime::config::user_data_dir()),
                 CMD_OPEN_LOGS => open_dir(&xunyin_rime::config::user_data_dir().join("logs")),
@@ -849,14 +852,8 @@ impl StatusBar {
     }
 
     fn menu_redeploy(&self, why: &str) {
-        crate::tsf_log!("status bar menu: {why} 变化 -> 后台重建索引");
-        if let Some(eng) = engine::engine() {
-            std::thread::spawn(move || {
-                if let Ok(e) = eng.lock() {
-                    let _ = e.deploy();
-                }
-            });
-        }
+        crate::tsf_log!("status bar menu: {why} 变化 -> 后台重建索引 + 重载");
+        engine::deploy_here_then_notify_others();
     }
 }
 
@@ -1111,6 +1108,11 @@ extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM
                 LRESULT(0)
             }
             WM_TIMER => {
+                // 每个 tick 顺带看一眼「重载 / 重新部署」请求：小狼毫式的
+                // 重新部署即可生效（不用重启记事本 / 浏览器 / ChatGPT）。
+                if wparam.0 == POLL_TIMER_ID {
+                    engine::poll_reload();
+                }
                 // 前台性核对：本进程已不是前台进程 → 隐藏（见 POLL_TIMER_ID 注释）
                 if wparam.0 == POLL_TIMER_ID && this.shown.get() {
                     let fg = GetForegroundWindow();

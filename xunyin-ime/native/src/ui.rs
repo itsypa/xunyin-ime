@@ -179,6 +179,8 @@ enum Id {
     OpenData,
     OpenLogs,
     ClearLogs,
+    ReloadConfig,
+    Redeploy,
     ResetAll,
     Update,
     ComboItem(usize),
@@ -1342,6 +1344,19 @@ impl App {
                 let freed = self.core.clear_logs();
                 self.toast(&format!("已清空日志（{} KB）", freed / 1024));
             }
+            Id::ReloadConfig => {
+                // 通知所有正在运行的应用重载配置（不用重启，像小狼毫的重新部署）
+                let ok = xunyin_rime::reload::mark(xunyin_rime::reload::REQUEST_RELOAD);
+                self.toast(if ok {
+                    "已通知输入法重载配置（正在输入的应用会立刻生效）"
+                } else {
+                    "通知失败：无法写入重载标记"
+                });
+            }
+            Id::Redeploy => {
+                self.core.redeploy();
+                self.toast("已开始重新部署（编译完成后自动生效，无需重启应用）");
+            }
             Id::ResetAll => {
                 self.cfg = self.core.reset_config();
                 self.theme = theme_from(&self.cfg, self.theme.dark);
@@ -2118,6 +2133,8 @@ fn draw_about(app: &mut App, dc: HDC, x: i32, y0: i32, w: i32) -> i32 {
         (Id::OpenLogs, "打开日志目录"),
         (Id::ClearLogs, "清空日志"),
         (Id::ResetAll, "恢复默认设置"),
+        (Id::ReloadConfig, "重载配置"),
+        (Id::Redeploy, "重新部署"),
     ]
     .iter()
     .enumerate()

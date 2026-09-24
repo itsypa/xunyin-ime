@@ -8,8 +8,10 @@
 //! 以及数据目录解析工具。
 
 pub mod config;
+pub mod reload;
 pub mod rime_engine;
 pub mod rime_ffi;
+pub mod schema_list;
 
 pub use config::{XunyinConfig, load_config, save_config, user_data_dir};
 pub use rime_engine::{Candidate, RimeContextSnapshot, RimeEngine, RimeStatusSnapshot};

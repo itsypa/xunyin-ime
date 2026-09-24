@@ -219,10 +219,32 @@ if ($holders) {
 }
 Write-Host "提示：本脚本不再强杀 ctfmon / TextInputHost —— 强杀会让已打开应用的输入法状态半死，"
 Write-Host "      现象是「所有输入法都打不出中文」，只有重开应用或注销重登才恢复。"
+
+# 通知正在运行的应用热重载：装好新方案 / 换完词库后不必重启任何应用，
+# 各宿主进程里的 TSF DLL 看到这个标记就自己重建 librime 引擎（对标小狼毫）。
+# 注意：新 DLL 本身仍需重开应用才会被加载；本标记管的是词库 / 方案 / 配置。
+$markerDir = Join-Path $env:APPDATA "com.xunyin.ime"
+New-Item -ItemType Directory -Force -Path $markerDir | Out-Null
+$stamp = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
+$marker = Join-Path $markerDir "reload.request"
+[System.IO.File]::WriteAllText($marker, "reload $stamp`n", [System.Text.Encoding]::ASCII)
+Write-Host "已写重载标记：正在运行的应用会自动重载词库与配置 -> $marker"
+
 Write-Host "deploy-tsf done: $Arch -> $dst"
-# 清理改名前的旧 CLSID 残留（否则语言列表里会留一个失效的「灵犀输入法」）
+# 清理改名前的旧 CLSID 残留（否则语言列表里会留一个失效的「灵犀输入法」）。
+# 用注册表提供程序删除：`reg delete` 在键不存在时会往 stderr 写错误，
+# 在 $ErrorActionPreference='Stop' 下会中断脚本（脚本末尾就挂在这里）。
 $legacy = "{F3A2D6E1-4C5B-4E8A-9C1D-2A6B7C8D9E0F}"
-foreach ($root in @("HKCU\Software\Classes\CLSID\$legacy", "HKLM\SOFTWARE\Classes\CLSID\$legacy", "HKLM\SOFTWARE\Classes\WOW6432Node\CLSID\$legacy", "HKLM\SOFTWARE\Microsoft\CTF\TIP\$legacy")) {
-    reg delete $root /f 2>$null | Out-Null
+$removed = 0
+foreach ($k in @(
+        "HKCU:\Software\Classes\CLSID\$legacy",
+        "HKLM:\SOFTWARE\Classes\CLSID\$legacy",
+        "HKLM:\SOFTWARE\Classes\WOW6432Node\CLSID\$legacy",
+        "HKLM:\SOFTWARE\Microsoft\CTF\TIP\$legacy"
+    )) {
+    if (Test-Path -LiteralPath $k) {
+        Remove-Item -LiteralPath $k -Recurse -Force -ErrorAction SilentlyContinue
+        $removed++
+    }
 }
-Write-Host "旧 CLSID 残留已清理（$legacy）"
+Write-Host "旧 CLSID 残留检查完成（$legacy）：删除 $removed 项"

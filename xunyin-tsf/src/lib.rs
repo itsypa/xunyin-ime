@@ -28,7 +28,7 @@ use windows::Win32::Foundation::{CLASS_E_CLASSNOTAVAILABLE, E_POINTER};
 use windows_core::{GUID, HRESULT, Interface};
 
 /// 诊断用版本标记：每次构建更新，日志第一行可确认加载的 DLL 版本。
-pub const DLL_TAG: &str = "20260926-0000";
+pub const DLL_TAG: &str = "20260926-2100";
 
 /// 文本服务 CLSID（注册到 HKCU\Software\Classes\CLSID）。
 pub const CLSID_XUNYIN_TSF: GUID = GUID::from_u128(0x7c4e9a38_2b61_4d5f_a8c3_9e7b5f1d2a64);

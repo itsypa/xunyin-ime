@@ -4,6 +4,7 @@ use crate::rime_ffi::*;
 use serde::Serialize;
 use std::ffi::{c_char, c_int, CString};
 use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
 pub struct RimeEngine {
     api: *const RimeApi,
@@ -188,6 +189,38 @@ impl RimeEngine {
                 r != 0
             }
             None => false,
+        }
+    }
+
+    /// 完整检查式部署（`RimeStartMaintenance(full_check=true)`）：
+    /// 会重新扫描共享/用户目录里的方案与配置文件，包括**新增**的方案文件。
+    /// 小狼毫的「重新部署」就是这个语义。
+    pub fn deploy_full(&self) -> bool {
+        if !self.initialized {
+            return false;
+        }
+        let api = unsafe { &*self.api };
+        match api.start_maintenance {
+            Some(f) => {
+                let r = unsafe { f(1) };
+                r != 0
+            }
+            None => self.deploy(),
+        }
+    }
+
+    /// 等待正在进行的部署结束（最多 `timeout_ms` 毫秒）。
+    /// 返回 true 表示已结束（或本来就不在维护模式）。
+    pub fn wait_deploy(&self, timeout_ms: u64) -> bool {
+        let deadline = Instant::now() + Duration::from_millis(timeout_ms);
+        loop {
+            if !self.is_maintenance_mode() {
+                return true;
+            }
+            if Instant::now() >= deadline {
+                return false;
+            }
+            std::thread::sleep(Duration::from_millis(150));
         }
     }
 
