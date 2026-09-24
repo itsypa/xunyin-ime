@@ -5,7 +5,7 @@
 //! 形制：横向圆角小条，条厚 30dp，左侧 12dp 拖动柄（2×3 点阵），
 //! 之后每格 30dp：中/英（文字，中文模式蓝底白字）、标点（矢量图标，全/半角换图）、
 //! 全半角（满月=全角 / 弯月=半角）、简/繁（文字，启用繁出时蓝底白字）、
-//! 设置（齿轮，颜色更淡）。
+//! 软键盘（键盘图标，面板打开时蓝底）、设置（齿轮，颜色更淡）。
 //!
 //! 渲染：资源按 2 倍分辨率预渲染（白底 245 alpha、圆角=厚度×0.3、1dp 同色边框、
 //! 格内高亮胶囊内缩 4dp）；图标与文字为**单色 alpha 蒙版**，运行时按状态 tint，
@@ -44,7 +44,7 @@ const WND_CLASS: &str = "Lingxi.StatusBar";
 const GRIP_W: i32 = 12; // 拖动柄宽度
 const CELL_W: i32 = 30; // 每格宽度
 const HEIGHT: i32 = 30; // 条厚
-const WIDTH: i32 = GRIP_W + CELL_W * 5; // 162：柄 + 5 格
+const WIDTH: i32 = GRIP_W + CELL_W * 6; // 192：柄 + 6 格
 const ASSET_W: usize = (WIDTH as usize) * 2;
 const ASSET_H: usize = (HEIGHT as usize) * 2;
 const TILE: usize = (CELL_W as usize) * 2; // 单格 tile 尺寸（2 倍）
@@ -54,8 +54,9 @@ const CELL_MODE: i32 = 0;
 const CELL_PUNCT: i32 = 1;
 const CELL_WIDTH: i32 = 2;
 const CELL_S2T: i32 = 3;
-const CELL_SETTINGS: i32 = 4;
-const CELL_COUNT: i32 = 5;
+const CELL_SKB: i32 = 4;
+const CELL_SETTINGS: i32 = 5;
+const CELL_COUNT: i32 = 6;
 
 // ── 配色（对齐 WindInput 默认主题）──────────────────────────────────────────
 const FG: [u8; 3] = [72, 72, 78]; // 常态内容
@@ -65,6 +66,7 @@ const SETTINGS_FG: [u8; 3] = [140, 140, 148]; // 设置齿轮更淡
 // 自定义窗口消息（TSF 线程 → UI 线程）
 const MSG_SHOW: u32 = WM_APP + 1; // WPARAM 位：1=ascii 2=full 4=punct 8=简繁
 const MSG_HIDE: u32 = WM_APP + 2;
+const MSG_REPAINT: u32 = WM_APP + 3;
 
 // 右键菜单命令 id
 const CMD_MODE: usize = 1001;
@@ -72,6 +74,8 @@ const CMD_WIDTH: usize = 1002;
 const CMD_PUNCT: usize = 1003;
 const CMD_S2T: usize = 1004;
 const CMD_SETTINGS: usize = 1005;
+const CMD_SKB: usize = 1006;
+const CMD_SYM: usize = 1007;
 
 fn cell_x(i: i32) -> i32 {
     GRIP_W + i * CELL_W
@@ -115,6 +119,7 @@ struct Assets {
     icon_punct_full: &'static [u8],
     icon_punct_half: &'static [u8],
     icon_gear: &'static [u8],
+    icon_softkbd: &'static [u8],
     glyph_zhong: &'static [u8],
     glyph_ying: &'static [u8],
     glyph_jian: &'static [u8],
@@ -132,6 +137,7 @@ fn assets() -> &'static Assets {
         icon_punct_full: include_bytes!("assets/icon_punct_full.bin"),
         icon_punct_half: include_bytes!("assets/icon_punct_half.bin"),
         icon_gear: include_bytes!("assets/icon_gear.bin"),
+        icon_softkbd: include_bytes!("assets/icon_softkbd.bin"),
         glyph_zhong: include_bytes!("assets/glyph_zhong.bin"),
         glyph_ying: include_bytes!("assets/glyph_ying.bin"),
         glyph_jian: include_bytes!("assets/glyph_jian.bin"),
@@ -225,13 +231,20 @@ fn blit_tinted(dst: &mut [u8], dst_w: usize, mask: &[u8], ox: usize, oy: usize, 
 }
 
 /// 合成一帧：整条背景 + 各格高亮/悬停 + 各格内容（图标/文字按状态 tint）。
-fn composite_frame(hover: i32, ascii: bool, full: bool, punct: bool, s2t: bool) -> Vec<u8> {
+fn composite_frame(
+    hover: i32,
+    ascii: bool,
+    full: bool,
+    punct: bool,
+    s2t: bool,
+    skb_on: bool,
+) -> Vec<u8> {
     let a = assets();
     let mut f = decode(a.bar_bg);
     for i in 0..CELL_COUNT {
         let ox = (cell_x(i) as usize) * 2;
-        // 激活格：中文模式（中/英格）与繁出（简/繁格）都是蓝底白字
-        let active = (i == CELL_MODE && !ascii) || (i == CELL_S2T && s2t);
+        // 激活格：中文模式、繁出、软键盘面板打开，都是蓝底
+        let active = (i == CELL_MODE && !ascii) || (i == CELL_S2T && s2t) || (i == CELL_SKB && skb_on);
         if active {
             blit_over(&mut f, ASSET_W, &decode(a.cell_active), ox, 0);
         } else if hover == i {
@@ -252,6 +265,10 @@ fn composite_frame(hover: i32, ascii: bool, full: bool, punct: bool, s2t: bool) 
             ),
             CELL_S2T => (
                 if s2t { a.glyph_fan } else { a.glyph_jian },
+                if active { HL_FG } else { FG },
+            ),
+            CELL_SKB => (
+                a.icon_softkbd,
                 if active { HL_FG } else { FG },
             ),
             _ => (a.icon_gear, SETTINGS_FG),
@@ -414,6 +431,7 @@ impl StatusBar {
             self.full.get(),
             self.punct.get(),
             self.s2t.get(),
+            crate::soft_keyboard::visible(),
         );
         let (ww, wh) = self.win_size();
         let frame = if ww as usize == ASSET_W && wh as usize == ASSET_H {
@@ -480,6 +498,11 @@ impl StatusBar {
     fn on_click(&self, cell: i32) {
         if cell == CELL_SETTINGS {
             self.open_settings();
+            return;
+        }
+        if cell == CELL_SKB {
+            // 软键盘/符号面板：同一格再点一次收起
+            crate::soft_keyboard::toggle(1);
             return;
         }
         let Some(eng) = engine::engine() else { return };
@@ -586,6 +609,9 @@ impl StatusBar {
             )
             .ok();
             AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null()).ok();
+            AppendMenuW(menu, MF_STRING, CMD_SKB, w!("软键盘")).ok();
+            AppendMenuW(menu, MF_STRING, CMD_SYM, w!("符号面板")).ok();
+            AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null()).ok();
             AppendMenuW(menu, MF_STRING, CMD_SETTINGS, w!("打开设置中心…")).ok();
 
             let mut pt = POINT::default();
@@ -606,6 +632,8 @@ impl StatusBar {
                 CMD_WIDTH => self.on_click(CELL_WIDTH),
                 CMD_PUNCT => self.on_click(CELL_PUNCT),
                 CMD_S2T => self.on_click(CELL_S2T),
+                CMD_SKB => crate::soft_keyboard::toggle(1),
+                CMD_SYM => crate::soft_keyboard::toggle(2),
                 CMD_SETTINGS => self.open_settings(),
                 _ => {}
             }
@@ -761,6 +789,11 @@ extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM
             }
             MSG_HIDE => {
                 this.hide();
+                LRESULT(0)
+            }
+            MSG_REPAINT => {
+                // 外部状态变化（如软键盘面板开关）→ 重画一格高亮
+                this.push();
                 LRESULT(0)
             }
             WM_PAINT => {
@@ -996,6 +1029,27 @@ pub fn hide_status_bar() {
     if let Some(hwnd) = bar_hwnd() {
         unsafe {
             PostMessageW(Some(hwnd), MSG_HIDE, WPARAM(0), LPARAM(0));
+        }
+    }
+}
+
+/// 请求状态栏重画（软键盘等外部状态变化时调用，不创建窗口）。
+pub fn notify_repaint() {
+    let Some(g) = BAR_HWND.get() else {
+        return;
+    };
+    let guard = match g.lock() {
+        Ok(x) => x,
+        Err(e) => e.into_inner(),
+    };
+    if let Some(h) = *guard {
+        unsafe {
+            PostMessageW(
+                Some(HWND(h as *mut core::ffi::c_void)),
+                MSG_REPAINT,
+                WPARAM(0),
+                LPARAM(0),
+            );
         }
     }
 }
