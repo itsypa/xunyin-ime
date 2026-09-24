@@ -1699,7 +1699,10 @@ unsafe fn draw_preview(app: &App, hdc: HDC, rc: RECT) {
     let _ = DeleteObject(HGDIOBJ(bg.0));
 
     let w = (rc.right - rc.left - s(40)).clamp(s(160), s(430));
-    let h = row_h * 5 + s(12);
+    // 预览框尺寸固定（不撑页面）：字号大时少显示几行，字号保持真实大小不缩放。
+    let box_h = (rc.bottom - rc.top - s(24)).max(s(80));
+    let max_rows = (((box_h - s(12)) / row_h).max(1)).min(5);
+    let h = row_h * max_rows + s(12);
     let l = rc.left + (rc.right - rc.left - w) / 2;
     let t = rc.top + (rc.bottom - rc.top - h) / 2;
     let (r, b) = (l + w, t + h);
@@ -1742,7 +1745,7 @@ unsafe fn draw_preview(app: &App, hdc: HDC, rc: RECT) {
     let idx_font = mk_font((text_px * 4 / 5).max(9));
     let _ = SetBkMode(hdc, TRANSPARENT);
 
-    for (i, text) in ["你", "您", "牛", "鸟", "捏"].iter().enumerate() {
+    for (i, text) in ["你", "您", "牛", "鸟", "捏"].iter().take(max_rows as usize).enumerate() {
         let top = t + s(6) + (i as i32) * row_h;
         if i == 0 {
             let sel = CreateSolidBrush(hex_to_colorref(&a.selected_bg));
