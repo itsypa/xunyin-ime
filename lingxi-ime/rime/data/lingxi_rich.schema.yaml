@@ -114,8 +114,8 @@ punctuator:
     "}": { commit: "}" }
     "<": [《, 〈, «]
     ">": [》, 〉, »]
-    "/": [、, "/", ／]
-    "\\": [、, "\\", ＼]
+    "/": { commit: "、" }
+    "\\": { commit: "、" }
     "|": ["|", ｜, '§']
     "$": ["$", ￥, '€', '£']
     "^": ["^", ……]
@@ -146,8 +146,8 @@ punctuator:
     "}": { commit: "}" }
     "<": [《, 〈, «]
     ">": [》, 〉, »]
-    "/": [、, "/", ／]
-    "\\": [、, "\\", ＼]
+    "/": { commit: "/" }
+    "\\": { commit: "\" }
     "|": ["|", ｜, '§']
     "$": ["$", ￥, '€', '£']
     "^": ["^", ……]
@@ -191,7 +191,7 @@ navigator:
     KP_Right: right_by_char_no_loop
 
 speller:
-  alphabet: zyxwvutsrqponmlkjihgfedcbaZYXWVUTSRQPONMLKJIHGFEDCBA`/
+  alphabet: zyxwvutsrqponmlkjihgfedcbaZYXWVUTSRQPONMLKJIHGFEDCBA`  # "/" 不进组合：斜杠直接上屏「、」
   initials: zyxwvutsrqponmlkjihgfedcbaZYXWVUTSRQPONMLKJIHGFEDCBA
   delimiter: " '"
   algebra:
