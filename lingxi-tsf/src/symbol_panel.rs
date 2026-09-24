@@ -14,6 +14,7 @@ use windows::Win32::Foundation::{
 };
 use windows::Win32::Graphics::Gdi::*;
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+use windows::Win32::System::Threading::GetCurrentProcessId;
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     ReleaseCapture, SendInput, SetCapture, TrackMouseEvent, INPUT, INPUT_0, INPUT_KEYBOARD,
     KEYBDINPUT, KEYEVENTF_KEYUP, KEYEVENTF_UNICODE, TME_LEAVE, TRACKMOUSEEVENT, VIRTUAL_KEY,
@@ -52,6 +53,10 @@ const C_GRIP: u32 = 0x00C2BABA; // 拖动柄点 #BABAC2
 // 面板消息
 const SP_SHOW: u32 = WM_APP + 1;
 const SP_HIDE: u32 = WM_APP + 2;
+
+// 前台性轮询：本进程不再是前台（切到别的程序）→ 自动收起面板，避免残留在屏幕上
+const POLL_TIMER_ID: usize = 2;
+const POLL_MS: u32 = 400;
 
 /// 分类页签名 + 符号表（每类 30 个 = 3 行 × 10 列）。
 const SYM_TABS: [&str; 6] = ["常用", "数学", "单位", "序号", "箭头", "特殊"];
@@ -544,6 +549,21 @@ extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM
                 p.hide();
                 LRESULT(0)
             }
+            WM_TIMER => {
+                if wparam.0 == POLL_TIMER_ID {
+                    let visible = IsWindowVisible(p.hwnd).as_bool();
+                    if visible {
+                        let fg = GetForegroundWindow();
+                        let mut pid = 0u32;
+                        GetWindowThreadProcessId(fg, Some(&mut pid));
+                        if pid != GetCurrentProcessId() {
+                            crate::tsf_log!("symbol panel: 本进程已非前台(pid={pid}) -> 收起");
+                            p.hide();
+                        }
+                    }
+                }
+                LRESULT(0)
+            }
             WM_PAINT => {
                 p.paint();
                 LRESULT(0)
@@ -710,26 +730,32 @@ fn panel_hwnd() -> Option<HWND> {
 
 fn ui_thread() {
     unsafe {
-        if !ensure_window_class() {
-            return;
-        }
-        let hwnd = create_hwnd();
-        if hwnd.0.is_null() {
-            return;
-        }
+        // 消息窗口与绘制窗口必须是**同一个** hwnd：Panel::new() 自己创建窗口，
+        // 这里直接沿用它的 hwnd（旧实现另建了一个窗口，导致可见窗口既收不到
+        // WM_LBUTTON*（点了没反应）也收不到 WM_PAINT（面板空白））。
         let owner = OWNER.get_or_init(|| Mutex::new(None));
-        *owner.lock().unwrap_or_else(|e| e.into_inner()) = Some(Box::new(Panel::new()));
-        let ptr = owner
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .as_ref()
-            .map(|p| &**p as *const Panel as usize)
-            .unwrap_or(0);
+        let (hwnd, ptr) = {
+            let mut g = owner.lock().unwrap_or_else(|e| e.into_inner());
+            *g = Some(Box::new(Panel::new()));
+            match g.as_ref() {
+                // Box 在堆上，地址稳定；窗口数据里存这个地址
+                Some(p) if !p.hwnd.0.is_null() => (p.hwnd, &**p as *const Panel as usize),
+                _ => {
+                    crate::tsf_log!("symbol panel: 窗口创建失败（窗口类或 DPI 异常）");
+                    return;
+                }
+            }
+        };
         set_window_data(hwnd, ptr);
         *PANEL
             .get_or_init(|| Mutex::new(None))
             .lock()
             .unwrap_or_else(|e| e.into_inner()) = Some(hwnd.0 as usize);
+        crate::tsf_log!("symbol panel: ready hwnd={:?}", hwnd);
+        {
+            // 前台性轮询定时器（见 POLL_TIMER_ID 注释）
+            let _ = SetTimer(Some(hwnd), POLL_TIMER_ID, POLL_MS, None);
+        }
         {
             let mut g = owner.lock().unwrap_or_else(|e| e.into_inner());
             if let Some(p) = g.as_mut() {
@@ -757,10 +783,14 @@ fn ui_thread() {
 
 /// 切换符号面板：已打开则收起。
 pub fn toggle() {
-    if let Some(hwnd) = panel_hwnd() {
-        unsafe {
-            PostMessageW(Some(hwnd), SP_SHOW, WPARAM(0), LPARAM(0));
+    match panel_hwnd() {
+        Some(hwnd) => {
+            crate::tsf_log!("symbol panel: toggle -> hwnd={:?}", hwnd);
+            unsafe {
+                PostMessageW(Some(hwnd), SP_SHOW, WPARAM(0), LPARAM(0));
+            }
         }
+        None => crate::tsf_log!("symbol panel: toggle 失败——面板窗口未创建"),
     }
 }
 

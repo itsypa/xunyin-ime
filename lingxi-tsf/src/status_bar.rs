@@ -474,6 +474,7 @@ impl StatusBar {
 
     /// 左键点格：按格序号切换状态 / 打开设置。
     fn on_click(&self, cell: i32) {
+        crate::tsf_log!("status bar click: cell={cell}");
         if cell == CELL_SETTINGS {
             self.open_settings();
             return;
@@ -525,10 +526,21 @@ impl StatusBar {
     }
 
     fn open_settings(&self) {
-        if let Some(exe) = settings_exe_path() {
-            let _ = std::process::Command::new(exe)
-                .creation_flags(0x0800_0000) // CREATE_NO_WINDOW：避免控制台黑框
-                .spawn();
+        match settings_exe_path() {
+            Some(exe) => {
+                crate::tsf_log!("open settings: {}", exe.display());
+                match std::process::Command::new(&exe)
+                    .creation_flags(0x0800_0000) // CREATE_NO_WINDOW：避免控制台黑框
+                    .spawn()
+                {
+                    Ok(_) => {}
+                    Err(e) => crate::tsf_log!("open settings: 启动失败 {e}"),
+                }
+            }
+            None => crate::tsf_log!(
+                "open settings: 未找到 lingxi-ime.exe（DLL 目录 {:?}）",
+                module_dir()
+            ),
         }
     }
 
@@ -584,13 +596,13 @@ impl StatusBar {
 
 /// 定位设置中心可执行文件，兼容两种布局：
 /// - 安装布局：<安装目录>\lingxi-ime.exe（TSF DLL 在 tsf\ 或 tsf-x86\ 子目录）；
-/// - 开发布局：lingxi-ime\src-tauri\target\debug\lingxi-ime.exe。
-fn settings_exe_path() -> Option<std::path::PathBuf> {
+/// - 开发布局：lingxi-ime\src-tauri\target\{debug,release}\lingxi-ime.exe。
+fn module_dir() -> Option<std::path::PathBuf> {
     unsafe {
         let mut hmod: HMODULE = core::mem::zeroed();
         let flags = GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS
             | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT;
-        let addr = (settings_exe_path as fn() -> Option<std::path::PathBuf>) as usize;
+        let addr = (module_dir as fn() -> Option<std::path::PathBuf>) as usize;
         GetModuleHandleExW(flags, PCWSTR(addr as *const u16), &mut hmod).ok()?;
         let mut buf = [0u16; 1024];
         let len = GetModuleFileNameW(Some(hmod), &mut buf);
@@ -598,32 +610,50 @@ fn settings_exe_path() -> Option<std::path::PathBuf> {
             return None;
         }
         let dll = std::path::PathBuf::from(String::from_utf16_lossy(&buf[..len as usize]));
-        let dll_dir = dll.parent()?.to_path_buf();
-        // 安装布局：逐级向上找 lingxi-ime.exe
-        let mut dir = dll_dir.clone();
-        for _ in 0..6 {
-            let exe = dir.join("lingxi-ime.exe");
-            if exe.exists() {
-                return Some(exe);
-            }
-            dir = dir.parent()?.to_path_buf();
+        Some(dll.parent()?.to_path_buf())
+    }
+}
+
+fn settings_exe_path() -> Option<std::path::PathBuf> {
+    let dll_dir = module_dir()?;
+    // 1) 同目录或逐级向上：安装布局 <安装目录>\lingxi-ime.exe（DLL 在 tsf\ 子目录）。
+    //    注意：这里不能因为走到盘符根就提前 return，否则后面两种布局永远搜不到。
+    let mut dir = Some(dll_dir.clone());
+    while let Some(d) = dir {
+        let exe = d.join("lingxi-ime.exe");
+        if exe.is_file() {
+            return Some(exe);
         }
-        // 开发布局：工作区根下 lingxi-ime\src-tauri\target\debug\
-        let mut dir = dll_dir;
-        for _ in 0..6 {
-            let ime = dir
+        dir = d.parent().map(|p| p.to_path_buf());
+    }
+    // 2) 开发布局：工作区根下 lingxi-ime\src-tauri\target\{debug,release}\lingxi-ime.exe
+    let mut dir = Some(dll_dir);
+    while let Some(d) = dir {
+        for profile in ["debug", "release"] {
+            let exe = d
                 .join("lingxi-ime")
                 .join("src-tauri")
                 .join("target")
-                .join("debug")
+                .join(profile)
                 .join("lingxi-ime.exe");
-            if ime.exists() {
-                return Some(ime);
+            if exe.is_file() {
+                return Some(exe);
             }
-            dir = dir.parent()?.to_path_buf();
         }
-        None
+        dir = d.parent().map(|p| p.to_path_buf());
     }
+    // 3) 兜底：默认安装位置 %ProgramFiles%\LingxiIME
+    for key in ["ProgramFiles", "ProgramFiles(x86)"] {
+        if let Ok(pf) = std::env::var(key) {
+            let exe = std::path::Path::new(&pf)
+                .join("LingxiIME")
+                .join("lingxi-ime.exe");
+            if exe.is_file() {
+                return Some(exe);
+            }
+        }
+    }
+    None
 }
 
 fn create_hwnd() -> HWND {
@@ -774,7 +804,12 @@ extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM
                     let sx = (lparam.0 & 0xFFFF) as i32;
                     let sy = ((lparam.0 >> 16) & 0xFFFF) as i32;
                     let (off_x, off_y) = this.drag_off.get();
-                    if !this.dragged.get() && (sx - off_x).abs() + (sy - off_y).abs() > 3 {
+                    // 拖动判定用系统拖拽阈值（SM_CXDRAG/SM_CYDRAG），避免轻微抖动把点击吞掉
+                    let thr_x = GetSystemMetrics(SM_CXDRAG).max(2);
+                    let thr_y = GetSystemMetrics(SM_CYDRAG).max(2);
+                    if !this.dragged.get()
+                        && ((sx - off_x).abs() > thr_x || (sy - off_y).abs() > thr_y)
+                    {
                         this.dragged.set(true);
                         if this.hover.replace(-1) != -1 {
                             this.push();
@@ -823,12 +858,15 @@ extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM
                 if this.dragging.replace(false) {
                     ReleaseCapture();
                     if this.dragged.get() {
+                        crate::tsf_log!("status bar: 抬起判定为拖动 -> 不触发点击");
                         // 拖动结束：按新位置所在显示器的 DPI 重新渲染
                         this.push();
                     } else {
                         let s = this.dpi_scale();
-                        let lx = ((lparam.0 & 0xFFFF) as f32 / s) as i32;
-                        let ly = (((lparam.0 >> 16) & 0xFFFF) as f32 / s) as i32;
+                        // 点击格以「按下点」为准（Windows 惯例）：轻微抖动不会点错格
+                        let (dx, dy) = this.drag_off.get();
+                        let lx = (dx as f32 / s) as i32;
+                        let ly = (dy as f32 / s) as i32;
                         let cell = hit_cell(lx, ly);
                         if cell >= 0 {
                             this.on_click(cell);
