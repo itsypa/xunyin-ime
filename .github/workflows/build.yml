@@ -4,6 +4,11 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      sync_upstream:
+        description: "构建前同步上游最新（librime 预发布 latest + rime-frost 主分支词库）"
+        type: boolean
+        default: true
 
 permissions:
   contents: write
@@ -35,6 +40,17 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "lingxi-tsf 测试失败" }
           cd ../lingxi-rime; cargo test --lib config::tests
           if ($LASTEXITCODE -ne 0) { throw "lingxi-rime 配置测试失败" }
+
+      # 上游每天更新词库、librime master 只挂预发布，所以构建前拉一次最新
+      # （push 触发时默认执行；手动触发可用 sync_upstream=false 关掉）
+      - name: 同步上游最新（librime + rime-frost 词库）
+        if: ${{ github.event_name == 'push' || inputs.sync_upstream }}
+        shell: powershell
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          .\tools\sync-upstream.ps1
+          if ($LASTEXITCODE -ne 0) { throw "上游同步失败" }
 
       - name: 构建 lingxi-tsf（x64）
         working-directory: lingxi-tsf
