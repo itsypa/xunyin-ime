@@ -890,8 +890,8 @@ function App() {
             <h1>灵犀输入法</h1>
               <p className="about-ver">版本 {version}</p>
               <p className="about-desc">
-                系统级 TSF 输入法，基于 Rime 引擎与增强词库，
-                支持全角半角、简繁转换、状态栏快捷切换、主题定制与词库备份。
+                系统级 TSF 拼音输入法，基于 Rime 引擎与增强词库，
+                支持全角半角、模糊音、状态栏快捷切换、主题定制与词库备份。
               </p>
             <div className="about-tags">
               <span>无广告</span>

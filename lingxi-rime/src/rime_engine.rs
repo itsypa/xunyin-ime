@@ -785,28 +785,13 @@ mod tests {
             .unwrap_or(false);
         eprintln!("userdb exists: {userdb_exists}");
 
-        // 双拼方案验证：小鹤双拼 "nihao" -> 键序列 n i h c（ao -> c）
-        if schemas.iter().any(|(id, _)| id == "double_pinyin_flypy") {
-            engine.select_schema("double_pinyin_flypy");
-            let id = engine.ensure_session();
-            assert!(id != 0);
-            for ch in "nihc".chars() {
-                engine.process_key(ch as i32, 0);
-            }
-            let ctx = engine.get_context().expect("no context for flypy");
-            eprintln!("flypy preedit={} candidates={:?}", ctx.preedit, ctx.candidates);
-            assert!(
-                ctx.candidates.iter().any(|c| c.text == "你好"),
-                "「你好」不在小鹤双拼候选里: {:?}",
-                ctx.candidates.iter().map(|c| c.text.clone()).collect::<Vec<_>>()
-            );
-        }
-
         engine.finalize();
     }
 
-    /// 验证 OpenCC 数据随包发布且简繁转换端到端可用：
-    /// 仓颉码 nonhe = 發，开启 simplification 后应转换为「发」。
+    /// 验证随包数据只包含灵犀拼音方案，且 OpenCC 简化数据齐备。
+    ///
+    /// 本输入法只做拼音：五笔/仓颉/双拼/笔画等方案已从随包数据中移除，
+    /// 方案列表必须只剩「灵犀拼音（增强词库）」与「灵犀拼音」。
     #[test]
     fn test_opencc_simplifier() {
         let manifest = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -828,6 +813,21 @@ mod tests {
             shared.join("opencc").join("STCharacters.ocd2").exists(),
             "opencc/STCharacters.ocd2 缺失"
         );
+        for gone in [
+            "cangjie5.schema.yaml",
+            "cangjie5.dict.yaml",
+            "double_pinyin.schema.yaml",
+            "double_pinyin_flypy.schema.yaml",
+            "double_pinyin_mspy.schema.yaml",
+            "stroke.schema.yaml",
+            "stroke.dict.yaml",
+            "luna_pinyin.schema.yaml",
+        ] {
+            assert!(
+                !shared.join(gone).exists(),
+                "与拼音无关的方案数据仍在随包文件里：{gone}"
+            );
+        }
 
         let mut engine = RimeEngine::init(
             &shared.to_string_lossy(),
@@ -844,51 +844,12 @@ mod tests {
         }
 
         let schemas = engine.get_schema_list();
-        if !schemas.iter().any(|(id, _)| id == "cangjie5") {
-            eprintln!("cangjie5 schema missing, skipping conversion assertions");
-            engine.finalize();
-            return;
-        }
-        engine.select_schema("cangjie5");
-        let id = engine.ensure_session();
-        assert!(id != 0);
-        eprintln!(
-            "[opencc-test] simplification option = {}",
-            engine.get_option("simplification")
-        );
-        // 显式关闭简化（避免用户配置持久化导致默认状态不确定）
-        engine.set_option("simplification", false);
-
-        // 默认（传统汉字）：候选应含「發」
-        for ch in "nonhe".chars() {
-            engine.process_key(ch as i32, 0);
-        }
-        let ctx = engine.get_context().expect("no context for cangjie5");
-        eprintln!(
-            "cangjie traditional candidates: {:?}",
-            ctx.candidates.iter().map(|c| c.text.clone()).collect::<Vec<_>>()
-        );
-        assert!(
-            ctx.candidates.iter().any(|c| c.text == "發"),
-            "「發」不在传统候选里: {:?}",
-            ctx.candidates.iter().map(|c| c.text.clone()).collect::<Vec<_>>()
-        );
-
-        // 开启简化字：候选应转换为「发」
-        engine.clear_composition();
-        engine.set_option("simplification", true);
-        for ch in "nonhe".chars() {
-            engine.process_key(ch as i32, 0);
-        }
-        let ctx = engine.get_context().expect("no context after simplification");
-        eprintln!(
-            "cangjie simplified candidates: {:?}",
-            ctx.candidates.iter().map(|c| c.text.clone()).collect::<Vec<_>>()
-        );
-        assert!(
-            ctx.candidates.iter().any(|c| c.text == "发"),
-            "「发」不在简化候选里: {:?}",
-            ctx.candidates.iter().map(|c| c.text.clone()).collect::<Vec<_>>()
+        let ids: Vec<String> = schemas.iter().map(|(id, _)| id.clone()).collect();
+        eprintln!("随包方案列表: {ids:?}");
+        assert_eq!(
+            ids,
+            vec!["lingxi_rich".to_string(), "lingxi_pinyin".to_string()],
+            "方案列表应只剩灵犀拼音的两个方案"
         );
 
         engine.finalize();

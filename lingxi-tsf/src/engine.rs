@@ -49,7 +49,7 @@ pub fn ensure_engine() -> Option<Arc<Mutex<RimeEngine>>> {
         let ok = eng.deploy();
         crate::tsf_log!("engine init: deploy returned {ok}");
     }
-    // 应用共享配置：默认方案 + 输入选项（全角/半角、中英标点、简繁、中英模式）
+    // 应用共享配置：默认方案 + 输入选项（全角/半角、中英标点、中英模式）
     let cfg = lingxi_rime::config::load_config();
     let default_schema = std::env::var("LINGXI_DEFAULT_SCHEMA")
         .unwrap_or_else(|_| cfg.input.schema.clone());

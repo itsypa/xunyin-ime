@@ -6,12 +6,6 @@ config_version: "0.16.lingxi"
 schema_list:
   - schema: lingxi_rich
   - schema: lingxi_pinyin
-  - schema: luna_pinyin
-  - schema: double_pinyin_flypy
-  - schema: double_pinyin
-  - schema: double_pinyin_mspy
-  - schema: cangjie5
-  - schema: stroke
 
 switcher:
   caption: 〔方案選單〕

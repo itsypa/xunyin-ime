@@ -11,9 +11,14 @@
 
 ## Rime 词库数据
 
-- 来源：Rime 官方与社区词库（luna_pinyin、stroke、cangjie5、cn_dicts、
-  cn_dicts_cell、en_dicts、opencc 等），位于 `lingxi-ime/src-tauri/rime/data`。
+- 来源：Rime 官方与社区词库（cn_dicts、cn_dicts_cell、en_dicts、luna_pinyin
+  词表、opencc 等），位于 `lingxi-ime/src-tauri/rime/data`。
 - 许可：GPL/LGPL 与开放词库许可，具体以各文件头注明的版权声明为准。
+- 范围：本输入法只做拼音。随包数据仅保留灵犀拼音所需的两个方案
+  （`lingxi_rich`、`lingxi_pinyin`）及其依赖词表；五笔/仓颉/笔画/双拼等
+  无关方案与词表（stroke、cangjie5、double_pinyin*、luna_pinyin 方案定义）
+  已从随包数据中移除，`luna_pinyin.dict.yaml` 仅作为词表被
+  `lingxi_common` 引用。
 
 ## 界面参考
 
