@@ -395,26 +395,19 @@ impl TextService_Impl {
         // 自定义中文标点（设置 → 输入设置 → 标点自定义）优先于 Rime 内置标点表：
         // 命中时先把当前组合原样上屏，再上屏配置的文本；英文模式/英文标点下不生效。
         let mut custom_commit: Option<String> = None;
-        // 顿号键直接由 TSF 层接管（中文状态）：/ 与 \ 都上屏「、」，不查方案标点表，
-        // 也不再进组合。原因：Rime 的 punctuator 会被 default.yaml 的
-        // `punctuator: import_preset: symbols` 带成全角斜杠 ／，改 schema 不可靠。
-        // 英文模式（ascii_mode/ascii_punct）下面这段不生效，按键照原样透传。
+        // 顿号键由 TSF 层直接接管（中文状态）：/ 与 \ 都上屏「、」，不进组合、不查标点表。
+        //
+        // 背景：方案里改 punctuator、以及改 symbols.yaml 的 full_shape '/' 都试过，
+        // 实测仍会出全角斜杠 ／（Rime 的 full_shape 全角转换在标点表之上生效）。
+        // 这一层是我们自己能完全掌控的位置，实测 consumed=true 且直接上屏「、」。
+        // 英文模式（ascii_mode / 英文标点）不拦，按键照原样透传。
         if (vk == 0xBF || vk == 0xDC) && !eng.is_composing() {
-            let ascii_now = eng
-                .get_status()
-                .map(|s| s.is_ascii_mode)
-                .unwrap_or(false);
-            let cfg0 = cached_cfg();
-            if !ascii_now && !cfg0.input.ascii_punct {
+            let ascii_now = eng.get_status().map(|s| s.is_ascii_mode).unwrap_or(false);
+            if !ascii_now && !cached_cfg().input.ascii_punct {
                 crate::tsf_log!("keydown: 顿号键 vk=0x{vk:02X} -> 直接上屏「、」");
-                custom_commit = Some("、".into());
-                let consumed = true;
-                let commit = "、".to_string();
-                let cands: Vec<(String, String)> = Vec::new();
-                let _ = self.schedule_edit(context, "", &commit, 0);
+                let _ = self.schedule_edit(context, "", "、", 0);
                 crate::candidate_window::hide_candidates();
-                let _ = &cands;
-                return consumed;
+                return true;
             }
         }
         // 回车键行为（设置 → 输入设置 → 回车键）：
