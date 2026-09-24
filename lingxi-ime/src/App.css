@@ -428,52 +428,44 @@ body {
 }
 
 /*
- * 外观页两栏布局：右栏固定放预览（并排，不遮挡左栏），左栏放各项设置。
- * 之前用 sticky 叠在内容上会盖住下面的设置，这里改成真正的分栏。
+ * 外观页：候选窗预览（左）与自定义颜色（右）并排一栏。
+ * 是真正的分栏而不是吸附叠层——两边同屏可见，谁也不遮谁。
  */
 .appearance-page {
-  max-width: 1020px;
+  max-width: 860px;
 }
 
-.appearance-layout {
+.appearance-pair {
   display: flex;
-  align-items: flex-start;
+  align-items: stretch;
   gap: 16px;
+  margin-bottom: 16px;
 }
 
-.appearance-main {
-  flex: 1 1 auto;
-  min-width: 0;
-}
-
-.appearance-side {
-  flex: 0 0 292px;
-  align-self: flex-start;
-  /* 只在自己的栏内吸附：滚动时预览一直在视野里，又不会压住左栏内容 */
-  position: sticky;
-  top: 0;
-}
-
-.appearance-side .preview-card {
+.appearance-pair .preview-card {
+  flex: 0 0 300px;
   margin-bottom: 0;
 }
 
-.appearance-side .preview-window {
+.appearance-pair > .card:last-child {
+  flex: 1 1 auto;
+  min-width: 0;
+  margin-bottom: 0;
+}
+
+.appearance-pair .preview-window {
   width: 100%;
   /* 5 行候选在 17px 演示字号下约 164px，别压得更矮，否则会被裁切 */
   height: 168px;
 }
 
-/* 窗口很窄时退回上下排列：预览置顶且不吸附，避免任何遮挡。
-   窗口最小宽度 940，正常情况都走两栏。 */
+/* 窗口过窄时退回上下排列：预览在上、颜色在下，仍然互不遮挡 */
 @media (max-width: 900px) {
-  .appearance-layout {
+  .appearance-pair {
     flex-direction: column;
   }
 
-  .appearance-side {
-    order: -1;
-    position: static;
+  .appearance-pair .preview-card {
     flex: none;
     width: 100%;
   }

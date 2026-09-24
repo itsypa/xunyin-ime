@@ -673,22 +673,8 @@ function App() {
             <h1>外观主题</h1>
             <p className="page-desc">自定义候选窗的样式与显示效果。</p>
 
-            {/* 右栏固定预览：与左栏并排，滚动时不遮挡任何设置项 */}
-            <div className="appearance-layout">
-              <aside className="appearance-side">
-                <div className="card preview-card">
-                  <h2>候选窗预览</h2>
-                  <p className="hint" style={{ marginTop: 0 }}>
-                    实时预览配色、圆角、序号与透明度（尺寸固定，不随字号变化）。
-                    字号请把鼠标停在左侧「字体大小」滑块上，会弹出等大演示。
-                  </p>
-                  <CandidatePreview config={config} />
-                </div>
-              </aside>
-
-              <div className="appearance-main">
-                <div className="card">
-                  <h2>主题预设</h2>
+            <div className="card">
+              <h2>主题预设</h2>
                   <div className="preset-row">
                     {Object.keys(THEME_PRESETS).map((key) => (
                       <button
@@ -706,10 +692,10 @@ function App() {
                         {key === "light" ? "浅色" : key === "dark" ? "深色" : "护眼"}
                       </button>
                     ))}
-                  </div>
-                </div>
+              </div>
+            </div>
 
-                <div className="card">
+            <div className="card">
               <h2>显示</h2>
               <Row
                 label="字体大小"
@@ -761,16 +747,28 @@ function App() {
               />
             </div>
 
-            <div className="card">
-              <h2>自定义颜色</h2>
-              <div className="color-grid">
-                <ColorField label="主色调" value={a.accent} onChange={(v) => patchAppearance({ accent: v, selected_bg: v })} />
-                <ColorField label="背景色" value={a.bg} onChange={(v) => patchAppearance({ bg: v, theme: "custom" })} />
-                <ColorField label="文字颜色" value={a.text} onChange={(v) => patchAppearance({ text: v, theme: "custom" })} />
-                <ColorField label="选中背景" value={a.selected_bg} onChange={(v) => patchAppearance({ selected_bg: v, theme: "custom" })} />
-                <ColorField label="选中文字" value={a.selected_text} onChange={(v) => patchAppearance({ selected_text: v, theme: "custom" })} />
-                <ColorField label="注释颜色" value={a.comment} onChange={(v) => patchAppearance({ comment: v, theme: "custom" })} />
-                <ColorField label="边框颜色" value={a.border} onChange={(v) => patchAppearance({ border: v, theme: "custom" })} />
+            {/* 预览在左、自定义颜色在右：并排两栏，调色时效果同步可见 */}
+            <div className="appearance-pair">
+              <div className="card preview-card">
+                <h2>候选窗预览</h2>
+                <p className="hint" style={{ marginTop: 0 }}>
+                  实时预览配色、圆角、序号与透明度（尺寸固定，不随字号变化）。
+                  字号请把鼠标停在「字体大小」滑块上，会弹出等大演示。
+                </p>
+                <CandidatePreview config={config} />
+              </div>
+
+              <div className="card">
+                <h2>自定义颜色</h2>
+                <div className="color-grid">
+                  <ColorField label="主色调" value={a.accent} onChange={(v) => patchAppearance({ accent: v, selected_bg: v })} />
+                  <ColorField label="背景色" value={a.bg} onChange={(v) => patchAppearance({ bg: v, theme: "custom" })} />
+                  <ColorField label="文字颜色" value={a.text} onChange={(v) => patchAppearance({ text: v, theme: "custom" })} />
+                  <ColorField label="选中背景" value={a.selected_bg} onChange={(v) => patchAppearance({ selected_bg: v, theme: "custom" })} />
+                  <ColorField label="选中文字" value={a.selected_text} onChange={(v) => patchAppearance({ selected_text: v, theme: "custom" })} />
+                  <ColorField label="注释颜色" value={a.comment} onChange={(v) => patchAppearance({ comment: v, theme: "custom" })} />
+                  <ColorField label="边框颜色" value={a.border} onChange={(v) => patchAppearance({ border: v, theme: "custom" })} />
+                </div>
               </div>
             </div>
 
@@ -798,8 +796,6 @@ function App() {
                   hidden
                   onChange={(e) => handleImportSkin(e.target.files?.[0])}
                 />
-              </div>
-            </div>
               </div>
             </div>
           </section>
