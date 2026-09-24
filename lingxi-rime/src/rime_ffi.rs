@@ -13,7 +13,7 @@ pub type RimeSessionId = usize;
 pub type Bool = i32;
 
 /// librime 引擎是全局单例，其 API 函数指针表是线程安全的（内部有锁）。
-/// 这里显式声明 Send/Sync，使 RimeApi 可放入 Tauri 状态。
+/// 这里显式声明 Send/Sync，使 RimeApi 可放入共享状态。
 unsafe impl Send for RimeApi {}
 unsafe impl Sync for RimeApi {}
 

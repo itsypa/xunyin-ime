@@ -11,7 +11,6 @@ fn main() {
             .unwrap_or_else(|| std::path::PathBuf::from("."))
             .join("..")
             .join("lingxi-ime")
-            .join("src-tauri")
             .join("rime")
             .join("data"),
     };

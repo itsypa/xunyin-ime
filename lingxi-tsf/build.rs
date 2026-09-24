@@ -8,7 +8,6 @@ fn main() {
     let rime_dir = manifest_dir
         .join("..")
         .join("lingxi-ime")
-        .join("src-tauri")
         .join(if is_x86 { "rime-x86" } else { "rime" });
     println!("cargo:rustc-link-search=native={}", rime_dir.display());
     println!("cargo:rustc-link-lib=dylib=rime");

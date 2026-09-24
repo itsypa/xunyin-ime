@@ -23,18 +23,8 @@ jobs:
           workspaces: |
             lingxi-tsf
             lingxi-rime
-            lingxi-ime/src-tauri
+            lingxi-ime/native
             installer
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 20
-          cache: npm
-          cache-dependency-path: lingxi-ime/package-lock.json
-
-      - name: 安装前端依赖
-        working-directory: lingxi-ime
-        run: npm ci
 
       # 回归测试：TSF 按键/接口映射 + 配置解析（含旧配置兼容）。
       # lingxi-rime 的整体测试需要 librime 运行时数据，只跑纯配置用例。
@@ -54,21 +44,20 @@ jobs:
         working-directory: lingxi-tsf
         run: cargo build --release --target i686-pc-windows-msvc
 
-      - name: 构建设置中心（前端 + 后端）
-        working-directory: lingxi-ime
-        run: |
-          npm run build
-          cd src-tauri
-          cargo build --release --features custom-protocol
+      # 设置中心是原生 Win32 应用（无 WebView2 依赖），直接 cargo build
+      - name: 构建设置中心（原生）
+        working-directory: lingxi-ime/native
+        run: cargo build --release
 
       - name: 注入构建版本号
         shell: powershell
         run: |
-          $conf = "lingxi-ime/src-tauri/tauri.conf.json"
-          $json = Get-Content $conf -Raw | ConvertFrom-Json
-          $json.version = "0.1.$env:GITHUB_RUN_NUMBER"
-          $text = $json | ConvertTo-Json -Depth 10
+          $conf = "lingxi-ime/native/Cargo.toml"
+          $text = Get-Content $conf -Raw
+          $text = $text -replace '(?m)^version = ".+"', 'version = "0.1.$env:GITHUB_RUN_NUMBER"'
           [System.IO.File]::WriteAllText((Join-Path (Get-Location) $conf), $text, (New-Object System.Text.UTF8Encoding($false)))
+          cd lingxi-ime/native; cargo build --release
+          if ($LASTEXITCODE -ne 0) { throw "版本号注入后重建失败" }
 
       - name: 构建安装器（stub / 卸载器 / 打包器）
         working-directory: installer

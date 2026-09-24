@@ -1,7 +1,7 @@
 //! 灵犀输入法共享配置。
 //!
 //! 配置存于 `%APPDATA%\com.lingxi.ime\config.json`，
-//! 由 TSF 输入服务（读取）与 Tauri 设置中心（读写）共用。
+//! 由 TSF 输入服务（读取）与原生设置中心（读写）共用。
 
 use serde::{Deserialize, Serialize};
 use std::fs;

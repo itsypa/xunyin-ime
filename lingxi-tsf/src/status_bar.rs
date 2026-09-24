@@ -614,7 +614,7 @@ impl StatusBar {
 
 /// 定位设置中心可执行文件，兼容两种布局：
 /// - 安装布局：<安装目录>\lingxi-ime.exe（TSF DLL 在 tsf\ 或 tsf-x86\ 子目录）；
-/// - 开发布局：lingxi-ime\src-tauri\target\{debug,release}\lingxi-ime.exe。
+/// - 开发布局：lingxi-ime\native\target\{debug,release}\lingxi-ime.exe。
 fn module_dir() -> Option<std::path::PathBuf> {
     unsafe {
         let mut hmod: HMODULE = core::mem::zeroed();
@@ -644,18 +644,17 @@ fn settings_exe_path() -> Option<std::path::PathBuf> {
         }
         dir = d.parent().map(|p| p.to_path_buf());
     }
-    // 2) 开发布局：工作区根下 lingxi-ime\src-tauri\target\{release,debug}\lingxi-ime.exe
+    // 2) 开发布局：工作区根下 lingxi-ime\native\target\{release,debug}\lingxi-ime.exe
     //
-    // 注意顺序：**release 优先**。实测同一台机器上把设置中心拉起来的耗时
-    // 调试版 ≈ 2.1 秒、release 版 ≈ 60~100 毫秒（未优化 + 13.8MB 带调试信息的
-    // exe 冷启动太慢），用户点状态栏齿轮会明显感觉"要等几秒才弹出来"。
-    // 安装布局（第 1 步）命中的本来就是 release 产物，不受影响。
+    // 注意顺序：**release 优先**（release 更小更快；安装布局第 1 步命中的本来就是
+    // release 产物，不受影响）。设置中心已是原生 Win32 程序：窗口出现
+    // release ≈ 30ms、debug ≈ 130ms（旧 Tauri/WebView2 版分别是 60~100ms / 2.1s）。
     let mut dir = Some(dll_dir);
     while let Some(d) = dir {
         for profile in ["release", "debug"] {
             let exe = d
                 .join("lingxi-ime")
-                .join("src-tauri")
+                .join("native")
                 .join("target")
                 .join(profile)
                 .join("lingxi-ime.exe");

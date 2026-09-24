@@ -25,7 +25,7 @@ unsafe impl Send for RimeEngine {}
 unsafe impl Sync for RimeEngine {}
 
 impl RimeEngine {
-    /// 未初始化的占位实例（由 Tauri setup 创建，init_ime 时再真正初始化）。
+    /// 未初始化的占位实例（由设置中心启动时创建，随后真正初始化）。
     pub fn uninitialized() -> Self {
         Self {
             api: std::ptr::null(),
@@ -625,7 +625,7 @@ impl RimeEngine {
 
 impl Drop for RimeEngine {
     fn drop(&mut self) {
-        // finalize 由显式调用负责（在 tauri 状态清理时），这里不做以免双重释放
+        // finalize 由显式调用负责（设置中心退出时），这里不做以免双重释放
     }
 }
 
@@ -674,7 +674,6 @@ mod tests {
         let shared = manifest
             .join("..")
             .join("lingxi-ime")
-            .join("src-tauri")
             .join("rime")
             .join("data");
         let user = std::env::temp_dir().join("lingxi-ime-test-user");
@@ -740,7 +739,6 @@ mod tests {
         let shared = manifest
             .join("..")
             .join("lingxi-ime")
-            .join("src-tauri")
             .join("rime")
             .join("data");
         let user = std::env::temp_dir().join("lingxi-ime-test-user2");
@@ -798,7 +796,6 @@ mod tests {
         let shared = manifest
             .join("..")
             .join("lingxi-ime")
-            .join("src-tauri")
             .join("rime")
             .join("data");
         let user = std::env::temp_dir().join("lingxi-ime-test-user3");

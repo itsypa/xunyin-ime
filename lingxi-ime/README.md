@@ -3,8 +3,9 @@
 基于 [librime](https://github.com/rime/librime) 引擎的现代化 Windows 输入法。
 输入核心为系统级 **TSF（Text Services Framework）文本服务 DLL**，可在任意
 应用（含以管理员运行、DirectInput/原始输入读取的游戏）中提供原生组合串与
-自绘候选窗（搜狗风格，跟随光标）；Tauri 2 + React 伴侣应用负责设置中心
-（输入方案、全角/半角、简繁、每页候选数、主题、词库导入导出）。
+自绘候选窗（搜狗风格，跟随光标）；**原生 Win32 设置中心**（无 WebView 依赖，
+启动 ~30ms、内存 ~15MB）负责输入方案、全角/半角、模糊音、按键行为、
+主题配色、词库导入导出与日志诊断。
 
 仓库布局：
 
@@ -12,14 +13,14 @@
 D:\灵犀输入法\
 ├── lingxi-tsf\     系统级 TSF 文本服务 DLL（输入核心，cdylib，x64/x86 双架构）
 ├── lingxi-rime\    共享 Rime 引擎封装 crate（TSF 与伴侣应用共用）
-└── lingxi-ime\     设置中心（Tauri 2 + React：设置 / 词库 / 主题）
+├── lingxi-ime\     设置中心（native\ = 原生 Win32 应用；rime\ = 共享词库数据）
+└── installer\      Windows 安装器 / 卸载器（wind-installer 清单驱动）
 ```
 
 ## 功能特性
 
 - 拼音输入（灵犀拼音：内置办公与开发词库、emoji 与符号速记）
-- 多方案：朙月拼音、小鹤双拼、微软双拼、自然码双拼、仓颉、五笔画
-- 简繁切换（OpenCC，内置完整词典数据）
+- 只做拼音：随包仅灵犀拼音两套方案（增强词库 / 精简），不夹带五笔、双拼、笔画
 - 系统级 TSF 文本服务：任意应用原生组合串 + 自绘候选窗，无注入
 - 候选窗跟随光标（插入点锚定 + 100ms 定时重探，鼠标/方向键移动实时跟随）
 - 自绘候选窗：浅色/深色/护眼主题、字体大小、不透明度、自定义颜色、显示序号
@@ -50,7 +51,7 @@ D:\灵犀输入法\
 ## 开发
 
 依赖：Node.js 18+、Rust 1.70+、MSVC Build Tools（VS2022）、librime 预编译产物
-（x64：lingxi-ime/src-tauri/rime/；x86：lingxi-ime/src-tauri/rime-x86/）。
+（x64：lingxi-ime/rime/；x86：lingxi-ime/rime-x86/）。
 
 ### 一键部署（推荐）
 
@@ -93,24 +94,23 @@ cd lingxi-rime
 cargo test --lib --offline -- --test-threads=1
 ```
 
-伴侣应用（设置中心）：
+设置中心（原生 Win32，无需 Node/WebView）：
 
 ```bash
-cd lingxi-ime
-npm install
-# 开发模式（需要 Vite dev server）
-npm run tauri dev
-# 或部署成独立 exe（内置前端资源，无需 dev server）
+cd lingxi-ime\native
+cargo build              # 调试版（启动 ~130ms）
+cargo build --release    # 发布版（启动 ~30ms）
+# 或走部署脚本：编译 + 签名（+ 可选拉起）
 powershell -File ..\tools\deploy-settings.ps1 -Arch x64
 ```
 
 ## 构建安装包
 
 ```bash
-npm run tauri build
+powershell -File tools\pack-installer.ps1 -Arch both
 ```
 
-产物位于 `src-tauri/target/release/bundle/nsis/`。
+产物位于 `build\installer-dist\`（安装包）与 `build\`（便携 zip）。
 
 ## 快捷键
 
@@ -126,7 +126,7 @@ npm run tauri build
 
 ## Rime 数据
 
-- 共享数据（词典、schema、opencc）：`src-tauri/rime/data/`，随包发布
+- 共享数据（词典、schema、opencc）：`lingxi-ime/rime/data/`，随包发布
 - 用户数据（用户词库、日志、sync 备份）：`%APPDATA%\com.lingxi.ime\`
 - 首次激活自动部署建索引，期间按键放行给应用
 

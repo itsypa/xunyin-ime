@@ -16,8 +16,8 @@ logs/
 **/rime/build/
 
 # 打包时生成的 TSF DLL 资源副本（由 CI/本地脚本复制）
-lingxi-ime/src-tauri/tsf/
-lingxi-ime/src-tauri/tsf-x86/
+lingxi-ime/tsf/
+lingxi-ime/tsf-x86/
 
 # Codex 桌面端会话元数据
 .reasonix/

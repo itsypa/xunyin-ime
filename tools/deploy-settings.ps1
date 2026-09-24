@@ -1,10 +1,9 @@
 ﻿param(
     [ValidateSet("x64", "x86")]
     [string]$Arch = "x64",
-    # 出 release 版：启动快得多（实测窗口出现 60~100ms vs 调试版 ~2.1s），
-    # 状态栏齿轮拉起的就是它；开发迭代用默认的 debug 即可。
+    # 原生设置中心（Win32，无 WebView）：debug 版窗口出现也只要 ~130ms，
+    # release 版更小更快（~30ms）。安装包一律用 release。
     [switch]$Release,
-    [switch]$SkipFrontend,
     [switch]$SkipBuild,
     [switch]$SkipSign,
     [switch]$SkipLaunch
@@ -12,22 +11,8 @@
 
 $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
-$imeDir = Join-Path $root "lingxi-ime"
+$nativeDir = Join-Path $root "lingxi-ime\native"
 $certThumb = "109B04E710355C66C85B025C8E939B0F778580CB"
-
-if (-not $SkipFrontend) {
-    Push-Location $imeDir
-    try {
-        # native 命令写 stderr 时不要抛错（$ErrorActionPreference=Stop 会把它当终止错误）
-        $ErrorActionPreference = "Continue"
-        npm run build 2>&1 | Out-Host
-        $code = $LASTEXITCODE
-        $ErrorActionPreference = "Stop"
-        if ($code -ne 0) { throw "npm run build failed" }
-    } finally {
-        Pop-Location
-    }
-}
 
 $targetArg = @()
 $outSub = if ($Release) { "release" } else { "debug" }
@@ -37,13 +22,12 @@ if ($Arch -eq "x86") {
 }
 
 if (-not $SkipBuild) {
-    Push-Location (Join-Path $imeDir "src-tauri")
+    Push-Location $nativeDir
     try {
-        # 注意：必须启用 custom-protocol 特性，否则 exe 会去找 Vite 开发服务器
-        # （devUrl=http://localhost:1420），导致设置中心"localhost 拒绝连接"。
+        # native 命令写 stderr 时不要抛错（$ErrorActionPreference=Stop 会把它当终止错误）
         $ErrorActionPreference = "Continue"
         $profileArg = if ($Release) { @("--release") } else { @() }
-        cargo build @targetArg @profileArg --features custom-protocol 2>&1 | Out-Host
+        cargo build @targetArg @profileArg 2>&1 | Out-Host
         $code = $LASTEXITCODE
         $ErrorActionPreference = "Stop"
         if ($code -ne 0) { throw "cargo build failed ($Arch)" }
@@ -52,7 +36,7 @@ if (-not $SkipBuild) {
     }
 }
 
-$exe = Join-Path $imeDir "src-tauri\target\$outSub\lingxi-ime.exe"
+$exe = Join-Path $nativeDir "target\$outSub\lingxi-ime.exe"
 if (-not (Test-Path $exe)) { throw "settings exe not found: $exe" }
 
 if (-not $SkipSign) {
@@ -63,14 +47,8 @@ if (-not $SkipSign) {
     Write-Host "[$Arch] signed: $($sig.Status) ($exe)"
 }
 
-# 确保 rime/data 随 exe 就位（开发布局：exe 旁 rime/data）
-$dataSrc = Join-Path $imeDir "src-tauri\rime\data"
-$dataDst = Join-Path (Split-Path $exe) "rime\data"
-if (-not (Test-Path (Join-Path $dataDst "default.yaml")) -and (Test-Path (Join-Path $dataSrc "default.yaml"))) {
-    New-Item -ItemType Directory -Path $dataDst -Force | Out-Null
-    Copy-Item -Path (Join-Path $dataSrc "*") -Destination $dataDst -Recurse -Force
-    Write-Host "[$Arch] rime/data copied next to exe"
-}
+# 数据目录不用拷到 exe 旁：程序从 exe 目录逐级向上找 rime\data
+# （开发布局 lingxi-ime\rime\data；安装布局 <安装目录>\rime\data）。
 
 if (-not $SkipLaunch) {
     Get-Process lingxi-ime -ErrorAction SilentlyContinue | Stop-Process -Force

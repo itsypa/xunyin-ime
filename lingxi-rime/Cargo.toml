@@ -1,7 +1,7 @@
 [package]
 name = "lingxi-rime"
 version = "0.1.0"
-description = "灵犀输入法 —— librime 引擎共享封装(FFI + 会话管理),供 Tauri 前端与 TSF 文本服务复用"
+description = "灵犀输入法 —— librime 引擎共享封装(FFI + 会话管理),供设置中心与 TSF 文本服务复用"
 edition = "2021"
 license = "MIT"
 

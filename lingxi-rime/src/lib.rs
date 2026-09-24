@@ -1,7 +1,7 @@
 //! 灵犀输入法 —— librime 引擎共享封装。
 //!
 //! 供两类消费者复用：
-//!   * lingxi-ime(Tauri 前端/托盘伴侣,全局钩子方案)
+//!   * lingxi-ime(原生设置中心)
 //!   * lingxi-tsf(系统级 TSF 文本服务 DLL)
 //!
 //! 包含 rime.dll 的 FFI 绑定、RimeEngine 高级封装(会话/上下文/状态快照)、
@@ -24,7 +24,7 @@ use std::path::PathBuf;
 ///   * shared：随包发布的共享数据(词典/schema/opencc),位于资源目录下 `rime/data`
 ///   * user：用户数据(用户词库/日志/sync),位于 `%APPDATA%\<app_identifier>`
 ///
-/// `resource_dir` 传 Tauri 的 resource_dir 或 DLL 所在目录。
+/// `resource_dir` 传设置中心资源目录或 DLL 所在目录。
 pub fn resolve_data_dirs(
     resource_dir: &std::path::Path,
     app_identifier: &str,

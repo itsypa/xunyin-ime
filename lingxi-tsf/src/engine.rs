@@ -102,7 +102,7 @@ fn module_dir() -> Option<PathBuf> {
 /// 解析共享数据目录：
 ///   1. 环境变量 LINGXI_SHARED_DATA
 ///   2. DLL 旁的 rime/data（安装布局）
-///   3. 开发布局：../../../lingxi-ime/src-tauri/rime/data
+///   3. 开发布局：../../../lingxi-ime/rime/data
 fn shared_data_dir() -> PathBuf {
     if let Ok(p) = std::env::var("LINGXI_SHARED_DATA") {
         return PathBuf::from(p);
@@ -117,7 +117,6 @@ fn shared_data_dir() -> PathBuf {
                 .join("..")
                 .join("..")
                 .join("lingxi-ime")
-                .join("src-tauri")
                 .join("rime")
                 .join("data"),
         ] {
@@ -130,7 +129,7 @@ fn shared_data_dir() -> PathBuf {
     PathBuf::from("rime").join("data")
 }
 
-/// 用户数据目录（与 Tauri 伴侣应用共用，词库/日志互通）。
+/// 用户数据目录（与设置中心共用，词库/日志互通）。
 fn user_data_dir() -> PathBuf {
     std::env::var_os("APPDATA")
         .map(PathBuf::from)

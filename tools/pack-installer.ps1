@@ -19,8 +19,8 @@ $payloadDir = Join-Path $root "build\installer-payload"
 $distDir = Join-Path $root "build\installer-dist"
 
 if (-not $Version) {
-    $conf = Join-Path $root "lingxi-ime\src-tauri\tauri.conf.json"
-    $Version = (Get-Content $conf -Raw | ConvertFrom-Json).version
+    $conf = Join-Path $root "lingxi-ime\native\Cargo.toml"
+    $Version = (Select-String -Path $conf -Pattern '^version = "(.+)"' | Select-Object -First 1).Matches[0].Groups[1].Value
 }
 Write-Host "版本: $Version  压缩: $Compression"
 
@@ -32,12 +32,10 @@ if (-not $SkipBuild) {
         cargo build --release --target i686-pc-windows-msvc
     } finally { Pop-Location }
 
-    # 设置中心（前端 + Tauri 后端 release）
-    Push-Location (Join-Path $root "lingxi-ime")
+    # 设置中心（原生 Win32，无 WebView）
+    Push-Location (Join-Path $root "lingxi-ime\native")
     try {
-        npm run build
-        Push-Location "src-tauri"
-        try { cargo build --release --features custom-protocol } finally { Pop-Location }
+        cargo build --release
     } finally { Pop-Location }
 
     # 安装器 stub / 卸载器 / 打包器（x64 打包器通吃两种架构的产物）
@@ -54,11 +52,11 @@ New-Item -ItemType Directory -Force $payloadDir, (Join-Path $payloadDir "tsf"), 
 
 $tsfX64 = Join-Path $root "lingxi-tsf\target\release\lingxi_tsf.dll"
 $tsfX86 = Join-Path $root "lingxi-tsf\target\i686-pc-windows-msvc\release\lingxi_tsf.dll"
-$imeExe = Join-Path $root "lingxi-ime\src-tauri\target\release\lingxi-ime.exe"
-$rimeX64 = Join-Path $root "lingxi-ime\src-tauri\rime\rime.dll"
-$rimeX86 = Join-Path $root "lingxi-ime\src-tauri\rime-x86\rime.dll"
-$rimeData = Join-Path $root "lingxi-ime\src-tauri\rime\data"
-$dictMgr = Join-Path $root "lingxi-ime\src-tauri\rime\rime_dict_manager.exe"
+$imeExe = Join-Path $root "lingxi-ime\native\target\release\lingxi-ime.exe"
+$rimeX64 = Join-Path $root "lingxi-ime\rime\rime.dll"
+$rimeX86 = Join-Path $root "lingxi-ime\rime-x86\rime.dll"
+$rimeData = Join-Path $root "lingxi-ime\rime\data"
+$dictMgr = Join-Path $root "lingxi-ime\rime\rime_dict_manager.exe"
 $uninstaller = Join-Path $installerDir "target\release\wind-uninstaller.exe"
 
 foreach ($f in @($tsfX64, $tsfX86, $imeExe, $rimeX64, $rimeX86, $dictMgr, $uninstaller)) {

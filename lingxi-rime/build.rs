@@ -1,6 +1,6 @@
 fn main() {
     // 链接 rime.lib(静态导入库,导出 rime_get_api 等符号)。
-    // rime 预编译产物位于 lingxi-ime/src-tauri/rime(monorepo 布局)。
+    // rime 预编译产物位于 lingxi-ime/rime(monorepo 布局)。
     let manifest_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     // x86 目标使用 rime-x86（32 位 librime），x64 使用 rime（64 位 librime）。
     let is_x86 = std::env::var("CARGO_CFG_TARGET_POINTER_WIDTH")
@@ -9,7 +9,6 @@ fn main() {
     let rime_dir = manifest_dir
         .join("..")
         .join("lingxi-ime")
-        .join("src-tauri")
         .join(if is_x86 { "rime-x86" } else { "rime" });
     println!("cargo:rustc-link-search=native={}", rime_dir.display());
     println!("cargo:rustc-link-lib=dylib=rime");
