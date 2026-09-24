@@ -697,6 +697,10 @@ function App() {
 
             <div className="card">
               <h2>候选窗预览</h2>
+              <p className="hint" style={{ marginTop: 0 }}>
+                这里演示配色、圆角、序号与透明度（固定尺寸，不随字号变化）。
+                字号请把鼠标停在下方「字体大小」滑块上，会弹出真实大小的演示。
+              </p>
               <CandidatePreview config={config} />
             </div>
 
@@ -704,13 +708,13 @@ function App() {
               <h2>显示</h2>
               <Row
                 label="字体大小"
-                desc="候选文字的显示字号"
+                desc="候选文字的显示字号（鼠标停在滑块上可弹出等大演示）"
                 control={
-                  <Slider
+                  <FontSizeSlider
                     min={9}
                     max={26}
                     value={a.font_size}
-                    suffix=" pt"
+                    config={config}
                     onChange={(v) => patchAppearance({ font_size: v })}
                   />
                 }
@@ -1075,10 +1079,32 @@ function StatCard(props: { label: string; value: number | string; unit: string }
 
 function CandidatePreview({ config }: { config: LingxiConfig }) {
   const a = config.appearance;
-  const size = Math.max(12, Math.round(a.font_size * 1.5));
+  // 固定演示字号：字号设置改由滑块悬停浮层演示，这里不再随字号缩放，
+  // 否则预览块会变大/被裁切，把下面的设置挤下去。
+  const size = PREVIEW_BASE_SIZE;
+  return <PreviewWindow appearance={a} size={size} />;
+}
+
+/** pt → 屏幕像素（候选窗按 96 DPI 绘制，1pt = 4/3 px）。 */
+function ptToPx(pt: number) {
+  return Math.round((pt * 4) / 3);
+}
+
+/** 预览块固定演示字号（约 13pt，不随设置变化）。 */
+const PREVIEW_BASE_SIZE = ptToPx(13);
+
+function PreviewWindow({
+  appearance: a,
+  size,
+  compact,
+}: {
+  appearance: AppearanceConfig;
+  size: number;
+  compact?: boolean;
+}) {
   return (
     <div
-      className="preview-window"
+      className={`preview-window${compact ? " compact" : ""}`}
       style={{
         background: a.bg,
         borderColor: a.border,
@@ -1086,7 +1112,7 @@ function CandidatePreview({ config }: { config: LingxiConfig }) {
         borderRadius: a.corner_radius,
       }}
     >
-      {PREVIEW_ITEMS.map((item, i) => {
+      {(compact ? PREVIEW_ITEMS.slice(0, 3) : PREVIEW_ITEMS).map((item, i) => {
         const sel = i === 0;
         return (
           <div
@@ -1110,6 +1136,77 @@ function CandidatePreview({ config }: { config: LingxiConfig }) {
           </div>
         );
       })}
+    </div>
+  );
+}
+
+/**
+ * 字体大小滑块：滑块本体尺寸固定；鼠标停上去时在旁边弹出浮层，
+ * 用当前主题按**该位置对应的字号**渲染候选窗演示（浮层不参与布局，不会挤页面）。
+ */
+function FontSizeSlider(props: {
+  min: number;
+  max: number;
+  value: number;
+  config: LingxiConfig;
+  onChange: (v: number) => void;
+}) {
+  const [hover, setHover] = useState<number | null>(null);
+  const [editing, setEditing] = useState(false);
+  const ref = useRef<HTMLInputElement>(null);
+  // 拖动/键盘调整期间一直显示浮层（此时演示"当前值"），单纯悬停则演示指针处的字号
+  useEffect(() => {
+    if (!editing) return;
+    const stop = () => setEditing(false);
+    window.addEventListener("mouseup", stop);
+    window.addEventListener("touchend", stop);
+    return () => {
+      window.removeEventListener("mouseup", stop);
+      window.removeEventListener("touchend", stop);
+    };
+  }, [editing]);
+  const sizeOf = (clientX?: number) => {
+    const el = ref.current;
+    if (!el || clientX === undefined) return props.value;
+    const r = el.getBoundingClientRect();
+    const ratio = Math.min(1, Math.max(0, (clientX - r.left) / Math.max(1, r.width)));
+    return Math.round(props.min + ratio * (props.max - props.min));
+  };
+  const shown = editing ? props.value : hover;
+  return (
+    <div
+      className="fontsize-ctl"
+      onMouseEnter={(e) => setHover(sizeOf(e.clientX))}
+      onMouseMove={(e) => setHover(sizeOf(e.clientX))}
+      onMouseLeave={() => setHover(null)}
+    >
+      <div className="slider-wrap">
+        <input
+          ref={ref}
+          type="range"
+          className="slider"
+          min={props.min}
+          max={props.max}
+          value={props.value}
+          onMouseDown={() => setEditing(true)}
+          onFocus={() => setEditing(true)}
+          onBlur={() => setEditing(false)}
+          onChange={(e) => props.onChange(Number(e.target.value))}
+        />
+        <span className="slider-value">{props.value} pt</span>
+      </div>
+      {shown !== null && (
+        <div className="fontsize-pop">
+          <div className="fontsize-pop-label">
+            {editing ? `当前 ${shown} pt` : `${shown} pt 效果（松开/移开即消失）`}
+          </div>
+          <PreviewWindow
+            appearance={props.config.appearance}
+            size={ptToPx(shown)}
+            compact
+          />
+        </div>
+      )}
     </div>
   );
 }
