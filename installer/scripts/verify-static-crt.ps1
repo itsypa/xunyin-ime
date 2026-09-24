@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 <#
 .SYNOPSIS
     校验 Windows 产物静态链接了 MSVC CRT（发布门禁）。
