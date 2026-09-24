@@ -20,8 +20,6 @@ pub struct InputConfig {
     pub ascii_punct: bool,
     /// 中英模式：true=英文（直接上屏）。
     pub ascii_mode: bool,
-    /// 简体输出：true=简体，false=繁体。
-    pub simplification: bool,
     /// 每页候选数。
     pub page_size: u32,
     /// 候选提示音（预留，默认关闭）。
@@ -51,7 +49,6 @@ impl Default for InputConfig {
             full_shape: true,
             ascii_punct: false,
             ascii_mode: false,
-            simplification: true,
             page_size: 5,
             beep: false,
             punct_map: Vec::new(),

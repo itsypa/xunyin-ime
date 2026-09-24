@@ -16,7 +16,7 @@ $S = 2
 $CELL = 30
 $GRIP = 12
 $H = 30
-$W = $GRIP + $CELL * 6          # 192：拖动柄 + 中/英 + 标点 + 全半角 + 简/繁 + 软键盘 + 设置
+$W = $GRIP + $CELL * 5          # 162：拖动柄 + 中/英 + 标点 + 全半角 + 符号 + 设置
 $AW = $W * $S                    # 264
 $AH = $H * $S                    # 60
 $Tile = $CELL * $S               # 60（单格 tile 尺寸）
@@ -191,29 +191,6 @@ Make-Icon "icon_gear" {
     $g.CompositingMode = [System.Drawing.Drawing2D.CompositingMode]::SourceOver
 }
 
-# 软键盘：圆角外壳 + 两排键 + 空格长条
-Make-Icon "icon_softkbd" {
-    param($g, $cx, $cy, $size, $brush)
-    $w = $size
-    $h = $size * 0.72
-    $x = $cx - $w / 2
-    $y = $cy - $h / 2
-    $pen = New-Object System.Drawing.Pen([System.Drawing.Color]::White, (1.6 * $S))
-    $body = RoundRect $x $y $w $h (2.0 * $S)
-    $g.DrawPath($pen, $body)
-    $body.Dispose()
-    $pen.Dispose()
-    # 两排按键 + 底部空格条
-    for ($row = 0; $row -lt 2; $row++) {
-        for ($col = 0; $col -lt 4; $col++) {
-            $kx = $x + $w * 0.14 + $col * ($w * 0.21)
-            $ky = $y + $h * (0.22 + $row * 0.30)
-            $g.FillRectangle($brush, [float]$kx, [float]$ky, [float]($w * 0.13), [float]($h * 0.16))
-        }
-    }
-    $g.FillRectangle($brush, [float]($x + $w * 0.24), [float]($y + $h * 0.78), [float]($w * 0.52), [float]($h * 0.16))
-}
-
 # ── 文字蒙版：中 / 英（白色 + alpha，15dp 字号）──────────────────────────────
 function Make-Glyph([string]$text, [string]$name) {
     $ctx = New-Bmp $Tile $Tile
@@ -229,8 +206,7 @@ function Make-Glyph([string]$text, [string]$name) {
 
 Make-Glyph "中" "glyph_zhong"
 Make-Glyph "英" "glyph_ying"
-Make-Glyph "简" "glyph_jian"
-Make-Glyph "繁" "glyph_fan"
+Make-Glyph "※" "glyph_symbol"
 
 Get-ChildItem $out -Filter *.bin | Select-Object Name, Length
 Write-Output "assets generated -> $out"

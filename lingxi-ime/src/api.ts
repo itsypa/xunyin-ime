@@ -7,7 +7,6 @@ export interface InputConfig {
   full_shape: boolean;
   ascii_punct: boolean;
   ascii_mode: boolean;
-  simplification: boolean;
   page_size: number;
   beep: boolean;
   /** 自定义中文标点：按键 → 上屏文本（为空即沿用 Rime 内置标点表）。 */

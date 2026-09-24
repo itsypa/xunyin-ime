@@ -58,14 +58,14 @@ pub fn ensure_engine() -> Option<Arc<Mutex<RimeEngine>>> {
         ("full_shape".into(), cfg.input.full_shape),
         ("ascii_punct".into(), cfg.input.ascii_punct),
         ("ascii_mode".into(), cfg.input.ascii_mode),
-        ("simplification".into(), cfg.input.simplification),
+        // 本输入法只出简体：繁体输出（简入繁出）已从产品中移除，这里固定为简体。
+        ("simplification".into(), true),
     ]);
     crate::tsf_log!(
-        "engine init: schema={default_schema} full_shape={} ascii_punct={} ascii_mode={} simplification={}",
+        "engine init: schema={default_schema} full_shape={} ascii_punct={} ascii_mode={} simplification=true",
         cfg.input.full_shape,
         cfg.input.ascii_punct,
-        cfg.input.ascii_mode,
-        cfg.input.simplification
+        cfg.input.ascii_mode
     );
     crate::tsf_log!("engine ready");
     let arc = Arc::new(Mutex::new(eng));

@@ -51,7 +51,6 @@ const DEFAULT_CONFIG: LingxiConfig = {
     full_shape: true,
     ascii_punct: false,
     ascii_mode: false,
-    simplification: true,
     page_size: 5,
     beep: false,
     punct_map: [],
@@ -431,17 +430,6 @@ function App() {
                   />
                 }
               />
-              <Row
-                label="输出简繁"
-                desc="简体输出或繁体输出"
-                control={
-                  <Toggle
-                    checked={config.input.simplification}
-                    labels={["繁体", "简体"]}
-                    onChange={(v) => patchInput({ simplification: v })}
-                  />
-                }
-              />
             </div>
 
             <div className="card">
@@ -759,10 +747,9 @@ function App() {
                   <tr><td>空格</td><td>确认高亮候选词</td></tr>
                   <tr><td>1-9</td><td>选择对应候选</td></tr>
                     <tr><td>Ctrl+.</td><td>切换中英标点</td></tr>
-                    <tr><td>状态栏「简/繁」格</td><td>切换简入繁出（蓝底=已启用）</td></tr>
-                    <tr><td>状态栏「键盘」格</td><td>打开/收起软键盘（蓝底=已打开）</td></tr>
-                    <tr><td>软键盘标题栏</td><td>「键盘 / 符号」切换页签，✕ 关闭；可拖动</td></tr>
-                    <tr><td>右键状态栏</td><td>弹出开关菜单（中英/全角/标点/简繁/设置）</td></tr>
+                    <tr><td>状态栏「符号」格</td><td>打开/收起符号面板（蓝底=已打开）</td></tr>
+                    <tr><td>符号面板</td><td>六类符号点选直上屏；可拖动，✕ 关闭</td></tr>
+                    <tr><td>右键状态栏</td><td>弹出开关菜单（中英/全角/标点/符号/设置）</td></tr>
                     <tr><td>← / →</td><td>拼音内逐字移动（跳过分隔符，到头不循环）</td></tr>
                   <tr><td>Tab / [ ] / - =</td><td>候选翻页</td></tr>
                 </tbody>
