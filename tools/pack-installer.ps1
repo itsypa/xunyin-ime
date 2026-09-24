@@ -1,4 +1,4 @@
-﻿param(
+param(
     [string]$Version = "",
     # x64 = 64 位 Windows；x86 = 32 位 Windows（也可在 64 位系统上跑，注册走 Sysnative）。
     # 两者都用同一份 payload，只有安装器 stub 的架构不同。
@@ -19,21 +19,21 @@ $payloadDir = Join-Path $root "build\installer-payload"
 $distDir = Join-Path $root "build\installer-dist"
 
 if (-not $Version) {
-    $conf = Join-Path $root "lingxi-ime\native\Cargo.toml"
+    $conf = Join-Path $root "xunyin-ime\native\Cargo.toml"
     $Version = (Select-String -Path $conf -Pattern '^version = "(.+)"' | Select-Object -First 1).Matches[0].Groups[1].Value
 }
 Write-Host "版本: $Version  压缩: $Compression"
 
 # ── 1. 构建 TSF（x64 / x86 release）────────────────────────────────────────
 if (-not $SkipBuild) {
-    Push-Location (Join-Path $root "lingxi-tsf")
+    Push-Location (Join-Path $root "xunyin-tsf")
     try {
         cargo build --release
         cargo build --release --target i686-pc-windows-msvc
     } finally { Pop-Location }
 
     # 设置中心（原生 Win32，无 WebView）
-    Push-Location (Join-Path $root "lingxi-ime\native")
+    Push-Location (Join-Path $root "xunyin-ime\native")
     try {
         cargo build --release
     } finally { Pop-Location }
@@ -50,13 +50,13 @@ if (-not $SkipBuild) {
 if (Test-Path $payloadDir) { Remove-Item -LiteralPath $payloadDir -Recurse -Force }
 New-Item -ItemType Directory -Force $payloadDir, (Join-Path $payloadDir "tsf"), (Join-Path $payloadDir "tsf-x86") | Out-Null
 
-$tsfX64 = Join-Path $root "lingxi-tsf\target\release\lingxi_tsf.dll"
-$tsfX86 = Join-Path $root "lingxi-tsf\target\i686-pc-windows-msvc\release\lingxi_tsf.dll"
-$imeExe = Join-Path $root "lingxi-ime\native\target\release\lingxi-ime.exe"
-$rimeX64 = Join-Path $root "lingxi-ime\rime\rime.dll"
-$rimeX86 = Join-Path $root "lingxi-ime\rime-x86\rime.dll"
-$rimeData = Join-Path $root "lingxi-ime\rime\data"
-$dictMgr = Join-Path $root "lingxi-ime\rime\rime_dict_manager.exe"
+$tsfX64 = Join-Path $root "xunyin-tsf\target\release\xunyin_tsf.dll"
+$tsfX86 = Join-Path $root "xunyin-tsf\target\i686-pc-windows-msvc\release\xunyin_tsf.dll"
+$imeExe = Join-Path $root "xunyin-ime\native\target\release\xunyin-ime.exe"
+$rimeX64 = Join-Path $root "xunyin-ime\rime\rime.dll"
+$rimeX86 = Join-Path $root "xunyin-ime\rime-x86\rime.dll"
+$rimeData = Join-Path $root "xunyin-ime\rime\data"
+$dictMgr = Join-Path $root "xunyin-ime\rime\rime_dict_manager.exe"
 $uninstaller = Join-Path $installerDir "target\release\wind-uninstaller.exe"
 
 foreach ($f in @($tsfX64, $tsfX86, $imeExe, $rimeX64, $rimeX86, $dictMgr, $uninstaller)) {
@@ -64,7 +64,7 @@ foreach ($f in @($tsfX64, $tsfX86, $imeExe, $rimeX64, $rimeX86, $dictMgr, $unins
 }
 
 # 设置中心 + 引擎（rime.dll 需与 exe 同目录）
-Copy-Item $imeExe (Join-Path $payloadDir "lingxi-ime.exe") -Force
+Copy-Item $imeExe (Join-Path $payloadDir "xunyin-ime.exe") -Force
 Copy-Item $rimeX64 (Join-Path $payloadDir "rime.dll") -Force
 Copy-Item $dictMgr (Join-Path $payloadDir "rime_dict_manager.exe") -Force
 Copy-Item $uninstaller (Join-Path $payloadDir "uninstall.exe") -Force
@@ -73,9 +73,9 @@ Copy-Item $uninstaller (Join-Path $payloadDir "uninstall.exe") -Force
 Copy-Item $rimeData (Join-Path $payloadDir "rime\data") -Recurse -Force
 
 # TSF（x64 与其 rime.dll；x86 与其 32 位 rime.dll）
-Copy-Item $tsfX64 (Join-Path $payloadDir "tsf\lingxi_tsf_x64.dll") -Force
+Copy-Item $tsfX64 (Join-Path $payloadDir "tsf\xunyin_tsf_x64.dll") -Force
 Copy-Item $rimeX64 (Join-Path $payloadDir "tsf\rime.dll") -Force
-Copy-Item $tsfX86 (Join-Path $payloadDir "tsf-x86\lingxi_tsf_x86.dll") -Force
+Copy-Item $tsfX86 (Join-Path $payloadDir "tsf-x86\xunyin_tsf_x86.dll") -Force
 Copy-Item $rimeX86 (Join-Path $payloadDir "tsf-x86\rime.dll") -Force
 
 $size = [math]::Round(((Get-ChildItem $payloadDir -Recurse -File | Measure-Object Length -Sum).Sum / 1MB), 1)
@@ -83,10 +83,10 @@ Write-Host "payload 组装完成: $payloadDir ($size MB)"
 
 # 组装后校验：这些文件缺一不可（曾出现过复制后缺失导致安装包不完整）
 $required = @(
-    "lingxi-ime.exe", "rime.dll", "uninstall.exe",
+    "xunyin-ime.exe", "rime.dll", "uninstall.exe",
     "rime\data\default.yaml",
-    "tsf\lingxi_tsf_x64.dll", "tsf\rime.dll",
-    "tsf-x86\lingxi_tsf_x86.dll", "tsf-x86\rime.dll"
+    "tsf\xunyin_tsf_x64.dll", "tsf\rime.dll",
+    "tsf-x86\xunyin_tsf_x86.dll", "tsf-x86\rime.dll"
 )
 $missing = $required | Where-Object { -not (Test-Path (Join-Path $payloadDir $_)) }
 if ($missing) { throw "payload 缺少必要文件: $($missing -join ', ')" }
@@ -136,7 +136,7 @@ function Pack-One([string]$arch) {
     $un = Join-Path $installerDir "target\$sub\wind-uninstaller.exe"
     if (-not (Test-Path $un)) { throw "缺少 $arch 卸载器: $un" }
     Copy-Item $un (Join-Path $payloadDir "uninstall.exe") -Force
-    $output = Join-Path $distDir "LingxiIME-Setup-$Version-$arch.exe"
+    $output = Join-Path $distDir "XunyinIME-Setup-$Version-$arch.exe"
     if ($Sign) {
         if (-not (Test-Path $PfxPath)) { throw "签名证书不存在: $PfxPath" }
         # 官方推荐顺序：先加工卸载器（写版本信息/图标）→ 签名 → 打包 → 签名安装包。
@@ -144,7 +144,7 @@ function Pack-One([string]$arch) {
         & $packer prep-uninstaller --config $config --version $Version --source-dir $payloadDir
         if ($LASTEXITCODE -ne 0) { throw "wind-packer prep-uninstaller 失败 ($arch)" }
         Sign-File (Join-Path $payloadDir "uninstall.exe")
-        $archive = Join-Path $distDir "LingxiIME-$Version-$arch.bin"
+        $archive = Join-Path $distDir "XunyinIME-$Version-$arch.bin"
         & $packer pack --config $config --version $Version --source-dir $payloadDir `
             --compression $Compression --output $archive --require-prepared-uninstaller
         if ($LASTEXITCODE -ne 0) { throw "wind-packer pack 失败 ($arch)" }

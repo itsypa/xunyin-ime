@@ -1,4 +1,4 @@
-# 灵犀输入法 (Lingxi IME)
+# 迅音输入法 (Xunyin IME)
 
 一款基于 Windows TSF（Text Services Framework）与 [Rime/librime](https://github.com/rime/librime)
 引擎的现代中文输入法：系统级集成、本地运行、无广告、无遥测，界面与交互对标搜狗输入法。
@@ -20,9 +20,9 @@
 ## 目录结构
 
 ```
-lingxi-ime/    设置中心（Tauri 2 + React）与 Rime 运行时数据（词库、rime.dll）
-lingxi-rime/   librime 引擎共享封装（FFI + 会话管理），供 TSF 与设置中心复用
-lingxi-tsf/    TSF 文本服务 DLL（拼音输入、候选窗、状态栏）
+xunyin-ime/    设置中心（Tauri 2 + React）与 Rime 运行时数据（词库、rime.dll）
+xunyin-rime/   librime 引擎共享封装（FFI + 会话管理），供 TSF 与设置中心复用
+xunyin-tsf/    TSF 文本服务 DLL（拼音输入、候选窗、状态栏）
 tools/         部署、签名、状态栏资源生成脚本与测试页
 ```
 
@@ -44,7 +44,7 @@ tools/         部署、签名、状态栏资源生成脚本与测试页
    ```
 
    脚本会把产物复制到**固定路径**的暂存布局 `build\dev-deploy\`（与安装包布局一致：
-   `tsf\lingxi_tsf_x64.dll`、`tsf-x86\lingxi_tsf_x86.dll`），签名后注册 CLSID/TIP 档案。
+   `tsf\xunyin_tsf_x64.dll`、`tsf-x86\xunyin_tsf_x86.dll`），签名后注册 CLSID/TIP 档案。
 
    > 注册表只指向这个固定路径，**不会**指向 `target\debug`：TSF 会把输入法 DLL 加载进
    > **每一个正在输入的进程**，而 cargo 每次构建都会重写 `target\debug`，路径一变就会出现
@@ -54,14 +54,14 @@ tools/         部署、签名、状态栏资源生成脚本与测试页
 2. 构建设置中心（需 `custom-protocol` 特性，否则前端走 localhost）：
 
    ```powershell
-   cd lingxi-ime
+   cd xunyin-ime
    npm install
    npm run build
    cd src-tauri
    cargo build --features custom-protocol
    ```
 
-3. 切换输入法：系统语言栏选择「中文（简体）- 灵犀输入法」，或 Win+Space。
+3. 切换输入法：系统语言栏选择「中文（简体）- 迅音输入法」，或 Win+Space。
 
 > 修改 DLL 后请**彻底退出并重开**已打开的应用，让新进程加载新版本；或注销重登。
 
@@ -71,27 +71,27 @@ tools/         部署、签名、状态栏资源生成脚本与测试页
 [.github/workflows/build.yml](.github/workflows/build.yml) 会在 `windows-latest`
 上自动：
 
-1. 编译 `lingxi-tsf`（x64 + x86 release）；
+1. 编译 `xunyin-tsf`（x64 + x86 release）；
 2. 编译设置中心（Tauri release + 前端 dist）；
 3. 用 [wind-installer](https://github.com/huanfeng/wind-installer)（清单驱动）生成
-   **安装器 + 卸载器**：`LingxiIME-Setup-<版本>-x64.exe`（64 位 Windows）与
-   `LingxiIME-Setup-<版本>-x86.exe`（32 位 Windows）；
+   **安装器 + 卸载器**：`XunyinIME-Setup-<版本>-x64.exe`（64 位 Windows）与
+   `XunyinIME-Setup-<版本>-x86.exe`（32 位 Windows）；
 4. 上传产物并在 Release 中发布。
 
 构建成功后还会自动发布 **GitHub Release**：每次构建注入唯一版本号
 `0.1.<构建序号>`（合法 semver），Release 名称与安装包文件名均为英文
-（`LingxiIME v0.1.<序号>` / `LingxiIME-Setup-0.1.<序号>-x64.exe` / `-x86.exe`），避免中文
-编码显示问题；应用本身安装后仍显示中文名「灵犀输入法」。以后想手动控制版本时，
+（`XunyinIME v0.1.<序号>` / `XunyinIME-Setup-0.1.<序号>-x64.exe` / `-x86.exe`），避免中文
+编码显示问题；应用本身安装后仍显示中文名「迅音输入法」。以后想手动控制版本时，
 可以改为按 `v*` 标签触发。
 
 打包布局（安装目录内）：
 
 ```
-lingxi-ime.exe                   设置中心
+xunyin-ime.exe                   设置中心
 rime.dll                         x64 rime 引擎（设置中心旁）
 rime\data\...                    共享词库
-tsf\lingxi_tsf_x64.dll           x64 TSF + 同目录 rime.dll（注册 64 位视图）
-tsf-x86\lingxi_tsf_x86.dll       x86 TSF + 32 位 rime.dll（注册 32 位视图）
+tsf\xunyin_tsf_x64.dll           x64 TSF + 同目录 rime.dll（注册 64 位视图）
+tsf-x86\xunyin_tsf_x86.dll       x86 TSF + 32 位 rime.dll（注册 32 位视图）
 uninstall.exe                    卸载器（控制面板/设置里可卸载）
 ```
 
@@ -126,10 +126,10 @@ CLSID/GUID、快捷方式、启动行为、文案等）。安装器支持 `--sil
 
 | 方式 | 适用 | 说明 |
 |---|---|---|
-| `LingxiIME-Setup-<版本>-x64.exe` | 64 位 Windows | 安装器：注册双架构 TSF、建快捷方式、写卸载项，装完自动打开设置中心 |
-| `LingxiIME-<版本>-portable.zip` | 任意 Windows（含 32 位） | 解压后以管理员运行其中的 `register-ime.ps1` 注册输入法 |
+| `XunyinIME-Setup-<版本>-x64.exe` | 64 位 Windows | 安装器：注册双架构 TSF、建快捷方式、写卸载项，装完自动打开设置中心 |
+| `XunyinIME-<版本>-portable.zip` | 任意 Windows（含 32 位） | 解压后以管理员运行其中的 `register-ime.ps1` 注册输入法 |
 
-卸载：安装版走「设置 → 应用 → 灵犀输入法」，也可直接运行安装目录下的 `uninstall.exe`
+卸载：安装版走「设置 → 应用 → 迅音输入法」，也可直接运行安装目录下的 `uninstall.exe`
 （支持 `--silent`、`--keep-user-data`）；便携版用 `register-ime.ps1 -Unregister`。
 
 ### 代码签名（可选）
@@ -142,8 +142,8 @@ CLSID/GUID、快捷方式、启动行为、文案等）。安装器支持 `--sil
 ## 测试
 
 - `tools/tsf_test.html`：候选跟随/选词测试页。
-- `lingxi-rime/examples/runtime_probe.rs`：引擎级功能验证（候选、方向键、Shift 切换等）。
-- `lingxi-tsf`：`cargo test`（TSF 接口、按键映射、组合逻辑）。
+- `xunyin-rime/examples/runtime_probe.rs`：引擎级功能验证（候选、方向键、Shift 切换等）。
+- `xunyin-tsf`：`cargo test`（TSF 接口、按键映射、组合逻辑）。
 
 ## 第三方组件
 

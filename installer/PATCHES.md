@@ -1,13 +1,13 @@
 # 本地对 wind-installer 的修改
 
 本目录是 [wind-installer](https://github.com/huanfeng/wind-installer)（MIT）的副本，
-为**灵犀输入法**的需求做了以下修改。上游升级时请对照本文合并。
+为**迅音输入法**的需求做了以下修改。上游升级时请对照本文合并。
 
 ## 1. `src/installer/ime.rs`
 
 | 改动 | 原因 |
 |---|---|
-| 注册路径一律使用**反斜杠**（清单 `dll_x64`/`dll_x86`/`acl_dlls`） | 32 位 `regsvr32`（SysWOW64）无法处理混用正斜杠的路径：`tsf-x86/lingxi_tsf_x86.dll` 会被当成开关，注册静默失败（实测退出码 3），改反斜杠即成功 |
+| 注册路径一律使用**反斜杠**（清单 `dll_x64`/`dll_x86`/`acl_dlls`） | 32 位 `regsvr32`（SysWOW64）无法处理混用正斜杠的路径：`tsf-x86/xunyin_tsf_x86.dll` 会被当成开关，注册静默失败（实测退出码 3），改反斜杠即成功 |
 | 32 位进程注册 x64 视图时走 `%WINDIR%\Sysnative\regsvr32.exe` | 32 位进程访问 `System32` 会被 WOW64 重定向到 SysWOW64，永远注册不了 x64 视图 |
 | 32 位 Windows 上跳过 x64 注册（`is_64bit_windows()` 判定） | 32 位系统里 x64 DLL 无法加载，注册必然失败，徒留告警 |
 

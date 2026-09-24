@@ -1,4 +1,4 @@
-﻿name: build-windows
+name: build-windows
 
 on:
   push:
@@ -21,42 +21,42 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: |
-            lingxi-tsf
-            lingxi-rime
-            lingxi-ime/native
+            xunyin-tsf
+            xunyin-rime
+            xunyin-ime/native
             installer
 
       # 回归测试：TSF 按键/接口映射 + 配置解析（含旧配置兼容）。
-      # lingxi-rime 的整体测试需要 librime 运行时数据，只跑纯配置用例。
+      # xunyin-rime 的整体测试需要 librime 运行时数据，只跑纯配置用例。
       - name: 单元测试
         shell: powershell
         run: |
-          cd lingxi-tsf; cargo test
-          if ($LASTEXITCODE -ne 0) { throw "lingxi-tsf 测试失败" }
-          cd ../lingxi-rime; cargo test --lib config::tests
-          if ($LASTEXITCODE -ne 0) { throw "lingxi-rime 配置测试失败" }
+          cd xunyin-tsf; cargo test
+          if ($LASTEXITCODE -ne 0) { throw "xunyin-tsf 测试失败" }
+          cd ../xunyin-rime; cargo test --lib config::tests
+          if ($LASTEXITCODE -ne 0) { throw "xunyin-rime 配置测试失败" }
 
-      - name: 构建 lingxi-tsf（x64）
-        working-directory: lingxi-tsf
+      - name: 构建 xunyin-tsf（x64）
+        working-directory: xunyin-tsf
         run: cargo build --release
 
-      - name: 构建 lingxi-tsf（x86）
-        working-directory: lingxi-tsf
+      - name: 构建 xunyin-tsf（x86）
+        working-directory: xunyin-tsf
         run: cargo build --release --target i686-pc-windows-msvc
 
       # 设置中心是原生 Win32 应用（无 WebView2 依赖），直接 cargo build
       - name: 构建设置中心（原生）
-        working-directory: lingxi-ime/native
+        working-directory: xunyin-ime/native
         run: cargo build --release
 
       - name: 注入构建版本号
         shell: powershell
         run: |
-          $conf = "lingxi-ime/native/Cargo.toml"
+          $conf = "xunyin-ime/native/Cargo.toml"
           $text = Get-Content $conf -Raw
           $text = $text -replace '(?m)^version = ".+"', 'version = "0.1.$env:GITHUB_RUN_NUMBER"'
           [System.IO.File]::WriteAllText((Join-Path (Get-Location) $conf), $text, (New-Object System.Text.UTF8Encoding($false)))
-          cd lingxi-ime/native; cargo build --release
+          cd xunyin-ime/native; cargo build --release
           if ($LASTEXITCODE -ne 0) { throw "版本号注入后重建失败" }
 
       - name: 构建安装器（stub / 卸载器 / 打包器）
@@ -96,23 +96,23 @@ jobs:
           Copy-Item "build/installer-payload/*" $stage -Recurse -Force
           Remove-Item "$stage/uninstall.exe" -Force -ErrorAction SilentlyContinue
           Copy-Item "tools/register-ime.ps1" $stage -Force
-          Compress-Archive -Path "$stage/*" -DestinationPath "build/LingxiIME-0.1.$env:GITHUB_RUN_NUMBER-portable.zip" -Force
+          Compress-Archive -Path "$stage/*" -DestinationPath "build/XunyinIME-0.1.$env:GITHUB_RUN_NUMBER-portable.zip" -Force
 
       - name: 上传安装包
         uses: actions/upload-artifact@v4
         with:
-          name: lingxi-ime-windows
+          name: xunyin-ime-windows
           path: |
             build/installer-dist/*.exe
             build/*-portable.zip
-            lingxi-tsf/target/release/lingxi_tsf.dll
-            lingxi-tsf/target/i686-pc-windows-msvc/release/lingxi_tsf.dll
+            xunyin-tsf/target/release/xunyin_tsf.dll
+            xunyin-tsf/target/i686-pc-windows-msvc/release/xunyin_tsf.dll
 
       - name: 发布 GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: v0.1.${{ github.run_number }}
-          name: LingxiIME v0.1.${{ github.run_number }}
+          name: XunyinIME v0.1.${{ github.run_number }}
           body: |
             Auto-built Windows installer (commit ${{ github.sha }})
 

@@ -1,4 +1,4 @@
-﻿param(
+param(
     [ValidateSet("x64", "x86")]
     [string]$Arch = "x64",
     # 原生设置中心（Win32，无 WebView）：debug 版窗口出现也只要 ~130ms，
@@ -11,7 +11,7 @@
 
 $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
-$nativeDir = Join-Path $root "lingxi-ime\native"
+$nativeDir = Join-Path $root "xunyin-ime\native"
 $certThumb = "109B04E710355C66C85B025C8E939B0F778580CB"
 
 $targetArg = @()
@@ -36,7 +36,7 @@ if (-not $SkipBuild) {
     }
 }
 
-$exe = Join-Path $nativeDir "target\$outSub\lingxi-ime.exe"
+$exe = Join-Path $nativeDir "target\$outSub\xunyin-ime.exe"
 if (-not (Test-Path $exe)) { throw "settings exe not found: $exe" }
 
 if (-not $SkipSign) {
@@ -48,10 +48,10 @@ if (-not $SkipSign) {
 }
 
 # 数据目录不用拷到 exe 旁：程序从 exe 目录逐级向上找 rime\data
-# （开发布局 lingxi-ime\rime\data；安装布局 <安装目录>\rime\data）。
+# （开发布局 xunyin-ime\rime\data；安装布局 <安装目录>\rime\data）。
 
 if (-not $SkipLaunch) {
-    Get-Process lingxi-ime -ErrorAction SilentlyContinue | Stop-Process -Force
+    Get-Process xunyin-ime -ErrorAction SilentlyContinue | Stop-Process -Force
     Start-Sleep -Milliseconds 600
     Start-Process -FilePath $exe
     Write-Host "[$Arch] settings center launched: $exe"

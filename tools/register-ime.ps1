@@ -38,11 +38,11 @@ function Invoke-Regsvr([string]$dll, [bool]$wow64) {
     Write-Host ("{0} {1}: {2}" -f $verb, (Split-Path $dll -Leaf), $ok)
 }
 
-$x64 = Join-Path $Root "tsf\lingxi_tsf_x64.dll"
-$x86 = Join-Path $Root "tsf-x86\lingxi_tsf_x86.dll"
+$x64 = Join-Path $Root "tsf\xunyin_tsf_x64.dll"
+$x86 = Join-Path $Root "tsf-x86\xunyin_tsf_x86.dll"
 
 if (-not (Test-Path $x64) -and -not (Test-Path $x86)) {
-    throw "在 $Root 下没找到 tsf\lingxi_tsf_x64.dll 或 tsf-x86\lingxi_tsf_x86.dll"
+    throw "在 $Root 下没找到 tsf\xunyin_tsf_x64.dll 或 tsf-x86\xunyin_tsf_x86.dll"
 }
 
 # 32 位 Windows 上没有 x64 视图可言，只注册 x86
@@ -50,5 +50,5 @@ if ($is64) { Invoke-Regsvr $x64 $false }
 Invoke-Regsvr $x86 $true
 
 Write-Host ""
-Write-Host "完成。切换输入法：Win+Space 或任务栏语言栏选择「中文（简体）- 灵犀输入法」。"
+Write-Host "完成。切换输入法：Win+Space 或任务栏语言栏选择「中文（简体）- 迅音输入法」。"
 Write-Host "（注册后需完全退出并重开已打开的应用，新进程才会加载输入法。）"

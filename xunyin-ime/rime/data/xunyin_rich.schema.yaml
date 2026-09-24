@@ -1,0 +1,248 @@
+# 迅音拼音（增强词库版）
+#
+# 挂载 Rime 迅音词库（cn_dicts 基础/扩展词库 + 22 个细胞词库 + 墨奇语言模型），
+# 去除依赖 librime-lua 的处理器/翻译器/过滤器，保留核心拼音体验。
+---
+schema:
+  schema_id: xunyin_rich
+  name: 迅音拼音（增强词库）
+  version: "0.2"
+  description: |
+    搜狗级词库的拼音输入方案：基础词库 + 扩展词库 + 细胞词库 + 墨奇语言模型。
+
+switches:
+  - name: ascii_mode
+    reset: 0
+    states: [ 中文, 英文 ]
+  - name: full_shape
+    states: [ 半角, 全角 ]
+  - name: ascii_punct
+    states: [ 。，, ．， ]
+  - name: simplification
+    reset: 1
+    states: [ 繁体, 简体 ]
+
+engine:
+  processors:
+    - ascii_composer
+    - recognizer
+    - key_binder
+    - speller
+    - punctuator
+    - selector
+    - navigator
+    - express_editor
+  segmentors:
+    - ascii_segmentor
+    - matcher
+    - abc_segmentor
+    - punct_segmentor
+    - fallback_segmentor
+  translators:
+    - punct_translator
+    - script_translator
+    - table_translator@custom_phrase
+    - table_translator@melt_eng
+    - table_translator@cn_en
+    - table_translator@emoji
+  filters:
+    - simplifier
+    - uniquifier
+
+# 主翻译器，拼音（挂载 rime_xunyin 词库）
+translator:
+  enable_user_dict: true
+  user_dict: rime_xunyin
+  db_class: tabledb
+  max_homophones: 8
+  max_homographs: 8
+  max_sentences: 3
+  dictionary: rime_xunyin
+  initial_quality: 1.2
+  comment_format:
+    - xform/^.+$//
+  preedit_format:
+    - xform/([jqxy])v/$1u/
+    - xform/([nl])v/$1v/
+    - xform/([nl])ue/$1ve/
+
+# 次翻译器，英文
+melt_eng:
+  dictionary: melt_eng
+  enable_sentence: false
+  enable_user_dict: false
+  initial_quality: 0.7
+  comment_format:
+    - xform/.*//
+
+# 中英混合词汇
+cn_en:
+  dictionary: ""
+  user_dict: en_dicts/cn_en
+  db_class: stabledb
+  enable_completion: true
+  enable_sentence: false
+  initial_quality: 0.1
+  comment_format:
+    - xform/^.+$//
+
+# 自定义短语
+custom_phrase:
+  dictionary: ""
+  user_dict: custom_phrase
+  db_class: tabledb
+  enable_completion: false
+  enable_sentence: false
+  initial_quality: 99
+
+punctuator:
+  full_shape:
+    " ": { commit: "　" }
+    ",": { commit: "，" }
+    ".": { commit: "。" }
+    "?": { commit: "？" }
+    "!": { commit: "！" }
+    ";": { commit: "；" }
+    ":": { commit: "：" }
+    "'": { pair: ["‘", "’"] }
+    '"': { pair: ["“", "”"] }
+    "(": { commit: "（" }
+    ")": { commit: "）" }
+    "[": { commit: "[" }
+    "]": { commit: "]" }
+    "{": { commit: "{" }
+    "}": { commit: "}" }
+    "<": [《, 〈, «]
+    ">": [》, 〉, »]
+    "/": { commit: "、" }
+    "\\": { commit: "、" }
+    "|": ["|", ｜, '§']
+    "$": ["$", ￥, '€', '£']
+    "^": ["^", ……]
+    "~": ["~", ～, 〰]
+    "@": ["@", ＠]
+    "#": ["#", ＃]
+    "&": ["&", ＆]
+    "*": ["*", ＊, ・, ×, ※]
+    "_": ["_", ——]
+    "+": ["+", ＋]
+    "=": ["=", ＝]
+    "%": ["%", ％, '°']
+    "`": ["`", ｀]
+  half_shape:
+    ",": { commit: "，" }
+    ".": { commit: "。" }
+    "?": { commit: "？" }
+    "!": { commit: "！" }
+    ";": { commit: "；" }
+    ":": { commit: "：" }
+    "'": { pair: ["‘", "’"] }
+    '"': { pair: ["“", "”"] }
+    "(": { commit: "（" }
+    ")": { commit: "）" }
+    "[": { commit: "[" }
+    "]": { commit: "]" }
+    "{": { commit: "{" }
+    "}": { commit: "}" }
+    "<": [《, 〈, «]
+    ">": [》, 〉, »]
+    "/": { commit: "/" }
+    "\\": { commit: '\' }
+    "|": ["|", ｜, '§']
+    "$": ["$", ￥, '€', '£']
+    "^": ["^", ……]
+    "~": ["~", ～, 〰]
+    "@": ["@", ＠]
+    "#": ["#", ＃]
+    "&": ["&", ＆]
+    "*": ["*", ＊, ・, ×, ※]
+    "_": ["_", ——]
+    "+": ["+", ＋]
+    "=": ["=", ＝]
+    "%": ["%", ％, '°']
+    "`": ["`", ｀]
+
+recognizer:
+  import_preset: default
+  patterns:
+    email: "^[a-z][-_.0-9a-z]*@.*$"
+    uppercase: "[A-Z][-_+.'0-9A-Za-z]*$"
+    url: "^(www[.]|https?:|ftp:|mailto:).*$|^[a-z]+[.].+$"
+
+key_binder:
+  import_preset: default
+  bindings:
+    - { when: has_menu, accept: semicolon, send: 2 }
+    - { when: has_menu, accept: bracketleft, send: Page_Up }
+    - { when: has_menu, accept: bracketright, send: Page_Down }
+
+# Emoji 快捷输入（本地词库）
+emoji:
+  dictionary: emoji
+  enable_user_dict: false
+  enable_sentence: false
+  enable_completion: false
+  initial_quality: 0.4
+
+# 方向键逐字符移动且到边界不循环（最左再按左不动，最右再按右不动）
+navigator:
+  bindings:
+    KP_Left: left_by_char_no_loop
+    KP_Right: right_by_char_no_loop
+
+speller:
+  alphabet: zyxwvutsrqponmlkjihgfedcbaZYXWVUTSRQPONMLKJIHGFEDCBA`  # "/" 不进组合：斜杠直接上屏「、」
+  initials: zyxwvutsrqponmlkjihgfedcbaZYXWVUTSRQPONMLKJIHGFEDCBA
+  delimiter: " '"
+  algebra:
+    - erase/^hm$/
+    - erase/^m$/
+    - erase/^n$/
+    - erase/^ng$/
+    - abbrev/^([a-z]).+$/$1/
+    - abbrev/^([zcs]h).+$/$1/
+    - derive/^([nl])ve$/$1ue/
+    - derive/^([jqxy])u/$1v/
+    - derive/^([nl])ue$/$1ve/
+    - derive/^([jqxy])v/$1u/
+    - derive/([zcs])h(a|e|i|u|ai|ei|an|en|ou|uo|ua|un|ui|uan|uai|uang|ang|eng|ong)$/h$1$2/
+    - derive/([zcs])h([aeiu])$/$1$2h/
+    - derive/^([wghk])ai$/$1ia/
+    - derive/([wfghkz])ei$/$1ie/
+    - derive/([jqx])ie$/$1ei/
+    - derive/([rtypsdghklzcbnm])ao$/$1oa/
+    - derive/([ypfm])ou$/$1uo/
+    - derive/([wrtypsdfghklzcbnm])ang$/$1nag/
+    - derive/([wrtypsdfghklzcbnm])ang$/$1agn/
+    - derive/([wrtpsdfghklzcbnm])eng$/$1neg/
+    - derive/([wrtpsdfghklzcbnm])eng$/$1egn/
+    - derive/([qtypdjlxbnm])ing$/$1nig/
+    - derive/([qtypdjlxbnm])ing$/$1ign/
+    - derive/([rtysdghklzcn])ong$/$1nog/
+    - derive/([rtysdghklzcn])ong$/$1ogn/
+    - derive/([qtpdjlxbnm])iao$/$1ioa/
+    - derive/([qtpdjlxbnm])iao$/$1oia/
+    - derive/([rtsghkzc])ui$/$1iu/
+    - derive/([qjlxnm])iu$/$1ui/
+    - derive/([qjlxn])iang$/$1aing/
+    - derive/([qjlxn])iang$/$1inag/
+    - derive/([g|k|h|zh|sh])ua$/$1au/
+    - derive/([g|h|k|zh|ch|sh])uai$/$1aui/
+    - derive/([qrtysdghjklzxcn])uan$/$1aun/
+    - derive/([nlyjqx])ue$/$1eu/
+    - derive/([g|h|k|zh|ch|sh])uang$/$1aung/
+    - derive/([g|h|k|zh|ch|sh])uang$/$1uagn/
+    - derive/([g|h|k|zh|ch|sh])uang$/$1unag/
+    - derive/([g|h|k|zh|ch|sh])uang$/$1augn/
+    - derive/([jqx])iong$/$1inog/
+    - derive/([jqx])iong$/$1oing/
+    - derive/([jqx])iong$/$1iogn/
+    - derive/([jqx])iong$/$1oign/
+    - derive/([rtsdghkzc])o(u|ng)$/$1o/
+    - derive/(.+)ong$/$1on/
+    - derive/([tl])eng$/$1en/
+    - derive/([qwrtypsdfghjklzxcbnm])([aeio])ng$/$1ng/
+
+simplifier:
+  option_name: simplification
+  opencc_config: t2s.json

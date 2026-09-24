@@ -1,5 +1,5 @@
-﻿param(
-    [string]$OutDir = "D:\灵犀输入法\lingxi-tsf\src\assets"
+param(
+    [string]$OutDir = "D:\迅音输入法\xunyin-tsf\src\assets"
 )
 
 $ErrorActionPreference = "Stop"

@@ -1,5 +1,5 @@
 # ============================================================================
-#  灵犀输入法 安装清单（wind-installer / 清单驱动）
+#  迅音输入法 安装清单（wind-installer / 清单驱动）
 # ============================================================================
 #  用法（见 tools/pack-installer.ps1）：
 #    wind-packer build --config installer/app.toml --version <版本> \
@@ -11,25 +11,25 @@
 # ============================================================================
 
 [app]
-# id 同时是卸载时清理的用户数据目录名：本产品数据在 %APPDATA%\com.lingxi.ime，
+# id 同时是卸载时清理的用户数据目录名：本产品数据在 %APPDATA%\com.xunyin.ime，
 # 故此处用与 Tauri 标识一致的取值（安装目录另由 [paths].install 指定）。
-id              = "com.lingxi.ime"
-display_name    = "灵犀输入法"
+id              = "com.xunyin.ime"
+display_name    = "迅音输入法"
 version         = "0.1.0"                 # 构建时由 --version 覆盖
-publisher       = "灵犀输入法 项目"
+publisher       = "迅音输入法 项目"
 description     = "基于 TSF 与 Rime 引擎的轻量中文输入法"
-main_exe        = "lingxi-ime.exe"
-setting_exe     = "lingxi-ime.exe"
-start_menu_folder = "灵犀输入法"
-window_title    = "灵犀输入法 安装向导"
-url_protocol    = "lingxiime"
+main_exe        = "xunyin-ime.exe"
+setting_exe     = "xunyin-ime.exe"
+start_menu_folder = "迅音输入法"
+window_title    = "迅音输入法 安装向导"
+url_protocol    = "xunyinime"
 agreement_url   = ""
 portable_marker = "portable_mode"
-process_names   = ["lingxi-ime"]
+process_names   = ["xunyin-ime"]
     # 需要 ALL APPLICATION PACKAGES 读取权限的 DLL（沉浸式/UWP 应用加载输入法所需）
     # 路径一律用反斜杠：32 位 regsvr32（SysWOW64）无法处理混用正斜杠的路径（会把 / 当开关），
-    # 实测 "tsf-x86/lingxi_tsf_x86.dll" 注册失败、换成反斜杠即成功。
-acl_dlls        = ["tsf\\lingxi_tsf_x64.dll", "tsf-x86\\lingxi_tsf_x86.dll"]
+    # 实测 "tsf-x86/xunyin_tsf_x86.dll" 注册失败、换成反斜杠即成功。
+acl_dlls        = ["tsf\\xunyin_tsf_x64.dll", "tsf-x86\\xunyin_tsf_x86.dll"]
 legacy_files    = []
 legacy_dirs     = []
 
@@ -43,9 +43,9 @@ accent = "#4285F4"
 
 # 默认路径模板：{id} 替换为 app.id，%VAR% 由向导展开
 [paths]
-install  = '%ProgramFiles%\LingxiIME'
-portable = '%USERPROFILE%\LingxiIME'
-data     = '%APPDATA%\com.lingxi.ime'
+install  = '%ProgramFiles%\XunyinIME'
+portable = '%USERPROFILE%\XunyinIME'
+data     = '%APPDATA%\com.xunyin.ime'
 
 [strings]
 data_dir_hint       = "用户词库、配置与日志路径"
@@ -56,13 +56,13 @@ cache_label         = "清除本地词库缓存"
 delete_data_confirm = "将永久删除 {path} 下的所有词库和配置数据，卸载后无法恢复。\n\n确定要勾选删除吗？"
 
 # ── TSF 输入法注册（COM + 语言档案）──────────────────────────────────────
-# 与 lingxi-tsf/src/lib.rs 中的 CLSID / PROFILE GUID 必须一致。
+# 与 xunyin-tsf/src/lib.rs 中的 CLSID / PROFILE GUID 必须一致。
 [ime]
 clsid        = "{F3A2D6E1-4C5B-4E8A-9C1D-2A6B7C8D9E0F}"
 profile_guid = "{5B8E9A2F-6D7C-4F1A-8E3B-4C5D6E7F8A9B}"
 lang_id      = "0804"
-dll_x64      = "tsf\\lingxi_tsf_x64.dll"
-dll_x86      = "tsf-x86\\lingxi_tsf_x86.dll"
+dll_x64      = "tsf\\xunyin_tsf_x64.dll"
+dll_x86      = "tsf-x86\\xunyin_tsf_x86.dll"
 # 开发期多次 regsvr32 可能留下指向旧路径的悬空注册，安装前清扫同 GUID 的悬空项
 sweep_residue = true
 # 空 = 就地注册（DLL 留在安装目录）。系统目录布局要求 DLL 已代码签名，暂不启用。
@@ -70,24 +70,24 @@ system_subdir = ""
 
 # ── 快捷方式 ─────────────────────────────────────────────────────────────
 [[shortcut]]
-target   = "lingxi-ime.exe"
-name     = "灵犀输入法 设置"
+target   = "xunyin-ime.exe"
+name     = "迅音输入法 设置"
 location = "start_menu"
 
 [[shortcut]]
 target   = "uninstall.exe"
-name     = "卸载 灵犀输入法"
+name     = "卸载 迅音输入法"
 location = "start_menu"
 
 # ── 安装完成后启动设置中心 ───────────────────────────────────────────────
 [startup]
 prestart = true
-exe      = "lingxi-ime.exe"
+exe      = "xunyin-ime.exe"
 
 # ── 本机数据目录清理（卸载时）─────────────────────────────────────────────
-# 设置中心的 WebView2 运行时把缓存写在 %LOCALAPPDATA%\com.lingxi.ime\EBWebView
+# 设置中心的 WebView2 运行时把缓存写在 %LOCALAPPDATA%\com.xunyin.ime\EBWebView
 # （实测约 57 MB）。它是可重建的缓存，卸载时随「清除本地词库缓存」一并删除；
-# 用户词库与配置在 %APPDATA%\com.lingxi.ime，由「删除用户数据」控制，不在此列。
+# 用户词库与配置在 %APPDATA%\com.xunyin.ime，由「删除用户数据」控制，不在此列。
 [localdata]
 cache_dirs  = ["EBWebView"]
 state_files = []
@@ -97,7 +97,7 @@ remove_dir_when_empty = true
 [package]
 compression = "lzma"
 source_dir  = "../build/installer-payload"
-output_name = "LingxiIME-Setup"
+output_name = "XunyinIME-Setup"
 output_dir  = "../build/installer-dist"
-logo        = "../lingxi-ime/icons/128x128.png"
-icon        = "../lingxi-ime/icons/icon.ico"
+logo        = "../xunyin-ime/icons/128x128.png"
+icon        = "../xunyin-ime/icons/icon.ico"
