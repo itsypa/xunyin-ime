@@ -32,3 +32,4 @@ fn main() {
 }
 
 // 强制重新链接：librime 升级后需要重新拷贝 rime.dll
+// relink 20260925

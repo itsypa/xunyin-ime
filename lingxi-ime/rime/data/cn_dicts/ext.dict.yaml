@@ -42093,6 +42093,7 @@ sort: by_weight
 对党忠诚	dui dang zhong cheng	10
 对的还是错的	dui de hai shi cuo de	25
 怼得好	dui de hao	4
+㨃得好	dui de hao	4
 对得起你	dui de qi ni	171
 对得起我	dui de qi wo	117
 对得起我吗	dui de qi wo ma	7
@@ -42159,6 +42160,7 @@ sort: by_weight
 堆了个	dui le ge	9
 对了吗	dui le ma	48
 怼了起来	dui le qi lai	5
+㨃了起来	dui le qi lai	5
 兑了水	dui le shui	10
 对立关系	dui li guan xi	142
 对立物	dui li wu	5
@@ -42230,7 +42232,9 @@ sort: by_weight
 对他微笑	dui ta wei xiao	20
 对他自己	dui ta zi ji	89
 怼天怼地	dui tian dui di	148
+㨃天㨃地	dui tian dui di	148
 怼天怼地怼空气	dui tian dui di dui kong qi	31
+㨃天㨃地㨃空气	dui tian dui di dui kong qi	31
 对天盟誓	dui tian meng shi	3
 对外传播	dui wai chuan bo	26
 对外汉语	dui wai han yu	408
@@ -48016,6 +48020,7 @@ sort: by_weight
 分享乐趣	fen xiang le qu	3
 分享率	fen xiang lv	22
 分享旅行	fen xiang lv xing	5
+分享区	fen xiang qu	1
 分香卖履	fen xiang mai lv	7
 分享你的快乐	fen xiang ni de kuai le	7
 分享收藏	fen xiang shou cang	8
@@ -66287,6 +66292,7 @@ sort: by_weight
 呼读音	hu du yin	48
 弧度制	hu du zhi	2
 互怼模式	hu dui mo shi	2
+互㨃模式	hu dui mo shi	2
 虎蹲炮	hu dun pao	7
 护耳朵	hu er duo	1
 忽发奇想	hu fa qi xiang	7
@@ -235535,3 +235541,59 @@ sort: by_weight
 中国社会科学出版社	zhong guo she hui ke xue chu ban she	135
 敦煌文物研究所	dun huang wen wu yan jiu suo	10
 哮天犬	xiao tian quan	53
+头疗	tou liao	12
+演都不演了	yan dou bu yan le	1
+各论各的	ge lun ge de	1
+各算各的	ge suan ge de	1
+闪一下	shan yi xia	1
+闪了没	shan le mei	1
+闪没闪	shan mei shan	1
+闪不闪	shan bu shan	1
+共建者	gong jian zhe	2
+读瘾	du yin	1
+越臭越	yue chou yue	1
+反颌	fan he	16
+炸刺	zha ci	8
+扎刺	zha ci	1
+桌洞	zhuo dong	7
+墙灰	qiang hui	7
+为毛	wei mao	1
+怒㨃	nu dui	158
+章纲	zhang gang	4
+单章	dan zhang	12
+逐章	zhu zhang	25
+设定集	she ding ji	1
+强了点	qiang le dian	1
+勾不勾选	gou bu gou xuan	1
+勾没勾选	gou mei gou xuan	1
+条马陆	tiao ma lu	1
+##### 㨃（网络义「怼」的优选字形，与「怼」词条并存；怨怼等除外）
+开㨃	kai dui	37
+反㨃	fan dui	16
+直㨃	zhi dui	9
+一㨃	yi dui	24
+相㨃	xiang dui	3
+暗㨃	an dui	3
+明㨃	ming dui	3
+纯㨃	chun dui	3
+大㨃	da dui	3
+专㨃	zhuan dui	5
+全㨃	quan dui	2
+防㨃	fang dui	1
+必㨃	bi dui	1
+绝㨃	jue dui	1
+轻㨃	qing dui	1
+推㨃	tui dui	1
+遭㨃	zao dui	1
+群㨃	qun dui	1
+暴㨃	bao dui	1
+神㨃	shen dui	1
+生㨃	sheng dui	1
+针㨃	zhen dui	1
+水㨃	shui dui	1
+词㨃	ci dui	1
+战㨃	zhan dui	1
+超㨃	chao dui	1
+唯㨃	wei dui	1
+条㨃	tiao dui	1
+仔㨃	zai dui	1
