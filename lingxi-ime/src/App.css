@@ -442,7 +442,8 @@ body {
   margin-bottom: 16px;
 }
 
-.appearance-pair .preview-card {
+/* 每栏：左卡固定 300px，右卡吃掉剩余宽度，两卡等高对齐 */
+.appearance-pair > .card:first-child {
   flex: 0 0 300px;
   margin-bottom: 0;
 }
@@ -465,7 +466,8 @@ body {
     flex-direction: column;
   }
 
-  .appearance-pair .preview-card {
+  .appearance-pair > .card:first-child,
+  .appearance-pair > .card:last-child {
     flex: none;
     width: 100%;
   }
