@@ -159,6 +159,16 @@ Write-Host "[$Arch] InprocServer32 registered (both HKCU/HKLM, $regFlag): $dst"
 Start-Process -FilePath $regsvr -ArgumentList "/s `"$dst`"" -Wait -WindowStyle Hidden
 Write-Host "[$Arch] regsvr32 DllRegisterServer done"
 
+# 语言栏/状态栏图标：蓝底白字「迅」——拷到 DLL 旁并登记到 TIP 语言档案
+$ico = Join-Path $root "lingxi-ime\icons\xunyin.ico"
+if (Test-Path $ico) {
+    Copy-Item $ico (Join-Path (Split-Path -Parent $dst) "xunyin.ico") -Force
+    $tipKey = "HKLM\SOFTWARE\Microsoft\CTF\TIP\{F3A2D6E1-4C5B-4E8A-9C1D-2A6B7C8D9E0F}\LanguageProfile\0x00000804\{B2E4C9A1-7D3F-4B62-9E11-5C8A0F2D6E31}"
+    reg add $tipKey /v IconFile /t REG_SZ /d $ico /f | Out-Null
+    reg add $tipKey /v IconIndex /t REG_DWORD /d 0 /f | Out-Null
+    Write-Host "[$Arch] 语言栏图标已登记: $ico"
+}
+
 # 清理开发期遗留的版本化 DLL（当年把注册表指向 target\debug 时留下的产物）。
 # 只删 lingxi_tsf_v*.dll，不动 lingxi_tsf.dll / rime.dll。
 if (-not $KeepLegacyDlls) {

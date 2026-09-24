@@ -740,7 +740,7 @@ impl StatusBar {
                 CMD_OPEN_DATA => open_dir(&lingxi_rime::config::user_data_dir()),
                 CMD_OPEN_LOGS => open_dir(&lingxi_rime::config::user_data_dir().join("logs")),
                 CMD_CLEAR_LOGS => clear_logs(),
-                CMD_UPDATE => open_url("https://github.com/itsypa/lingxi-ime/releases/latest"),
+                CMD_UPDATE => open_url("https://github.com/itsypa/xunyin-ime/releases/latest"),
                 id if id >= CMD_SCHEMA_BASE && id < CMD_SCHEMA_BASE + 4 => {
                     self.menu_select_schema(id - CMD_SCHEMA_BASE)
                 }

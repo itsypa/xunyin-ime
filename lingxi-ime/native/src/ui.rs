@@ -1348,7 +1348,7 @@ impl App {
                 self.toast("已恢复默认设置（正在重建索引）");
             }
             Id::Update => unsafe {
-                let url = wide("https://github.com/itsypa/lingxi-ime/releases/latest");
+                let url = wide("https://github.com/itsypa/xunyin-ime/releases/latest");
                 let op = wide("open");
                 ShellExecuteW(Some(self.hwnd), PCWSTR(op.as_ptr()), PCWSTR(url.as_ptr()), PCWSTR::null(), PCWSTR::null(), SW_SHOWNORMAL);
             },
