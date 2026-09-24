@@ -43,8 +43,9 @@ const PANEL_H: i32 = GRID_Y + ROWS * KEY_H + (ROWS - 1) * GAP + PAD; // 182
 const C_PANEL: u32 = 0x00F7F7F7; // 面板底 #F7F7F7
 const C_BORDER: u32 = 0x00E2DEDE; // 边框 #DEDEE2
 const C_KEY: u32 = 0x00FFFFFF; // 键面白
-const C_KEY_HOVER: u32 = 0x00FCF6F0; // 悬停浅蓝 #F0F6FC
-const C_KEY_DOWN: u32 = 0x00F7E9D9; // 按下 #D9E9F7
+// 悬停/按下用与状态栏同一套淡蓝（原来的 #F0F6FC 在白键面上几乎看不出）
+const C_KEY_HOVER: u32 = 0x00FEF0E8; // 悬停 #E8F0FE
+const C_KEY_DOWN: u32 = 0x00FDE4D6; // 按下 #D6E4FD
 const C_TEXT: u32 = 0x004E4848; // 字色 #48484E
 const C_TITLE: u32 = 0x00948C8C; // 标题/未选中页签 #8C8C94
 const C_ACTIVE: u32 = 0x00F48542; // 选中页签主题蓝 #4285F4
