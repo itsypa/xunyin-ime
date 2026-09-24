@@ -498,6 +498,16 @@ fn restore_user_dict(dir: String) -> Result<String, String> {
 
 pub fn run() {
     tauri::Builder::default()
+        // 单实例：状态栏「设置」按钮每次都会启动一个进程，已有实例时必须把
+        // 那个窗口拉到前台并聚焦，否则用户看到的是"点了没反应"
+        // （第二个实例会因共享 WebView2 数据目录起不来窗口）。
+        .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
+            if let Some(w) = app.get_webview_window("main") {
+                let _ = w.unminimize();
+                let _ = w.show();
+                let _ = w.set_focus();
+            }
+        }))
         .setup(|app| {
             let (shared, user) = resolve_data_dirs(&app.handle());
             let state = AppState {
