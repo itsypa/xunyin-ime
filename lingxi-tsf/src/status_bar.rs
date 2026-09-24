@@ -80,6 +80,39 @@ const CMD_WIDTH: usize = 1002;
 const CMD_PUNCT: usize = 1003;
 const CMD_SETTINGS: usize = 1005;
 const CMD_SYM: usize = 1007;
+// 齿轮主菜单新增项（借鉴 WindInput 的工具栏主菜单：状态开关 + 方案/主题/候选数/模糊音子菜单 + 维护）
+const CMD_SCHEMA_BASE: usize = 1100; // +0..3
+const CMD_THEME_BASE: usize = 1110; // +0..2
+const CMD_PAGE_BASE: usize = 1120; // +0..7 对应 3..10
+const CMD_FUZZY_BASE: usize = 1140; // +0..N
+const CMD_LEARN: usize = 1170;
+const CMD_STATUSBAR: usize = 1171;
+const CMD_REDEPLOY: usize = 1172;
+const CMD_OPEN_DATA: usize = 1173;
+const CMD_OPEN_LOGS: usize = 1174;
+const CMD_CLEAR_LOGS: usize = 1175;
+const CMD_UPDATE: usize = 1176;
+
+const THEME_PRESETS: [(&str, [&str; 8]); 3] = [
+    (
+        "浅色",
+        [
+            "light", "#FFFFFF", "#222222", "#2A6FDB", "#2A6FDB", "#FFFFFF", "#999999", "#D8DCE3",
+        ],
+    ),
+    (
+        "深色",
+        [
+            "dark", "#202127", "#E9E9EC", "#5B93F2", "#3A5FA8", "#FFFFFF", "#9AA1B2", "#3A3D46",
+        ],
+    ),
+    (
+        "护眼",
+        [
+            "custom", "#F4F8F1", "#2C3B2A", "#3E8E41", "#3E8E41", "#FFFFFF", "#7C9A79", "#C6DCC2",
+        ],
+    ),
+];
 
 fn cell_x(i: i32) -> i32 {
     GRIP_W + i * CELL_W
@@ -488,7 +521,8 @@ impl StatusBar {
     fn on_click(&self, cell: i32) {
         crate::tsf_log!("status bar click: cell={cell}");
         if cell == CELL_SETTINGS {
-            self.open_settings();
+            // 齿轮格 → 主菜单（末项才是「设置…」），对齐 WindInput 的工具栏菜单
+            self.show_menu();
             return;
         }
         if cell == CELL_SYMBOL {
@@ -562,30 +596,115 @@ impl StatusBar {
         }
     }
 
-    /// 右键菜单：四个开关 + 打开设置（对齐 WindInput「右键弹主菜单」）。
+    /// 主菜单（点齿轮格或右键弹出）：状态开关 + 方案/主题/候选数/模糊音子菜单 + 维护项。
+    ///
+    /// 借鉴 WindInput 的工具栏主菜单：设置入口不再直接开窗口，而是先给一个能立刻
+    /// 改常用状态的菜单，最后一项才是「设置…」。
     fn show_menu(&self) {
         unsafe {
             let Ok(menu) = CreatePopupMenu() else { return };
+            crate::tsf_log!("status bar: 打开主菜单");
             let check = |on: bool| if on { MF_CHECKED } else { MF_UNCHECKED };
-            AppendMenuW(
+            let cfg = lingxi_rime::config::load_config();
+            let add = |m: HMENU, flags: MENU_ITEM_FLAGS, id: usize, text: &str| {
+                let t: Vec<u16> = text.encode_utf16().chain(std::iter::once(0)).collect();
+                AppendMenuW(m, flags, id, PCWSTR(t.as_ptr())).ok();
+            };
+            add(
                 menu,
                 MF_STRING | check(!self.ascii.get()),
                 CMD_MODE,
-                w!("中文模式"),
-            )
-            .ok();
-            AppendMenuW(menu, MF_STRING | check(self.full.get()), CMD_WIDTH, w!("全角")).ok();
-            AppendMenuW(
+                "中文模式",
+            );
+            // 输入方案（只列我们的两个拼音方案）
+            if let Ok(sub) = CreatePopupMenu() {
+                let mut any = false;
+                if let Some(eng) = engine::engine() {
+                    if let Ok(e) = eng.lock() {
+                        for (i, (sid, name)) in e.get_schema_list().iter().take(4).enumerate() {
+                            add(
+                                sub,
+                                MF_STRING | check(*sid == cfg.input.schema),
+                                CMD_SCHEMA_BASE + i,
+                                name,
+                            );
+                            any = true;
+                        }
+                    }
+                }
+                let _ = any;
+                AppendMenuW(menu, MF_POPUP | MF_STRING, sub.0 as usize, w!("输入方案")).ok();
+            }
+            // 每页候选数
+            if let Ok(sub) = CreatePopupMenu() {
+                for n in 3..=10usize {
+                    add(
+                        sub,
+                        MF_STRING | check(cfg.input.page_size as usize == n),
+                        CMD_PAGE_BASE + (n - 3),
+                        &format!("{n} 个"),
+                    );
+                }
+                AppendMenuW(menu, MF_POPUP | MF_STRING, sub.0 as usize, w!("每页候选数")).ok();
+            }
+            // 模糊音
+            if let Ok(sub) = CreatePopupMenu() {
+                for (i, (gid, label, _)) in lingxi_rime::config::FUZZY_GROUPS.iter().enumerate() {
+                    add(
+                        sub,
+                        MF_STRING | check(cfg.input.fuzzy.iter().any(|f| f == gid)),
+                        CMD_FUZZY_BASE + i,
+                        label,
+                    );
+                }
+                AppendMenuW(menu, MF_POPUP | MF_STRING, sub.0 as usize, w!("模糊音")).ok();
+            }
+            // 主题
+            if let Ok(sub) = CreatePopupMenu() {
+                for (i, (name, preset)) in THEME_PRESETS.iter().enumerate() {
+                    add(
+                        sub,
+                        MF_STRING | check(cfg.appearance.theme == preset[0]),
+                        CMD_THEME_BASE + i,
+                        name,
+                    );
+                }
+                AppendMenuW(menu, MF_POPUP | MF_STRING, sub.0 as usize, w!("主题")).ok();
+            }
+            AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null()).ok();
+            add(
                 menu,
                 MF_STRING | check(!self.punct.get()),
                 CMD_PUNCT,
-                w!("中文标点"),
-            )
-            .ok();
+                "中文标点",
+            );
+            add(menu, MF_STRING | check(self.full.get()), CMD_WIDTH, "全角");
+            add(
+                menu,
+                MF_STRING | check(cfg.appearance.show_status_bar),
+                CMD_STATUSBAR,
+                "显示状态栏",
+            );
+            add(
+                menu,
+                MF_STRING | check(cfg.input.enable_user_dict),
+                CMD_LEARN,
+                "用户词典自学习",
+            );
+            add(
+                menu,
+                MF_STRING | check(crate::symbol_panel::visible()),
+                CMD_SYM,
+                "符号面板",
+            );
             AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null()).ok();
-            AppendMenuW(menu, MF_STRING, CMD_SYM, w!("符号面板")).ok();
+            add(menu, MF_STRING, CMD_REDEPLOY, "重建词库索引");
+            add(menu, MF_STRING, CMD_OPEN_DATA, "打开数据目录");
+            add(menu, MF_STRING, CMD_OPEN_LOGS, "打开日志目录");
+            add(menu, MF_STRING, CMD_CLEAR_LOGS, "清空日志");
             AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null()).ok();
-            AppendMenuW(menu, MF_STRING, CMD_SETTINGS, w!("打开设置中心…")).ok();
+            add(menu, MF_STRING, CMD_UPDATE, "查看最新版本");
+            add(menu, MF_STRING, CMD_SETTINGS, "设置…");
 
             let mut pt = POINT::default();
             let _ = GetCursorPos(&mut pt);
@@ -606,7 +725,214 @@ impl StatusBar {
                 CMD_PUNCT => self.on_click(CELL_PUNCT),
                 CMD_SYM => crate::symbol_panel::toggle(),
                 CMD_SETTINGS => self.open_settings(),
+                CMD_LEARN => self.menu_toggle_learn(),
+                CMD_STATUSBAR => self.menu_toggle_status_bar(),
+                CMD_REDEPLOY => {
+                    crate::tsf_log!("status bar menu: 重建词库索引");
+                    if let Some(eng) = engine::engine() {
+                        std::thread::spawn(move || {
+                            if let Ok(e) = eng.lock() {
+                                let _ = e.deploy();
+                            }
+                        });
+                    }
+                }
+                CMD_OPEN_DATA => open_dir(&lingxi_rime::config::user_data_dir()),
+                CMD_OPEN_LOGS => open_dir(&lingxi_rime::config::user_data_dir().join("logs")),
+                CMD_CLEAR_LOGS => clear_logs(),
+                CMD_UPDATE => open_url("https://github.com/itsypa/lingxi-ime/releases/latest"),
+                id if id >= CMD_SCHEMA_BASE && id < CMD_SCHEMA_BASE + 4 => {
+                    self.menu_select_schema(id - CMD_SCHEMA_BASE)
+                }
+                id if id >= CMD_THEME_BASE && id < CMD_THEME_BASE + 3 => {
+                    self.menu_apply_theme(id - CMD_THEME_BASE)
+                }
+                id if id >= CMD_PAGE_BASE && id < CMD_PAGE_BASE + 8 => {
+                    self.menu_set_page_size(3 + (id - CMD_PAGE_BASE) as u32)
+                }
+                id if id >= CMD_FUZZY_BASE
+                    && id < CMD_FUZZY_BASE + lingxi_rime::config::FUZZY_GROUPS.len() =>
+                {
+                    self.menu_toggle_fuzzy(id - CMD_FUZZY_BASE)
+                }
                 _ => {}
+            }
+        }
+    }
+
+    // ---- 菜单动作：写配置 + 立刻生效（模糊音/候选数/自学习需要重建索引）----
+
+    fn menu_save(&self, cfg: &lingxi_rime::config::LingxiConfig) {
+        let _ = lingxi_rime::config::save_config(cfg);
+        self.push();
+        crate::status_bar::notify_repaint();
+    }
+
+    fn menu_select_schema(&self, i: usize) {
+        let Some(eng) = engine::engine() else { return };
+        let Ok(mut e) = eng.lock() else { return };
+        let Some((sid, _)) = e.get_schema_list().get(i).cloned() else {
+            return;
+        };
+        let _ = e.select_schema(&sid);
+        drop(e);
+        let mut cfg = lingxi_rime::config::load_config();
+        cfg.input.schema = sid.clone();
+        self.menu_save(&cfg);
+        crate::tsf_log!("status bar menu: 切换方案 -> {sid}");
+    }
+
+    fn menu_apply_theme(&self, i: usize) {
+        let Some((_, p)) = THEME_PRESETS.get(i) else {
+            return;
+        };
+        let mut cfg = lingxi_rime::config::load_config();
+        cfg.appearance.theme = p[0].into();
+        cfg.appearance.bg = p[1].into();
+        cfg.appearance.text = p[2].into();
+        cfg.appearance.accent = p[3].into();
+        cfg.appearance.selected_bg = p[4].into();
+        cfg.appearance.selected_text = p[5].into();
+        cfg.appearance.comment = p[6].into();
+        cfg.appearance.border = p[7].into();
+        self.menu_save(&cfg);
+        crate::tsf_log!("status bar menu: 主题 -> {}", p[0]);
+    }
+
+    fn menu_set_page_size(&self, n: u32) {
+        let mut cfg = lingxi_rime::config::load_config();
+        cfg.input.page_size = n;
+        let _ = lingxi_rime::config::save_config(&cfg);
+        write_page_size(n);
+        self.menu_redeploy("每页候选数");
+    }
+
+    fn menu_toggle_fuzzy(&self, i: usize) {
+        let Some((gid, label, _)) = lingxi_rime::config::FUZZY_GROUPS.get(i) else {
+            return;
+        };
+        let mut cfg = lingxi_rime::config::load_config();
+        if let Some(pos) = cfg.input.fuzzy.iter().position(|f| f == gid) {
+            cfg.input.fuzzy.remove(pos);
+        } else {
+            cfg.input.fuzzy.push((*gid).to_string());
+        }
+        let _ = lingxi_rime::config::save_config(&cfg);
+        write_schema_patch(&cfg);
+        crate::tsf_log!("status bar menu: 模糊音 {label} -> 重建索引");
+        self.menu_redeploy("模糊音");
+    }
+
+    fn menu_toggle_learn(&self) {
+        let mut cfg = lingxi_rime::config::load_config();
+        cfg.input.enable_user_dict = !cfg.input.enable_user_dict;
+        let _ = lingxi_rime::config::save_config(&cfg);
+        write_schema_patch(&cfg);
+        crate::tsf_log!(
+            "status bar menu: 自学习 -> {}",
+            cfg.input.enable_user_dict
+        );
+        self.menu_redeploy("自学习");
+    }
+
+    fn menu_toggle_status_bar(&self) {
+        let mut cfg = lingxi_rime::config::load_config();
+        cfg.appearance.show_status_bar = !cfg.appearance.show_status_bar;
+        let _ = lingxi_rime::config::save_config(&cfg);
+        crate::tsf_log!(
+            "status bar menu: 显示状态栏 -> {}",
+            cfg.appearance.show_status_bar
+        );
+        if !cfg.appearance.show_status_bar {
+            self.hide();
+        }
+    }
+
+    fn menu_redeploy(&self, why: &str) {
+        crate::tsf_log!("status bar menu: {why} 变化 -> 后台重建索引");
+        if let Some(eng) = engine::engine() {
+            std::thread::spawn(move || {
+                if let Ok(e) = eng.lock() {
+                    let _ = e.deploy();
+                }
+            });
+        }
+    }
+}
+
+/// 打开目录（资源管理器）。
+fn open_dir(dir: &std::path::Path) {
+    let _ = std::fs::create_dir_all(dir);
+    let _ = std::process::Command::new("explorer.exe").arg(dir).spawn();
+}
+
+/// 清空日志（用户目录 logs\*.log 与 %TEMP% 兜底文件）。
+fn clear_logs() {
+    let mut n = 0;
+    if let Ok(rd) = std::fs::read_dir(lingxi_rime::config::user_data_dir().join("logs")) {
+        for e in rd.flatten() {
+            if e.path().is_file() && std::fs::remove_file(e.path()).is_ok() {
+                n += 1;
+            }
+        }
+    }
+    if let Ok(tmp) = std::env::var("TEMP") {
+        if std::fs::remove_file(std::path::Path::new(&tmp).join("lingxi-tsf.log")).is_ok() {
+            n += 1;
+        }
+    }
+    crate::tsf_log!("status bar menu: 清空日志 {n} 个文件");
+}
+
+/// 用浏览器打开 URL。
+fn open_url(url: &str) {
+    use std::os::windows::process::CommandExt;
+    let _ = std::process::Command::new("cmd")
+        .args(["/c", "start", "", url])
+        .creation_flags(0x0800_0000)
+        .spawn();
+}
+
+/// 把每页候选数写进用户目录 default.custom.yaml。
+fn write_page_size(n: u32) {
+    let dir = lingxi_rime::config::user_data_dir();
+    let _ = std::fs::create_dir_all(&dir);
+    let _ = std::fs::write(
+        dir.join("default.custom.yaml"),
+        format!("patch:\n  menu/page_size: {}\n", n.clamp(1, 20)),
+    );
+}
+
+/// 模糊音 / 自学习写入 `<schema>.custom.yaml`（与设置中心同一套逻辑）。
+fn write_schema_patch(cfg: &lingxi_rime::config::LingxiConfig) {
+    let Some(dll_dir) = module_dir() else { return };
+    let mut shared = None;
+    let mut cur = Some(dll_dir);
+    for _ in 0..6 {
+        let Some(d) = cur else { break };
+        let cand = d.join("rime").join("data");
+        if cand.join("default.yaml").exists() {
+            shared = Some(cand);
+            break;
+        }
+        cur = d.parent().map(|p| p.to_path_buf());
+    }
+    let Some(shared) = shared else { return };
+    let dir = lingxi_rime::config::user_data_dir();
+    let sid = cfg.input.schema.trim();
+    if sid.is_empty() {
+        return;
+    }
+    let file = dir.join(format!("{sid}.custom.yaml"));
+    let base = lingxi_rime::config::read_schema_algebra(&shared.join(format!("{sid}.schema.yaml")));
+    match cfg.input.schema_patch_yaml(&base) {
+        Some(text) => {
+            let _ = std::fs::create_dir_all(&dir);
+            let _ = std::fs::write(&file, text);
+        }
+        None => {
+            if file.exists() {
+                let _ = std::fs::remove_file(&file);
             }
         }
     }
