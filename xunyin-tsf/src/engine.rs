@@ -108,21 +108,26 @@ fn shared_data_dir() -> PathBuf {
         return PathBuf::from(p);
     }
     if let Some(dll) = module_dir() {
+        // 1) DLL 旁或上一级（安装布局：<安装目录>\rime\data）
         for cand in [
             dll.join("rime").join("data"),
-            dll.join("..")
-                .join("rime")
-                .join("data"),
-            dll.join("..")
-                .join("..")
-                .join("..")
-                .join("xunyin-ime")
-                .join("rime")
-                .join("data"),
+            dll.join("..").join("rime").join("data"),
         ] {
             if cand.join("default.yaml").exists() {
                 return cand;
             }
+        }
+        // 2) 逐级向上找 xunyin-ime\rime\data（开发布局：DLL 可能在
+        //    xunyin-tsf\target\debug 或 build\dev-deploy\tsf 下，深度不同，
+        //    写死相对层级会找不到——找不到就没有方案可用，表现为"打不出中文"）
+        let mut cur = Some(dll.clone());
+        for _ in 0..7 {
+            let Some(d) = cur else { break };
+            let cand = d.join("xunyin-ime").join("rime").join("data");
+            if cand.join("default.yaml").exists() {
+                return cand;
+            }
+            cur = d.parent().map(|p| p.to_path_buf());
         }
         return dll.join("rime").join("data");
     }
