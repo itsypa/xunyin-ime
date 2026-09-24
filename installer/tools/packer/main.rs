@@ -398,7 +398,11 @@ fn prepare_uninstaller(
     println!("    文件版本: {}", uninst_res_info.file_version);
 
     let icon_path = l.icon_path()?;
-    set_pe_version_info(&uninstaller_path, &uninst_res_info, icon_path.as_deref())?;
+    if is_pe32(&uninstaller_path) {
+        println!("    32 位卸载器：跳过 PE 版本信息/图标注入（见 is_pe32 注释）");
+    } else {
+        set_pe_version_info(&uninstaller_path, &uninst_res_info, icon_path.as_deref())?;
+    }
 
     archive::append_manifest_overlay(&uninstaller_path, &manifest, &logo)?;
     let size = std::fs::metadata(&uninstaller_path)
@@ -562,7 +566,11 @@ fn bundle_inner(l: &Loaded, stub: &Path, archive: &Path, output: &Path) -> Resul
 
     // 复制 stub 到临时文件然后注入 PE 资源
     std::fs::copy(stub, &tmp).map_err(|e| format!("复制 stub 失败: {}", e))?;
-    set_pe_version_info(&tmp, &res_info, icon_path.as_deref())?;
+    if is_pe32(&tmp) {
+        println!("  32 位 stub：跳过 PE 版本信息/图标注入（见 is_pe32 注释）");
+    } else {
+        set_pe_version_info(&tmp, &res_info, icon_path.as_deref())?;
+    }
 
     let effective_stub = tmp.clone();
     let iconned_stub = Some(tmp);
@@ -715,6 +723,28 @@ fn print_capability(name: &str, enabled: bool, detail: impl FnOnce() -> String) 
 // ── PE 版本与图标注入 ────────────────────────────────────────────────────────
 
 /// 为指定 EXE 注入版本信息和图标（可选）
+/// 目标是否为 32 位 PE（PE32，OptionalHeader.Magic = 0x010b）。
+///
+/// **本地修补**：32 位 stub 不能用 editpe 写 PE 资源——实测它在 PE32 下会把
+/// `OptionalHeader.SizeOfImage` 写坏（归零后只加新节大小），产物被 Windows 判为
+/// 「不是有效的 Win32 应用程序」。因此 32 位安装器/卸载器跳过版本信息与图标注入，
+/// 只做归档/清单追加（功能完全不受影响，仅少了个自定义图标与版本号）。
+fn is_pe32(path: &Path) -> bool {
+    let Ok(bytes) = std::fs::read(path) else {
+        return false;
+    };
+    if bytes.len() < 0x40 {
+        return false;
+    }
+    let pe_off =
+        u32::from_le_bytes([bytes[0x3C], bytes[0x3D], bytes[0x3E], bytes[0x3F]]) as usize;
+    if bytes.len() < pe_off + 26 {
+        return false;
+    }
+    let magic = u16::from_le_bytes([bytes[pe_off + 24], bytes[pe_off + 25]]);
+    magic == 0x010b
+}
+
 fn set_pe_version_info(
     exe_path: &Path,
     res_info: &version_info::ResolvedVersionInfo,

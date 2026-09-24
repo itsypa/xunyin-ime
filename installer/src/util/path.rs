@@ -59,7 +59,10 @@ pub fn get_fonts_dir() -> PathBuf {
 
 /// 检查是否为 64 位系统
 pub fn is_64bit_system() -> bool {
-    std::env::var("PROCESSOR_ARCHITECTURE")
-        .map(|arch| arch == "AMD64" || arch == "IA64")
-        .unwrap_or(false)
+    // 本地修补：32 位进程跑在 64 位 Windows 上时，`PROCESSOR_ARCHITECTURE` 是 `x86`，
+    // 真实架构放在 `PROCESSOR_ARCHITEW6432`。只看前者会让 32 位安装器把自己误判成
+    // 「32 位系统」而拒绝安装（上游只发 x64 stub，没暴露这个问题）。
+    let arch = std::env::var("PROCESSOR_ARCHITECTURE").unwrap_or_default();
+    let wow = std::env::var("PROCESSOR_ARCHITEW6432").unwrap_or_default();
+    matches!(arch.as_str(), "AMD64" | "IA64") || matches!(wow.as_str(), "AMD64" | "IA64")
 }

@@ -1,10 +1,9 @@
 ﻿param(
     [string]$Version = "",
-    # 目前只出 x64 安装包：32 位 stub 依赖的上游 GUI 库 windui 在 i686 下编译不过
-    # （SetWindowLongPtrW 的 isize/i32 与 packed struct 未对齐两类硬错误）。
-    # 32 位 Windows 请用发布页的便携 zip + tools\register-ime.ps1（见 README）。
-    [ValidateSet("x64", "x86")]
-    [string]$Arch = "x64",
+    # x64 = 64 位 Windows；x86 = 32 位 Windows（也可在 64 位系统上跑，注册走 Sysnative）。
+    # 两者都用同一份 payload，只有安装器 stub 的架构不同。
+    [ValidateSet("x64", "x86", "both")]
+    [string]$Arch = "both",
     [ValidateSet("lzma", "zstd")]
     [string]$Compression = "lzma",
     [switch]$Sign,
@@ -134,6 +133,11 @@ function Pack-One([string]$arch) {
     $sub = if ($arch -eq "x86") { "i686-pc-windows-msvc\release" } else { "release" }
     $stub = Join-Path $installerDir "target\$sub\wind-installer.exe"
     if (-not (Test-Path $stub)) { throw "缺少 $arch 安装器 stub: $stub" }
+    # 卸载器必须与安装器同架构：32 位系统跑不了 x64 卸载器。
+    # 同时这也把上一轮"已加工"的卸载器换回未加工的 stub，避免打包器报"上一轮产物"。
+    $un = Join-Path $installerDir "target\$sub\wind-uninstaller.exe"
+    if (-not (Test-Path $un)) { throw "缺少 $arch 卸载器: $un" }
+    Copy-Item $un (Join-Path $payloadDir "uninstall.exe") -Force
     $output = Join-Path $distDir "LingxiIME-Setup-$Version-$arch.exe"
     if ($Sign) {
         if (-not (Test-Path $PfxPath)) { throw "签名证书不存在: $PfxPath" }
@@ -158,4 +162,9 @@ function Pack-One([string]$arch) {
     Write-Host ("安装包({0}): {1} ({2:N1} MB)" -f $arch, $pkg.FullName, ($pkg.Length / 1MB))
 }
 
-Pack-One $Arch
+if ($Arch -eq "both") {
+    Pack-One "x64"
+    Pack-One "x86"
+} else {
+    Pack-One $Arch
+}

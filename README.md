@@ -67,12 +67,13 @@ tools/         部署、签名、状态栏资源生成脚本与测试页
 1. 编译 `lingxi-tsf`（x64 + x86 release）；
 2. 编译设置中心（Tauri release + 前端 dist）；
 3. 用 [wind-installer](https://github.com/huanfeng/wind-installer)（清单驱动）生成
-   **安装器 + 卸载器**：`LingxiIME-Setup-<版本>-x64.exe`；
+   **安装器 + 卸载器**：`LingxiIME-Setup-<版本>-x64.exe`（64 位 Windows）与
+   `LingxiIME-Setup-<版本>-x86.exe`（32 位 Windows）；
 4. 上传产物并在 Release 中发布。
 
 构建成功后还会自动发布 **GitHub Release**：每次构建注入唯一版本号
 `0.1.<构建序号>`（合法 semver），Release 名称与安装包文件名均为英文
-（`LingxiIME v0.1.<序号>` / `LingxiIME-Setup-0.1.<序号>-x64.exe` 等），避免中文
+（`LingxiIME v0.1.<序号>` / `LingxiIME-Setup-0.1.<序号>-x64.exe` / `-x86.exe`），避免中文
 编码显示问题；应用本身安装后仍显示中文名「灵犀输入法」。以后想手动控制版本时，
 可以改为按 `v*` 标签触发。
 

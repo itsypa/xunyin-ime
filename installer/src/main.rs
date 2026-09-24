@@ -128,7 +128,11 @@ fn run_install(args: Args) {
     }
 
     // 检查 64 位系统
-    if !util::path::is_64bit_system() {
+    //
+    // 本地修补：上游只发布 x64 安装器，故硬性要求 64 位系统。现在同时发布 x86 安装器，
+    // 32 位系统上只有 x86 视图可注册（见 installer/ime.rs 的 32 位分支），应当放行；
+    // 只有「64 位 stub 跑在 32 位系统」才拒绝——那种情况下 x64 DLL 无法注册。
+    if !util::path::is_64bit_system() && cfg!(target_pointer_width = "64") {
         // TODO: 显示错误对话框
         std::process::exit(1);
     }

@@ -4,7 +4,7 @@
 //! 本应用负责：共享配置读写、词库导入/导出、引擎部署（建索引）、
 //! 打开数据目录等设置能力。
 
-use lingxi_rime::config::{LingxiConfig, load_config, save_config, user_data_dir};
+use lingxi_rime::config::{AppearanceConfig, LingxiConfig, load_config, save_config, user_data_dir};
 use lingxi_rime::RimeEngine;
 use serde::Serialize;
 use std::path::PathBuf;
@@ -333,6 +333,45 @@ fn open_data_dir() -> Result<(), String> {
         .map_err(|e| e.to_string())
 }
 
+// ---------------- 皮肤（外观）导入 / 导出 ----------------
+//
+// 皮肤文件是一段 JSON：{ "name": ..., "version": 1, "appearance": { ... } }。
+// 只承载外观段（主题/配色/字号/圆角/透明度/序号），换机器或分享给他人时导入即可套用。
+
+/// 导出当前外观为皮肤文件，返回文件路径。
+#[tauri::command]
+fn export_skin() -> Result<String, String> {
+    let cfg = load_config();
+    let dir = user_data_dir().join("skins");
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let path = dir.join(format!("skin_{}.json", chrono_like_stamp()));
+    let doc = serde_json::json!({
+        "name": format!("灵犀皮肤 {}", chrono_like_stamp()),
+        "version": 1,
+        "appearance": cfg.appearance,
+    });
+    let text = serde_json::to_string_pretty(&doc).map_err(|e| e.to_string())?;
+    std::fs::write(&path, text).map_err(|e| e.to_string())?;
+    Ok(path.to_string_lossy().into_owned())
+}
+
+/// 从皮肤文件内容导入外观设置，返回套用后的完整配置。
+#[tauri::command]
+fn import_skin(content: String) -> Result<LingxiConfig, String> {
+    let v: serde_json::Value =
+        serde_json::from_str(&content).map_err(|e| format!("皮肤文件不是合法 JSON：{e}"))?;
+    let appearance: AppearanceConfig = serde_json::from_value(
+        v.get("appearance")
+            .cloned()
+            .ok_or_else(|| "皮肤文件缺少 appearance 字段".to_string())?,
+    )
+    .map_err(|e| format!("皮肤文件 appearance 字段不完整：{e}"))?;
+    let mut cfg = load_config();
+    cfg.appearance = appearance;
+    save_config(&cfg).map_err(|e| e.to_string())?;
+    Ok(cfg)
+}
+
 // ---------------- 用户词库备份 / 恢复 ----------------
 //
 // 用户打字学到的词存在 Rime 的 LevelDB 目录 `*.userdb/` 里，是二进制目录，
@@ -482,6 +521,8 @@ pub fn run() {
             import_dict_content,
             export_dict,
             open_data_dir,
+            export_skin,
+            import_skin,
             backup_user_dict,
             list_user_dict_backups,
             restore_user_dict,

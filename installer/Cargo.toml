@@ -89,4 +89,8 @@ required-features = ["packer"]
 # 本地修补 editpe：上游 0.2.3 的 VersionInfo::build() 用 UTF-8 字节数（String::len()）
 # 计算版本资源头部长度，含中文时结构错乱、Windows 读不到版本信息。vendor 副本已修为 UTF-16 码元数。
 [patch.crates-io]
-editpe = { path = "vendor/editpe" }
+  editpe = { path = "vendor/editpe" }
+  # windui 0.16.1 在 i686 目标下编译不过（SetWindowLongPtrW 的 isize/i32、
+  # NOTIFYICONDATAW packed 字段引用两处 E0793）。vendor 副本已修，见
+  # vendor/windui/PATCHES.md —— 这样 32 位安装器才能构建出来。
+  windui = { path = "vendor/windui" }

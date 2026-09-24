@@ -62,7 +62,9 @@ jobs:
 
       - name: 构建安装器（stub / 卸载器 / 打包器）
         working-directory: installer
-        run: cargo build --release --features packer
+        run: |
+          cargo build --release --features packer
+          cargo build --release --features packer --target i686-pc-windows-msvc
 
       - name: 导入签名证书（如已配置 secrets）
         if: ${{ secrets.SIGN_PFX_BASE64 != '' }}
@@ -77,7 +79,7 @@ jobs:
       - name: 生成安装包（wind-installer）
         shell: powershell
         run: |
-          $params = @("-SkipBuild", "-Arch", "x64", "-Version", "0.1.$env:GITHUB_RUN_NUMBER", "-Compression", "lzma")
+          $params = @("-SkipBuild", "-Arch", "both", "-Version", "0.1.$env:GITHUB_RUN_NUMBER", "-Compression", "lzma")
           if ($env:SIGN_PFX) {
             $params += @("-Sign", "-PfxPath", $env:SIGN_PFX, "-PfxPassword", $env:SIGN_PFX_PASSWORD)
             Write-Host "已启用代码签名"
