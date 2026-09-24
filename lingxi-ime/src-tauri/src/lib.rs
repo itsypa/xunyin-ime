@@ -509,6 +509,19 @@ pub fn run() {
             }
         }))
         .setup(|app| {
+            // 首次启动（状态栏「设置」按钮拉起的那个进程）把主窗口带到前台并聚焦，
+            // 否则窗口可能出现在浏览器/编辑器后面，用户会以为"点了没反应"。
+            {
+                let handle = app.handle().clone();
+                std::thread::spawn(move || {
+                    std::thread::sleep(std::time::Duration::from_millis(350));
+                    if let Some(w) = handle.get_webview_window("main") {
+                        let _ = w.unminimize();
+                        let _ = w.show();
+                        let _ = w.set_focus();
+                    }
+                });
+            }
             let (shared, user) = resolve_data_dirs(&app.handle());
             let state = AppState {
                 engine: Arc::new(Mutex::new(RimeEngine::uninitialized())),

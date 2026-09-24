@@ -15,8 +15,12 @@ $certThumb = "109B04E710355C66C85B025C8E939B0F778580CB"
 if (-not $SkipFrontend) {
     Push-Location $imeDir
     try {
+        # native 命令写 stderr 时不要抛错（$ErrorActionPreference=Stop 会把它当终止错误）
+        $ErrorActionPreference = "Continue"
         npm run build 2>&1 | Out-Host
-        if ($LASTEXITCODE -ne 0) { throw "npm run build failed" }
+        $code = $LASTEXITCODE
+        $ErrorActionPreference = "Stop"
+        if ($code -ne 0) { throw "npm run build failed" }
     } finally {
         Pop-Location
     }
@@ -34,8 +38,11 @@ if (-not $SkipBuild) {
     try {
         # 注意：必须启用 custom-protocol 特性，否则 exe 会去找 Vite 开发服务器
         # （devUrl=http://localhost:1420），导致设置中心"localhost 拒绝连接"。
+        $ErrorActionPreference = "Continue"
         cargo build @targetArg --features custom-protocol 2>&1 | Out-Host
-        if ($LASTEXITCODE -ne 0) { throw "cargo build failed ($Arch)" }
+        $code = $LASTEXITCODE
+        $ErrorActionPreference = "Stop"
+        if ($code -ne 0) { throw "cargo build failed ($Arch)" }
     } finally {
         Pop-Location
     }

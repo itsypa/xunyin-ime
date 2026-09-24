@@ -533,7 +533,13 @@ impl StatusBar {
                     .creation_flags(0x0800_0000) // CREATE_NO_WINDOW：避免控制台黑框
                     .spawn()
                 {
-                    Ok(_) => {}
+                    Ok(child) => {
+                        // 放开前台限制：否则设置窗口可能开在浏览器后面，看起来像"点了没反应"
+                        unsafe {
+                            let _ = AllowSetForegroundWindow(child.id());
+                        }
+                        crate::tsf_log!("open settings: pid={} 已放开前台限制", child.id());
+                    }
                     Err(e) => crate::tsf_log!("open settings: 启动失败 {e}"),
                 }
             }

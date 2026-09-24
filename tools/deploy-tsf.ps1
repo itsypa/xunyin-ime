@@ -1,7 +1,7 @@
 ﻿param(
     [ValidateSet("x64", "x86")]
     [string]$Arch = "x64",
-    [string]$DllName = "lingxi_tsf_v60.dll",
+    [string]$DllName = "lingxi_tsf_v61.dll",
     [switch]$SkipBuild,
     [switch]$SkipSign,
     [switch]$SkipRestart
@@ -28,12 +28,16 @@ if ($Arch -eq "x64") {
 if (-not $SkipBuild) {
     Push-Location $tsfDir
     try {
+        # native 命令写 stderr（cargo/链接器警告）时不要抛错
+        $ErrorActionPreference = "Continue"
         if ($Arch -eq "x64") {
             cargo build 2>&1 | Out-Host
         } else {
             cargo build --target $target 2>&1 | Out-Host
         }
-        if ($LASTEXITCODE -ne 0) { throw "cargo build failed ($Arch)" }
+        $code = $LASTEXITCODE
+        $ErrorActionPreference = "Stop"
+        if ($code -ne 0) { throw "cargo build failed ($Arch)" }
     } finally {
         Pop-Location
     }
