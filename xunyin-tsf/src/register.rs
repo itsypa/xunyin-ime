@@ -37,6 +37,18 @@ pub fn register_server() -> windows_core::Result<()> {
             None,
             CLSCTX_INPROC_SERVER,
         )? };
+    // 语言栏/任务栏图标：把 DLL 同目录的 xunyin.ico 登记到 TIP 语言档案
+    let ico = std::path::Path::new(&dll_path).parent().map(|d| d.join("xunyin.ico"));
+    if let Some(ico) = ico.filter(|p| p.exists()) {
+        let key = format!(
+            r"Software\Microsoft\CTF\TIP\{}\LanguageProfile\0x00000804\{}",
+            clsid,
+            guid_string(&GUID_XUNYIN_PROFILE)
+        );
+        let _ = set_reg_string(HKEY_CURRENT_USER, &key, "IconFile", &ico.to_string_lossy());
+        let _ = set_reg_dword(HKEY_CURRENT_USER, &key, "IconIndex", 0);
+    }
+
     unsafe { profiles.Register(&CLSID_XUNYIN_TSF)? };
     let desc: Vec<u16> = "迅音输入法".encode_utf16().collect();
     unsafe { profiles.AddLanguageProfile(
@@ -200,4 +212,24 @@ fn guid_string(g: &GUID) -> String {
         g.data4[6],
         g.data4[7]
     )
+}
+
+/// 写一个 DWORD 注册表值（语言栏图标索引用）。
+fn set_reg_dword(root: HKEY, subkey: &str, value_name: &str, data: u32) -> windows_core::Result<()> {
+    unsafe {
+        let subkey16: Vec<u16> = subkey.encode_utf16().chain(std::iter::once(0)).collect();
+        let name16: Vec<u16> = value_name.encode_utf16().chain(std::iter::once(0)).collect();
+        let mut key: HKEY = HKEY(core::ptr::null_mut());
+        let err = RegCreateKeyW(root, PCWSTR(subkey16.as_ptr()), &mut key);
+        if err.0 != 0 {
+            return Err(windows_core::Error::from_hresult(windows_core::HRESULT(err.0 as i32)));
+        }
+        let bytes = data.to_le_bytes();
+        let err2 = RegSetValueExW(key, PCWSTR(name16.as_ptr()), None, REG_DWORD, Some(&bytes));
+        let _ = RegCloseKey(key);
+        if err2.0 != 0 {
+            return Err(windows_core::Error::from_hresult(windows_core::HRESULT(err2.0 as i32)));
+        }
+        Ok(())
+    }
 }

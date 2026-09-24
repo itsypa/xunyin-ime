@@ -32,7 +32,7 @@ $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
 $tsfDir = Join-Path $root "xunyin-tsf"
 $certThumb = "109B04E710355C66C85B025C8E939B0F778580CB"
-$clsid = "{F3A2D6E1-4C5B-4E8A-9C1D-2A6B7C8D9E0F}"
+$clsid = "{7C4E9A38-2B61-4D5F-A8C3-9E7B5F1D2A64}"
 
 if (-not $StageRoot) { $StageRoot = Join-Path $root "build\dev-deploy" }
 
@@ -163,7 +163,7 @@ Write-Host "[$Arch] regsvr32 DllRegisterServer done"
 $ico = Join-Path $root "xunyin-ime\icons\xunyin.ico"
 if (Test-Path $ico) {
     Copy-Item $ico (Join-Path (Split-Path -Parent $dst) "xunyin.ico") -Force
-    $tipKey = "HKLM\SOFTWARE\Microsoft\CTF\TIP\{F3A2D6E1-4C5B-4E8A-9C1D-2A6B7C8D9E0F}\LanguageProfile\0x00000804\{B2E4C9A1-7D3F-4B62-9E11-5C8A0F2D6E31}"
+    $tipKey = "HKLM\SOFTWARE\Microsoft\CTF\TIP\{7C4E9A38-2B61-4D5F-A8C3-9E7B5F1D2A64}\LanguageProfile\0x00000804\{D5B8F2C7-4A93-4E18-B6D2-3C9F7A5E8B41}"
     reg add $tipKey /v IconFile /t REG_SZ /d $ico /f | Out-Null
     reg add $tipKey /v IconIndex /t REG_DWORD /d 0 /f | Out-Null
     Write-Host "[$Arch] 语言栏图标已登记: $ico"
@@ -220,3 +220,9 @@ if ($holders) {
 Write-Host "提示：本脚本不再强杀 ctfmon / TextInputHost —— 强杀会让已打开应用的输入法状态半死，"
 Write-Host "      现象是「所有输入法都打不出中文」，只有重开应用或注销重登才恢复。"
 Write-Host "deploy-tsf done: $Arch -> $dst"
+# 清理改名前的旧 CLSID 残留（否则语言列表里会留一个失效的「灵犀输入法」）
+$legacy = "{F3A2D6E1-4C5B-4E8A-9C1D-2A6B7C8D9E0F}"
+foreach ($root in @("HKCU\Software\Classes\CLSID\$legacy", "HKLM\SOFTWARE\Classes\CLSID\$legacy", "HKLM\SOFTWARE\Classes\WOW6432Node\CLSID\$legacy", "HKLM\SOFTWARE\Microsoft\CTF\TIP\$legacy")) {
+    reg delete $root /f 2>$null | Out-Null
+}
+Write-Host "旧 CLSID 残留已清理（$legacy）"

@@ -9,9 +9,9 @@ use windows::Win32::UI::Input::KeyboardAndMouse::HKL;
 use windows::Win32::UI::TextServices::*;
 use windows_core::{GUID, PCWSTR};
 
-const CLSID_XUNYIN_TSF: GUID = GUID::from_u128(0xf3a2d6e1_4c5b_4e8a_9c1d_2a6b7c8d9e0f);
+const CLSID_XUNYIN_TSF: GUID = GUID::from_u128(0x7c4e9a38_2b61_4d5f_a8c3_9e7b5f1d2a64);
 const GUID_XUNYIN_PROFILE: GUID =
-    GUID::from_u128(0x5b8e9a2f_6d7c_4f1a_8e3b_4c5d6e7f8a9b);
+    GUID::from_u128(0xd5b8f2c7_4a93_4e18_b6d2_3c9f7a5e8b41);
 
 fn guid_str(g: &GUID) -> String {
     format!(

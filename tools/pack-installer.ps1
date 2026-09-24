@@ -1,4 +1,4 @@
-param(
+﻿param(
     [string]$Version = "",
     # x64 = 64 位 Windows；x86 = 32 位 Windows（也可在 64 位系统上跑，注册走 Sysnative）。
     # 两者都用同一份 payload，只有安装器 stub 的架构不同。
@@ -77,6 +77,14 @@ Copy-Item $tsfX64 (Join-Path $payloadDir "tsf\xunyin_tsf_x64.dll") -Force
 Copy-Item $rimeX64 (Join-Path $payloadDir "tsf\rime.dll") -Force
 Copy-Item $tsfX86 (Join-Path $payloadDir "tsf-x86\xunyin_tsf_x86.dll") -Force
 Copy-Item $rimeX86 (Join-Path $payloadDir "tsf-x86\rime.dll") -Force
+
+# 语言栏图标：分别放进 tsf/ 与 tsf-x86/（DllRegisterServer 会按 DLL 同目录找 xunyin.ico）
+$icoSrc = Join-Path $root "xunyin-ime\icons\xunyin.ico"
+if (Test-Path $icoSrc) {
+    Copy-Item $icoSrc (Join-Path $payloadDir "tsf\xunyin.ico") -Force
+    Copy-Item $icoSrc (Join-Path $payloadDir "tsf-x86\xunyin.ico") -Force
+    Write-Host "语言栏图标已放入 tsf/ 与 tsf-x86/"
+}
 
 $size = [math]::Round(((Get-ChildItem $payloadDir -Recurse -File | Measure-Object Length -Sum).Sum / 1MB), 1)
 Write-Host "payload 组装完成: $payloadDir ($size MB)"

@@ -28,19 +28,19 @@ use windows::Win32::Foundation::{CLASS_E_CLASSNOTAVAILABLE, E_POINTER};
 use windows_core::{GUID, HRESULT, Interface};
 
 /// 诊断用版本标记：每次构建更新，日志第一行可确认加载的 DLL 版本。
-pub const DLL_TAG: &str = "20260925-1500";
+pub const DLL_TAG: &str = "20260925-1600";
 
 /// 文本服务 CLSID（注册到 HKCU\Software\Classes\CLSID）。
-pub const CLSID_XUNYIN_TSF: GUID = GUID::from_u128(0xf3a2d6e1_4c5b_4e8a_9c1d_2a6b7c8d9e0f);
+pub const CLSID_XUNYIN_TSF: GUID = GUID::from_u128(0x7c4e9a38_2b61_4d5f_a8c3_9e7b5f1d2a64);
 /// 中文（简体，中国）语言档案 GUID。
 pub const GUID_XUNYIN_PROFILE: GUID =
-    GUID::from_u128(0x5b8e9a2f_6d7c_4f1a_8e3b_4c5d6e7f8a9b);
+    GUID::from_u128(0xd5b8f2c7_4a93_4e18_b6d2_3c9f7a5e8b41);
 /// 组合串显示属性 GUID。
 pub const GUID_XUNYIN_DISPLAY_ATTR: GUID =
-    GUID::from_u128(0x9e1f2a3b_4c5d_4e6f_8a9b_0c1d2e3f4a5b);
+    GUID::from_u128(0x8a3d6e19_5c24_4b7f_9d31_2e6a8c4f1b73);
 /// 候选 UI 元素 GUID。
 pub const GUID_XUNYIN_UI_ELEMENT: GUID =
-    GUID::from_u128(0x6d3c2b1a_0f9e_4d8c_7b6a_5a4b3c2d1e0f);
+    GUID::from_u128(0x4f7b2d9c_1a63_4e85_b2d7_6c9a3e5f8d21);
 
 /// 中文（简体，中国）。
 pub const LANGID_ZH_CN: u16 = 0x0804;
