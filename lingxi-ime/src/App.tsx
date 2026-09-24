@@ -669,42 +669,47 @@ function App() {
         )}
 
         {page === "appearance" && (
-          <section className="page">
+          <section className="page appearance-page">
             <h1>外观主题</h1>
             <p className="page-desc">自定义候选窗的样式与显示效果。</p>
 
-            <div className="card">
-              <h2>主题预设</h2>
-              <div className="preset-row">
-                {Object.keys(THEME_PRESETS).map((key) => (
-                  <button
-                    key={key}
-                    className={`preset ${a.theme === key ? "active" : ""}`}
-                    onClick={() => applyPreset(key)}
-                  >
-                    <span
-                      className="preset-dot"
-                      style={{
-                        background:
-                          THEME_PRESETS[key].selected_bg ?? "#2A6FDB",
-                      }}
-                    />
-                    {key === "light" ? "浅色" : key === "dark" ? "深色" : "护眼"}
-                  </button>
-                ))}
-              </div>
-            </div>
+            {/* 右栏固定预览：与左栏并排，滚动时不遮挡任何设置项 */}
+            <div className="appearance-layout">
+              <aside className="appearance-side">
+                <div className="card preview-card">
+                  <h2>候选窗预览</h2>
+                  <p className="hint" style={{ marginTop: 0 }}>
+                    实时预览配色、圆角、序号与透明度（尺寸固定，不随字号变化）。
+                    字号请把鼠标停在左侧「字体大小」滑块上，会弹出等大演示。
+                  </p>
+                  <CandidatePreview config={config} />
+                </div>
+              </aside>
 
-            <div className="card sticky-preview">
-              <h2>候选窗预览</h2>
-              <p className="hint" style={{ marginTop: 0 }}>
-                这里演示配色、圆角、序号与透明度（固定尺寸，不随字号变化）。
-                字号请把鼠标停在下方「字体大小」滑块上，会弹出真实大小的演示。
-              </p>
-              <CandidatePreview config={config} />
-            </div>
+              <div className="appearance-main">
+                <div className="card">
+                  <h2>主题预设</h2>
+                  <div className="preset-row">
+                    {Object.keys(THEME_PRESETS).map((key) => (
+                      <button
+                        key={key}
+                        className={`preset ${a.theme === key ? "active" : ""}`}
+                        onClick={() => applyPreset(key)}
+                      >
+                        <span
+                          className="preset-dot"
+                          style={{
+                            background:
+                              THEME_PRESETS[key].selected_bg ?? "#2A6FDB",
+                          }}
+                        />
+                        {key === "light" ? "浅色" : key === "dark" ? "深色" : "护眼"}
+                      </button>
+                    ))}
+                  </div>
+                </div>
 
-            <div className="card">
+                <div className="card">
               <h2>显示</h2>
               <Row
                 label="字体大小"
@@ -793,6 +798,8 @@ function App() {
                   hidden
                   onChange={(e) => handleImportSkin(e.target.files?.[0])}
                 />
+              </div>
+            </div>
               </div>
             </div>
           </section>
