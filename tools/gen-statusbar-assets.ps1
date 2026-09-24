@@ -129,43 +129,6 @@ Make-BarBg
 Make-CellTile "cell_hover" $HOVER
 Make-CellTile "cell_active" $HL_BG
 
-# 全角：实心圆 ●
-Make-Icon "icon_width_full" {
-    param($g, $cx, $cy, $size, $brush)
-    $r = $size / 2.0
-    $g.FillEllipse($brush, $cx - $r, $cy - $r, $size, $size)
-}
-
-# 半角：弯月（实心圆挖掉偏移圆）
-Make-Icon "icon_width_half" {
-    param($g, $cx, $cy, $size, $brush)
-    $r = $size / 2.0
-    $g.FillEllipse($brush, $cx - $r, $cy - $r, $size, $size)
-    $g.CompositingMode = [System.Drawing.Drawing2D.CompositingMode]::SourceCopy
-    $er = New-Object System.Drawing.SolidBrush([System.Drawing.Color]::FromArgb(0, 0, 0, 0))
-    $r2 = $r * 0.86
-    $off = $r * 0.42
-    $g.FillEllipse($er, $cx - $r2 + $off, $cy - $r2 - $off * 0.35, $r2 * 2, $r2 * 2)
-    $er.Dispose()
-    $g.CompositingMode = [System.Drawing.Drawing2D.CompositingMode]::SourceOver
-}
-
-# 全角标点：圆环 。（中文句号）
-Make-Icon "icon_punct_full" {
-    param($g, $cx, $cy, $size, $brush)
-    $r = $size * 0.40
-    $pen = New-Object System.Drawing.Pen([System.Drawing.Color]::White, (2.2 * $S))
-    $g.DrawEllipse($pen, $cx - $r, $cy - $r, $r * 2, $r * 2)
-    $pen.Dispose()
-}
-
-# 半角标点：实心小圆点 .（英文句号）
-Make-Icon "icon_punct_half" {
-    param($g, $cx, $cy, $size, $brush)
-    $r = $size * 0.22
-    $g.FillEllipse($brush, $cx - $r, $cy - $r + $size * 0.14, $r * 2, $r * 2)
-}
-
 # 设置：齿轮（8 齿 + 中心镂空）
 Make-Icon "icon_gear" {
     param($g, $cx, $cy, $size, $brush)
@@ -191,22 +154,108 @@ Make-Icon "icon_gear" {
     $g.CompositingMode = [System.Drawing.Drawing2D.CompositingMode]::SourceOver
 }
 
-# ── 文字蒙版：中 / 英（白色 + alpha，15dp 字号）──────────────────────────────
-function Make-Glyph([string]$text, [string]$name) {
-    $ctx = New-Bmp $Tile $Tile
-    $g = $ctx.G
+# ── 文字蒙版：中 / 英 / 全 / 半 / 标点（白色 + alpha，运行时 tint）──────────
+# 标点与全半角也用文字而不是图形：圆环/实心圆/弯月的隐喻太含糊（实测两个圆
+# 挨在一起分不清哪个是标点哪个是全角），文字最直观。
+function Make-Glyph([string]$text, [string]$name, [double]$fontPx = 15.0) {
+    # 先画到临时画布量出**墨迹包围盒**，再按墨迹居中贴进方格。
+    # 必要性：全角标点（，。）的墨迹天生挤在字框左下角，直接居中排版会显得
+    # 又小又偏下；中文汉字的墨迹也不是严格居中。按墨迹居中后整排图标才对得齐。
+    $tmpSize = 160
+    $tmp = New-Object System.Drawing.Bitmap($tmpSize, $tmpSize, [System.Drawing.Imaging.PixelFormat]::Format32bppArgb)
+    $tg = [System.Drawing.Graphics]::FromImage($tmp)
+    $tg.TextRenderingHint = [System.Drawing.Text.TextRenderingHint]::AntiAliasGridFit
     $sf = New-Object System.Drawing.StringFormat
     $sf.Alignment = [System.Drawing.StringAlignment]::Center
     $sf.LineAlignment = [System.Drawing.StringAlignment]::Center
-    $f = New-Object System.Drawing.Font("Microsoft YaHei UI", (15.0 * $S), [System.Drawing.FontStyle]::Regular, [System.Drawing.GraphicsUnit]::Pixel)
-    $g.DrawString($text, $f, [System.Drawing.Brushes]::White, (New-Object System.Drawing.RectangleF(0, 0, $Tile, $Tile)), $sf)
+    $f = New-Object System.Drawing.Font("Microsoft YaHei UI", ($fontPx * $S), [System.Drawing.FontStyle]::Regular, [System.Drawing.GraphicsUnit]::Pixel)
+    $tg.DrawString($text, $f, [System.Drawing.Brushes]::White, (New-Object System.Drawing.RectangleF(0, 0, $tmpSize, $tmpSize)), $sf)
     $f.Dispose()
+    # 量墨迹
+    $minX = $tmpSize; $maxX = -1; $minY = $tmpSize; $maxY = -1
+    for ($y = 0; $y -lt $tmpSize; $y++) {
+        for ($x = 0; $x -lt $tmpSize; $x++) {
+            if ($tmp.GetPixel($x, $y).A -gt 20) {
+                if ($x -lt $minX) { $minX = $x }
+                if ($x -gt $maxX) { $maxX = $x }
+                if ($y -lt $minY) { $minY = $y }
+                if ($y -gt $maxY) { $maxY = $y }
+            }
+        }
+    }
+    $ctx = New-Bmp $Tile $Tile
+    if ($maxX -ge $minX -and $maxY -ge $minY) {
+        $inkW = $maxX - $minX + 1
+        $inkH = $maxY - $minY + 1
+        $dx = [int](($Tile - $inkW) / 2) - $minX
+        $dy = [int](($Tile - $inkH) / 2) - $minY
+        $ctx.G.DrawImage($tmp, (New-Object System.Drawing.Rectangle($dx, $dy, $tmpSize, $tmpSize)))
+    }
+    $tg.Dispose(); $tmp.Dispose()
     Save-Bgra $ctx $name
 }
 
 Make-Glyph "中" "glyph_zhong"
 Make-Glyph "英" "glyph_ying"
 Make-Glyph "※" "glyph_symbol"
+Make-Glyph "全" "glyph_quan"
+Make-Glyph "半" "glyph_ban"
+
+# 把单个字符画到临时画布并按墨迹裁成紧致位图（返回位图与尺寸）。
+function Render-Ink([string]$text, [double]$fontPx) {
+    $sz = 160
+    $tmp = New-Object System.Drawing.Bitmap($sz, $sz, [System.Drawing.Imaging.PixelFormat]::Format32bppArgb)
+    $g = [System.Drawing.Graphics]::FromImage($tmp)
+    $g.TextRenderingHint = [System.Drawing.Text.TextRenderingHint]::AntiAliasGridFit
+    $sf = New-Object System.Drawing.StringFormat
+    $sf.Alignment = [System.Drawing.StringAlignment]::Center
+    $sf.LineAlignment = [System.Drawing.StringAlignment]::Center
+    $f = New-Object System.Drawing.Font("Microsoft YaHei UI", ($fontPx * $S), [System.Drawing.FontStyle]::Regular, [System.Drawing.GraphicsUnit]::Pixel)
+    $g.DrawString($text, $f, [System.Drawing.Brushes]::White, (New-Object System.Drawing.RectangleF(0, 0, $sz, $sz)), $sf)
+    $f.Dispose(); $g.Dispose()
+    $minX = $sz; $maxX = -1; $minY = $sz; $maxY = -1
+    for ($y = 0; $y -lt $sz; $y++) {
+        for ($x = 0; $x -lt $sz; $x++) {
+            if ($tmp.GetPixel($x, $y).A -gt 20) {
+                if ($x -lt $minX) { $minX = $x }
+                if ($x -gt $maxX) { $maxX = $x }
+                if ($y -lt $minY) { $minY = $y }
+                if ($y -gt $maxY) { $maxY = $y }
+            }
+        }
+    }
+    if ($maxX -lt $minX) { $tmp.Dispose(); return @{ Bmp = $null; W = 0; H = 0 } }
+    $w = $maxX - $minX + 1
+    $h = $maxY - $minY + 1
+    $tight = New-Object System.Drawing.Bitmap($w, $h, [System.Drawing.Imaging.PixelFormat]::Format32bppArgb)
+    $tg = [System.Drawing.Graphics]::FromImage($tight)
+    $tg.DrawImage(
+        $tmp,
+        (New-Object System.Drawing.Rectangle(0, 0, $w, $h)),
+        (New-Object System.Drawing.Rectangle($minX, $minY, $w, $h)),
+        [System.Drawing.GraphicsUnit]::Pixel)
+    $tg.Dispose(); $tmp.Dispose()
+    return @{ Bmp = $tight; W = $w; H = $h }
+}
+
+# 标点格：两枚标点**按墨迹并排**，间距固定（全角标点自带全角字宽，直接排版会离得老远）
+function Make-PunctGlyph([string]$a, [string]$b, [string]$name, [double]$fontPx = 18.0, [int]$gap = 4) {
+    $ia = Render-Ink $a $fontPx
+    $ib = Render-Ink $b $fontPx
+    if ($ia.W -eq 0 -or $ib.W -eq 0) { throw "标点字形渲染失败: $a / $b" }
+    $totalW = $ia.W + $gap + $ib.W
+    $totalH = [Math]::Max($ia.H, $ib.H)
+    $x0 = [int](($Tile - $totalW) / 2)
+    $y0 = [int](($Tile - $totalH) / 2)
+    $ctx = New-Bmp $Tile $Tile
+    $ctx.G.DrawImage($ia.Bmp, $x0, $y0 + [int](($totalH - $ia.H) / 2))
+    $ctx.G.DrawImage($ib.Bmp, $x0 + $ia.W + $gap, $y0 + [int](($totalH - $ib.H) / 2))
+    $ia.Bmp.Dispose(); $ib.Bmp.Dispose()
+    Save-Bgra $ctx $name
+}
+
+Make-PunctGlyph "，" "。" "glyph_punct_cn"
+Make-PunctGlyph "," "." "glyph_punct_en"
 
 Get-ChildItem $out -Filter *.bin | Select-Object Name, Length
 Write-Output "assets generated -> $out"

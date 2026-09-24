@@ -32,6 +32,7 @@ use windows::Win32::System::LibraryLoader::{
     GetModuleFileNameW, GetModuleHandleExW, GetModuleHandleW, GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS,
     GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
 };
+use windows::Win32::System::Threading::GetCurrentProcessId;
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     ReleaseCapture, SetCapture, TrackMouseEvent, TME_LEAVE, TRACKMOUSEEVENT,
 };
@@ -66,6 +67,12 @@ const SETTINGS_FG: [u8; 3] = [140, 140, 148]; // 设置齿轮更淡
 const MSG_SHOW: u32 = WM_APP + 1; // WPARAM 位：1=ascii 2=full 4=punct
 const MSG_HIDE: u32 = WM_APP + 2;
 const MSG_REPAINT: u32 = WM_APP + 3;
+
+// 前台性轮询：TSF 对**后台线程**的失焦通知并不可靠（实测：某个进程拿到过一次
+// foreground=true 之后再没收到 false/Deactivate，状态栏就永久留在屏幕上）。
+// 因此状态栏自己按定时器核对「本进程是否仍是前台进程」，不是就隐藏。
+const POLL_TIMER_ID: usize = 1;
+const POLL_MS: u32 = 400;
 
 // 右键菜单命令 id
 const CMD_MODE: usize = 1001;
@@ -111,11 +118,11 @@ struct Assets {
     bar_bg: &'static [u8],
     cell_hover: &'static [u8],
     cell_active: &'static [u8],
-    icon_width_full: &'static [u8],
-    icon_width_half: &'static [u8],
-    icon_punct_full: &'static [u8],
-    icon_punct_half: &'static [u8],
     icon_gear: &'static [u8],
+    glyph_quan: &'static [u8],
+    glyph_ban: &'static [u8],
+    glyph_punct_cn: &'static [u8],
+    glyph_punct_en: &'static [u8],
     glyph_zhong: &'static [u8],
     glyph_ying: &'static [u8],
     glyph_symbol: &'static [u8],
@@ -127,11 +134,11 @@ fn assets() -> &'static Assets {
         bar_bg: include_bytes!("assets/bar_bg.bin"),
         cell_hover: include_bytes!("assets/cell_hover.bin"),
         cell_active: include_bytes!("assets/cell_active.bin"),
-        icon_width_full: include_bytes!("assets/icon_width_full.bin"),
-        icon_width_half: include_bytes!("assets/icon_width_half.bin"),
-        icon_punct_full: include_bytes!("assets/icon_punct_full.bin"),
-        icon_punct_half: include_bytes!("assets/icon_punct_half.bin"),
         icon_gear: include_bytes!("assets/icon_gear.bin"),
+        glyph_quan: include_bytes!("assets/glyph_quan.bin"),
+        glyph_ban: include_bytes!("assets/glyph_ban.bin"),
+        glyph_punct_cn: include_bytes!("assets/glyph_punct_cn.bin"),
+        glyph_punct_en: include_bytes!("assets/glyph_punct_en.bin"),
         glyph_zhong: include_bytes!("assets/glyph_zhong.bin"),
         glyph_ying: include_bytes!("assets/glyph_ying.bin"),
         glyph_symbol: include_bytes!("assets/glyph_symbol.bin"),
@@ -242,11 +249,11 @@ fn composite_frame(hover: i32, ascii: bool, full: bool, punct: bool, symbol_on: 
                 if active { HL_FG } else { FG },
             ),
             CELL_PUNCT => (
-                if punct { a.icon_punct_half } else { a.icon_punct_full },
+                if punct { a.glyph_punct_en } else { a.glyph_punct_cn },
                 FG,
             ),
             CELL_WIDTH => (
-                if full { a.icon_width_full } else { a.icon_width_half },
+                if full { a.glyph_quan } else { a.glyph_ban },
                 FG,
             ),
             CELL_SYMBOL => (a.glyph_symbol, if active { HL_FG } else { FG }),
@@ -725,6 +732,19 @@ extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM
                 this.push();
                 LRESULT(0)
             }
+            WM_TIMER => {
+                // 前台性核对：本进程已不是前台进程 → 隐藏（见 POLL_TIMER_ID 注释）
+                if wparam.0 == POLL_TIMER_ID && this.shown.get() {
+                    let fg = GetForegroundWindow();
+                    let mut pid = 0u32;
+                    GetWindowThreadProcessId(fg, Some(&mut pid));
+                    if pid != GetCurrentProcessId() {
+                        crate::tsf_log!("status bar: 本进程已非前台(前台pid={pid}) -> 隐藏");
+                        this.hide();
+                    }
+                }
+                LRESULT(0)
+            }
             WM_PAINT => {
                 // 内容由 UpdateLayeredWindow 提供，仅验证区域避免重绘循环
                 let mut ps = PAINTSTRUCT::default();
@@ -915,6 +935,8 @@ fn ui_thread_entry() {
             .get_or_init(|| Mutex::new(None))
             .lock()
             .unwrap_or_else(|e| e.into_inner()) = Some(hwnd.0 as usize);
+        // 前台性轮询定时器（见 POLL_TIMER_ID 注释）
+        SetTimer(Some(hwnd), POLL_TIMER_ID, POLL_MS, None);
         let mut msg = MSG::default();
         loop {
             let r = GetMessageW(&mut msg, None, 0, 0);
