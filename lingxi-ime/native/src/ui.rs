@@ -1803,7 +1803,36 @@ fn paint(app: &mut App) {
             2 => draw_dict(app, mem, cx, cy0 - app.scroll, cw),
             _ => draw_about(app, mem, cx, cy0 - app.scroll, cw),
         };
-        app.scroll_max = (used + cy0 - (h - app.s(12))).max(0);
+        // 注意：绘制时已经减去了 scroll，所以这里要先加回来才是真正的内容高度。
+        // 之前直接拿 used 算，scroll_max 会随当前滚动位置变化 → 滚到底再上滚时
+        // 每帧的边界都不一样，表现为抖动。
+        let content_h = used - (cy0 - app.scroll);
+        app.scroll_max = (content_h + cy0 - (h - app.s(12))).max(0);
+        // 调试导出（仅当设置 LINGXI_UI_DUMP 时）：供自动化检查布局越界与滚动稳定性
+        if let Ok(dir) = std::env::var("LINGXI_UI_DUMP") {
+            use std::io::Write;
+            let _ = std::fs::create_dir_all(&dir);
+            if let Ok(mut f) = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(std::path::Path::new(&dir).join("paint.log"))
+            {
+                let _ = writeln!(
+                    f,
+                    "page={} scroll={} scroll_max={} content_h={} client={}x{}",
+                    app.page, app.scroll, app.scroll_max, content_h, w, h
+                );
+            }
+            let mut lines = String::new();
+            for hh in &app.hits {
+                let r = hh.rect;
+                lines.push_str(&format!(
+                    "{:?} {} {} {} {}\n",
+                    hh.id, r.left, r.top, r.right, r.bottom
+                ));
+            }
+            let _ = std::fs::write(std::path::Path::new(&dir).join("hits.txt"), lines);
+        }
         let _ = SelectClipRgn(mem, None);
         let _ = DeleteObject(HGDIOBJ(clip.0));
 
@@ -1877,7 +1906,8 @@ fn draw_input(app: &mut App, dc: HDC, x: i32, y0: i32, w: i32) -> i32 {
         ("拼音分隔符", Id::SepCombo, sep_text(app)),
     ] {
         let r = app.row(dc, x + app.s(18), ry, col_w - app.s(36), label, "");
-        let cb = RECT { left: r.right - app.s(230), top: r.top + app.s(4), right: r.right, bottom: r.top + app.s(36) };
+        // 下拉宽度收窄：以前 230 宽右对齐，左边缘会压到左侧标签文字上
+        let cb = RECT { left: r.right - app.s(160), top: r.top + app.s(4), right: r.right, bottom: r.top + app.s(36) };
         app.combo(dc, id, cb, &shown);
         ry += app.s(52);
     }
@@ -2038,8 +2068,10 @@ fn draw_dict(app: &mut App, dc: HDC, x: i32, y0: i32, w: i32) -> i32 {
 
     let ih = app.s(124);
     let cy = app.card(dc, x, y, col_w, ih, "自定义短语", "");
-    app.button(dc, Id::DictImport, RECT { left: x + app.s(18), top: cy, right: x + app.s(18) + app.s(140), bottom: cy + app.s(34) }, "导入短语文件…", true);
-    app.button(dc, Id::DictExport, RECT { left: x + app.s(166), top: cy, right: x + app.s(166) + app.s(140), bottom: cy + app.s(34) }, "导出当前短语", false);
+    let inner = col_w - app.s(36);
+    let bw = (inner - app.s(8)) / 2;
+    app.button(dc, Id::DictImport, RECT { left: x + app.s(18), top: cy, right: x + app.s(18) + bw, bottom: cy + app.s(34) }, "导入短语文件…", true);
+    app.button(dc, Id::DictExport, RECT { left: x + app.s(18) + bw + app.s(8), top: cy, right: x + col_w - app.s(18), bottom: cy + app.s(34) }, "导出当前短语", false);
     if !app.stats.last_import.is_empty() {
         let hr = RECT { left: x + app.s(18), top: cy + app.s(46), right: x + col_w - app.s(18), bottom: cy + app.s(74) };
         let msg = app.stats.last_import.clone();
@@ -2078,10 +2110,28 @@ fn draw_about(app: &mut App, dc: HDC, x: i32, y0: i32, w: i32) -> i32 {
 
     let mh = app.s(200);
     let cy = app.card(dc, x, y, col_w, mh, "维护与诊断", "");
-    app.button(dc, Id::OpenData, RECT { left: x + app.s(18), top: cy, right: x + app.s(18) + app.s(126), bottom: cy + app.s(34) }, "打开数据目录", false);
-    app.button(dc, Id::OpenLogs, RECT { left: x + app.s(154), top: cy, right: x + app.s(154) + app.s(126), bottom: cy + app.s(34) }, "打开日志目录", false);
-    app.button(dc, Id::ClearLogs, RECT { left: x + app.s(290), top: cy, right: x + app.s(290) + app.s(120), bottom: cy + app.s(34) }, "清空日志", false);
-    app.button(dc, Id::ResetAll, RECT { left: x + app.s(18), top: cy + app.s(48), right: x + app.s(18) + app.s(140), bottom: cy + app.s(82) }, "恢复默认设置", false);
+    // 两列两行排（以前一列横排三个，第三颗会溢出卡片右边缘）
+    let inner = col_w - app.s(36);
+    let bw = (inner - app.s(8)) / 2;
+    for (i, (id, label)) in [
+        (Id::OpenData, "打开数据目录"),
+        (Id::OpenLogs, "打开日志目录"),
+        (Id::ClearLogs, "清空日志"),
+        (Id::ResetAll, "恢复默认设置"),
+    ]
+    .iter()
+    .enumerate()
+    {
+        let bx = x + app.s(18) + ((i as i32) % 2) * (bw + app.s(8));
+        let by = cy + ((i as i32) / 2) * app.s(42);
+        app.button(
+            dc,
+            *id,
+            RECT { left: bx, top: by, right: bx + bw, bottom: by + app.s(34) },
+            label,
+            false,
+        );
+    }
     y += mh + gap;
 
     let uh = app.s(92);
