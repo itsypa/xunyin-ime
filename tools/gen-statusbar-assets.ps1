@@ -159,7 +159,7 @@ Make-Icon "icon_gear" {
 # ── 文字蒙版：中 / 英 / 全 / 半 / 标点（白色 + alpha，运行时 tint）──────────
 # 标点与全半角也用文字而不是图形：圆环/实心圆/弯月的隐喻太含糊（实测两个圆
 # 挨在一起分不清哪个是标点哪个是全角），文字最直观。
-function Make-Glyph([string]$text, [string]$name, [double]$fontPx = 15.0) {
+function Make-Glyph([string]$text, [string]$name, [double]$fontPx = 18.0) {
     # 先画到临时画布量出**墨迹包围盒**，再按墨迹居中贴进方格。
     # 必要性：全角标点（，。）的墨迹天生挤在字框左下角，直接居中排版会显得
     # 又小又偏下；中文汉字的墨迹也不是严格居中。按墨迹居中后整排图标才对得齐。
