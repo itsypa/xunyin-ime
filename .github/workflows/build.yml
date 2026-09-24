@@ -36,6 +36,16 @@ jobs:
         working-directory: lingxi-ime
         run: npm ci
 
+      # 回归测试：TSF 按键/接口映射 + 配置解析（含旧配置兼容）。
+      # lingxi-rime 的整体测试需要 librime 运行时数据，只跑纯配置用例。
+      - name: 单元测试
+        shell: powershell
+        run: |
+          cd lingxi-tsf; cargo test
+          if ($LASTEXITCODE -ne 0) { throw "lingxi-tsf 测试失败" }
+          cd ../lingxi-rime; cargo test --lib config::tests
+          if ($LASTEXITCODE -ne 0) { throw "lingxi-rime 配置测试失败" }
+
       - name: 构建 lingxi-tsf（x64）
         working-directory: lingxi-tsf
         run: cargo build --release

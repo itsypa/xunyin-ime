@@ -226,3 +226,52 @@ impl CachedConfig {
         cfg
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 旧版配置文件（没有 punct_map 字段）必须能反序列化 —— 否则升级后设置会全丢。
+    #[test]
+    fn old_config_without_punct_map_still_parses() {
+        let json = r#"{
+            "input": {
+                "schema": "lingxi_rich",
+                "full_shape": true,
+                "ascii_punct": false,
+                "ascii_mode": false,
+                "simplification": true,
+                "page_size": 6,
+                "beep": false
+            },
+            "appearance": {},
+            "dict": {},
+            "version": 1
+        }"#;
+        let cfg: LingxiConfig = serde_json::from_str(json).expect("旧配置应能解析");
+        assert_eq!(cfg.input.page_size, 6);
+        assert!(cfg.input.punct_map.is_empty(), "缺失字段应回落到空表");
+        assert!(cfg.input.punct_lookup(',').is_none());
+    }
+
+    /// 自定义标点：序列化往返后仍可查到；未命中返回 None（走 Rime 内置标点表）。
+    #[test]
+    fn punct_map_roundtrip_and_lookup() {
+        let mut cfg = LingxiConfig::default();
+        cfg.input.punct_map = vec![
+            PunctPair {
+                key: ",".into(),
+                out: "，".into(),
+            },
+            PunctPair {
+                key: "-".into(),
+                out: "——".into(),
+            },
+        ];
+        let json = serde_json::to_string(&cfg).expect("序列化");
+        let back: LingxiConfig = serde_json::from_str(&json).expect("反序列化");
+        assert_eq!(back.input.punct_lookup(',').as_deref(), Some("，"));
+        assert_eq!(back.input.punct_lookup('-').as_deref(), Some("——"));
+        assert!(back.input.punct_lookup('.').is_none());
+    }
+}
