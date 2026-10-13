@@ -296,6 +296,7 @@ enum Id {
     DictDownload,
     DictApply,
     DictRollback,
+    DictUpdateOne,
     DictOpenDir,
     UpdateInstall,
     DictUpdateCheck,
@@ -1352,8 +1353,7 @@ impl App {
         self.task_kind = kind;
         std::thread::spawn(move || {
             let r = match kind {
-                1 => crate::core::download_dict_update(&shared, &user),
-                2 => crate::core::apply_dict_update(&shared, &user),
+                4 => crate::core::update_dict_now(&shared, &user),
                 _ => crate::core::rollback_dict_update(&user),
             };
             *slot.lock().unwrap_or_else(|e| e.into_inner()) = Some(r);
@@ -1363,8 +1363,7 @@ impl App {
             let _ = SetTimer(Some(self.hwnd), TIMER_TASK, 500, None);
         }
         self.toast(match kind {
-            1 => "正在下载上游词库（约 40MB），完成后提示…",
-            2 => "正在部署暂存的词库…",
+            4 => "正在检查并更新词库（需要时会下载约 40MB）…",
             _ => "正在回滚词库…",
         });
     }
@@ -1672,9 +1671,8 @@ impl App {
                 Ok(msg) => self.toast(&msg),
                 Err(e) => self.toast(&format!("检查失败：{e}")),
             },
-            Id::DictDownload => self.spawn_dict_task(1),
-            Id::DictApply => self.spawn_dict_task(2),
             Id::DictRollback => self.spawn_dict_task(3),
+            Id::DictUpdateOne => self.spawn_dict_task(4),
             Id::DictOpenDir => {
                 if let Err(e) = self.core.open_dict_update_dir() {
                     self.toast(&format!("打开失败：{e}"));
@@ -2584,17 +2582,10 @@ fn draw_input(app: &mut App, dc: HDC, x0: i32, y0: i32, w: i32) -> i32 {
 fn draw_appearance(app: &mut App, dc: HDC, x0: i32, y0: i32, w: i32) -> i32 {
     let gap = app.s(16);
     let y0 = page_header(app, dc, x0, y0, w, "外观主题", "候选窗、状态栏与配色的即时预览");
-    // 3 列：4 列时每格只有 ~109px，缩略图占 39px 后中文名被挤没了（用户反馈"看不懂"）；
-    // 2 列虽然更宽但卡片太高，3 列是"标签放得下 + 页面不至于太长"的折中
-    let skin_cols = 3usize;
-    let skin_rows = app.skins.len().div_ceil(skin_cols).max(1) as i32;
-    // 46=卡头 50=每行 42=说明行 116=两行按钮 + 内边距
-    let skin_h = app.s(46) + skin_rows * app.s(50) + app.s(42) + app.s(116);
+    let theme_h = app.s(126);
     let hs = [
         app.s(232),                                  // 候选窗预览
-        app.s(92),                                   // 主题预设
-        app.s(92),                                   // 外观预设（配色）
-        skin_h,                                      // 皮肤中心（含两行按钮）
+        theme_h,                                     // 主题与配色
         app.s(46 + 46 * 2 + 52 + 46),                // 候选窗选项
         app.s(46 + 40 * 7),                          // 自定义颜色
         app.s(228),                                  // 显示
@@ -2607,8 +2598,7 @@ fn draw_appearance(app: &mut App, dc: HDC, x0: i32, y0: i32, w: i32) -> i32 {
     app.draw_candidate_preview(dc, pr);
 
     let (x, cy0, col_w) = slots[1];
-    let th = app.s(92);
-    let cy = app.card(dc, x, cy0, col_w, th, "主题预设", "");
+    let cy = app.card(dc, x, cy0, col_w, theme_h, "主题与配色", "");
     let bw = (col_w - app.s(36) - app.s(16)) / 3;
     for (i, name) in ["浅色", "深色", "护眼"].iter().enumerate() {
         let r = RECT {
@@ -2619,96 +2609,11 @@ fn draw_appearance(app: &mut App, dc: HDC, x0: i32, y0: i32, w: i32) -> i32 {
         };
         app.button(dc, Id::ThemePreset(i), r, name, false);
     }
+    let bw2 = (col_w - app.s(36) - app.s(8)) / 2;
+    app.button(dc, Id::SkinExport, RECT { left: x + app.s(18), top: cy + app.s(42), right: x + app.s(18) + bw2, bottom: cy + app.s(76) }, "导出配色", false);
+    app.button(dc, Id::SkinImport, RECT { left: x + app.s(18) + bw2 + app.s(8), top: cy + app.s(42), right: x + app.s(18) + bw2 * 2 + app.s(8), bottom: cy + app.s(76) }, "导入配色", false);
 
     let (x, cy0, col_w) = slots[2];
-    let sh = app.s(92);
-    let cy = app.card(dc, x, cy0, col_w, sh, "外观预设（配色）", "");
-    app.button(dc, Id::SkinExport, RECT { left: x + app.s(18), top: cy, right: x + app.s(18) + app.s(120), bottom: cy + app.s(34) }, "导出配色", false);
-    app.button(dc, Id::SkinImport, RECT { left: x + app.s(146), top: cy, right: x + app.s(146) + app.s(120), bottom: cy + app.s(34) }, "导入配色", false);
-
-    let (x, cy0, col_w) = slots[3];
-    // 皮肤中心：状态栏资源一览（缩略图 + 来源）+ 导入导出资源包
-    {
-        let cols = skin_cols;
-        let rows = app.skins.len().div_ceil(cols).max(1);
-        let cell_h = app.s(50);
-        let grid_h = rows as i32 * cell_h;
-        let card_h = app.s(46) + grid_h + app.s(42) + app.s(116);
-        debug_assert_eq!(card_h, skin_h);
-        let cy = app.card(dc, x, cy0, col_w, card_h, "皮肤中心（状态栏资源）", "");
-        let inner = col_w - app.s(36);
-        let cell_w = inner / cols as i32;
-        let thumb = app.s(26);
-        let t = app.theme.clone();
-        // 先画内容（只读 skins），再登记命中区（需要 &mut app）
-        let mut cells: Vec<RECT> = Vec::with_capacity(app.skins.len());
-        {
-            for (i, a) in app.skins.iter().enumerate() {
-                let cx = x + app.s(18) + (i % cols) as i32 * cell_w;
-                let cyy = cy + (i / cols) as i32 * cell_h;
-                // 整格可点：点一下就把这份资源导到皮肤目录并定位文件
-                let cell = RECT {
-                    left: cx,
-                    top: cyy - app.s(4),
-                    right: cx + cell_w - app.s(6),
-                    bottom: cyy + cell_h - app.s(8),
-                };
-                cells.push(cell);
-                let tr = RECT {
-                    left: cx + app.s(6),
-                    top: cyy + app.s(2),
-                    right: cx + app.s(6) + thumb,
-                    bottom: cyy + app.s(2) + thumb,
-                };
-                // 缩略图底色用卡片底色，图标按正文色 tint
-                unsafe {
-                    draw_skin_thumb(dc, tr, a, t.text, t.card);
-                }
-                let lr = RECT { left: tr.right + app.s(8), top: cyy + app.s(2), right: cx + cell_w - app.s(10), bottom: cyy + app.s(22) };
-                unsafe {
-                    text(dc, lr, &a.label, app.font_small, t.text, DT_LEFT, true);
-                }
-                let sr = RECT { left: tr.right + app.s(8), top: cyy + app.s(22), right: cx + cell_w - app.s(10), bottom: cyy + app.s(40) };
-                let color = if a.source == "皮肤" { t.accent } else { t.text3 };
-                unsafe {
-                    text(dc, sr, &a.source, app.font_small, color, DT_LEFT, true);
-                }
-            }
-        }
-        for (i, c) in cells.iter().enumerate() {
-            if app.hover == Some(Id::SkinItem(i)) {
-                unsafe {
-                    if let Some(g) = Gfx::new(dc) {
-                        g.fill_round(*c, 8, t.hover);
-                    }
-                }
-            }
-            app.push_hit(Id::SkinItem(i), *c);
-        }
-        // 说明行：这堆东西是干什么的 + 怎么改
-        let hr = RECT { left: x + app.s(18), top: cy + app.s(40) + grid_h, right: x + col_w - app.s(18), bottom: cy + app.s(40) + grid_h + app.s(34) };
-        unsafe {
-            text(dc, hr, "每项 = 状态栏的一个位图。点一下会导出成文件并用资源管理器定位，改完点「重载配置」即时生效。", app.font_small, t.text3, DT_LEFT, true);
-        }
-        let by = cy + app.s(46) + grid_h + app.s(42);
-        let bw2 = (inner - app.s(8)) / 2;
-        for (i, (id, label)) in [
-            (Id::SkinPackExport, "导出资源包"),
-            (Id::SkinPackImport, "导入资源包"),
-            (Id::OpenSkins, "打开皮肤目录"),
-            (Id::SkinRestore, "恢复内置"),
-        ]
-        .iter()
-        .enumerate()
-        {
-            // 两行两列：四颗按钮横排会把标签挤到 100px 以下
-            let bx = x + app.s(18) + ((i as i32) % 2) * (bw2 + app.s(8));
-            let byy = by + ((i as i32) / 2) * app.s(42);
-            app.button(dc, *id, RECT { left: bx, top: byy, right: bx + bw2, bottom: byy + app.s(34) }, label, false);
-        }
-    }
-
-    let (x, cy0, col_w) = slots[4];
     // 候选窗：排列 / 位置 / 字体 / 注释（这几项都由输入法实时读取，热生效）
     let cw_h = app.s(46 + 46 * 2 + 52 + 46);
     let cy = app.card(dc, x, cy0, col_w, cw_h, "候选窗", "");
@@ -2730,7 +2635,7 @@ fn draw_appearance(app: &mut App, dc: HDC, x0: i32, y0: i32, w: i32) -> i32 {
     let r = app.row(dc, x + app.s(18), fy, col_w - app.s(36), "显示候选注释", "拼音/来源等附加说明");
     app.toggle_switch(dc, Id::SwitchComment, r, app.cfg.appearance.show_comment);
 
-    let (rx, cy0, col_w) = slots[5];
+    let (rx, cy0, col_w) = slots[3];
     let ch = app.s(46 + 40 * 7);
     let cy = app.card(dc, rx, cy0, col_w, ch, "自定义颜色", "");
     let mut fy = cy;
@@ -2752,7 +2657,7 @@ fn draw_appearance(app: &mut App, dc: HDC, x0: i32, y0: i32, w: i32) -> i32 {
         fy += app.s(40);
     }
 
-    let (rx, cy0, col_w) = slots[6];
+    let (rx, cy0, col_w) = slots[4];
     let dh = app.s(228);
     let cy = app.card(dc, rx, cy0, col_w, dh, "显示", "");
     let mut fy = cy;
@@ -2783,7 +2688,7 @@ fn draw_dict(app: &mut App, dc: HDC, x0: i32, y0: i32, w: i32) -> i32 {
     let cell_rows = app.cells.len().div_ceil(2).max(1) as i32;
     let hs = [
         app.s(152),                                  // 词库统计
-        app.s(252),                                  // 上游词库更新（状态 3 行 + 两行按钮 + 打开目录）
+        app.s(146),                                  // 上游词库更新（状态一行 + 两颗按钮）
         app.s(124),                                  // 自定义短语
         app.s(46 * 3 + 46),                          // 候选来源
         app.s(320),                                  // 用户词库备份/恢复（含导出/清空两行）
@@ -2811,53 +2716,25 @@ fn draw_dict(app: &mut App, dc: HDC, x0: i32, y0: i32, w: i32) -> i32 {
     }
 
     let (x, cy0, col_w) = slots[1];
-    // 上游词库更新：暂存 → 校验 → 部署（可回滚）
+    // 上游词库更新：一颗按钮走完（下载→校验→部署），校验不过不动本机词库；另留回滚
     {
-        let uh2 = app.s(252);
-        let cy = app.card(dc, x, cy0, col_w, uh2, "上游词库更新（rime-frost）", "");
+        let uh2 = app.s(146);
+        let cy = app.card(dc, x, cy0, col_w, uh2, "上游词库更新", "");
         let st = &app.dict_state;
-        let line1 = if st.bundled.is_empty() {
-            "当前版本：未记录".to_string()
-        } else {
-            format!("当前版本：{}", st.bundled)
-        };
-        let line2 = if st.staged.is_empty() {
-            "暂存：无（先「下载到暂存」，校验通过才会写入数据目录）".to_string()
-        } else {
-            format!("暂存：{} · {} 个词库文件待部署", st.staged, st.staged_files)
-        };
-        let line3 = if st.backup.is_empty() {
-            "备份：无".to_string()
-        } else {
-            format!("备份：{}（可回滚上次部署）", st.backup)
-        };
-        let mut ty = cy;
-        for l in [line1, line2, line3] {
-            unsafe {
-                text(dc, RECT { left: x + app.s(18), top: ty, right: x + col_w - app.s(18), bottom: ty + app.s(24) }, &l, app.font_small, t.text2, DT_LEFT, true);
-            }
-            ty += app.s(26);
+        let line = format!(
+            "本机词库 {} · 上次部署备份 {}",
+            if st.bundled.is_empty() { "未记录" } else { &st.bundled },
+            if st.backup.is_empty() { "无" } else { "有" }
+        );
+        unsafe {
+            text(dc, RECT { left: x + app.s(18), top: cy, right: x + col_w - app.s(18), bottom: cy + app.s(24) }, &line, app.font_small, t.text2, DT_LEFT, true);
         }
         let inner = col_w - app.s(36);
-        let bw2 = (inner - app.s(24)) / 4;
-        for (i, (id, label)) in [
-            (Id::DictUpdateCheck, "检查更新"),
-            (Id::DictDownload, "下载到暂存"),
-            (Id::DictApply, "部署到本机"),
-            (Id::DictRollback, "回滚上次"),
-        ]
-        .iter()
-        .enumerate()
-        {
-            let bw2 = (inner - app.s(8)) / 2;
-            let bx = x + app.s(18) + ((i as i32) % 2) * (bw2 + app.s(8));
-            let byy = cy + app.s(96) + ((i as i32) / 2) * app.s(42);
-            let primary = *id == Id::DictDownload || *id == Id::DictApply;
-            app.button(dc, *id, RECT { left: bx, top: byy, right: bx + bw2, bottom: byy + app.s(34) }, label, primary);
-        }
-        app.button(dc, Id::DictOpenDir, RECT { left: x + app.s(18), top: cy + app.s(186), right: x + app.s(18) + app.s(160), bottom: cy + app.s(220) }, "打开暂存目录", false);
+        let bh2 = (inner - app.s(8)) / 2;
+        app.button(dc, Id::DictUpdateOne, RECT { left: x + app.s(18), top: cy + app.s(34), right: x + app.s(18) + bh2, bottom: cy + app.s(68) }, "更新词库", true);
+        app.button(dc, Id::DictRollback, RECT { left: x + app.s(18) + bh2 + app.s(8), top: cy + app.s(34), right: x + app.s(18) + bh2 * 2 + app.s(8), bottom: cy + app.s(68) }, "回滚上次", false);
         unsafe {
-            text(dc, RECT { left: x + app.s(190), top: cy + app.s(192), right: x + col_w - app.s(18), bottom: cy + app.s(216) }, "下载/校验只写暂存区，部署时才动数据目录", app.font_small, t.text3, DT_LEFT, true);
+            text(dc, RECT { left: x + app.s(18), top: cy + app.s(76), right: x + col_w - app.s(18), bottom: cy + app.s(100) }, "从上游 rime-frost 更新中文词库；已是新版会跳过，校验不过不会改动本机", app.font_small, t.text3, DT_LEFT, true);
         }
     }
 
@@ -3025,7 +2902,6 @@ fn draw_about(app: &mut App, dc: HDC, x0: i32, y0: i32, w: i32) -> i32 {
     app.button(dc, Id::UpdateCheck, RECT { left: x + app.s(18), top: cy, right: x + app.s(18) + app.s(140), bottom: cy + app.s(34) }, "检查更新", true);
     app.button(dc, Id::Update, RECT { left: x + app.s(166), top: cy, right: x + app.s(166) + app.s(140), bottom: cy + app.s(34) }, "打开下载页", false);
     app.button(dc, Id::UpdateInstall, RECT { left: x + app.s(18), top: cy + app.s(46), right: x + app.s(18) + app.s(140), bottom: cy + app.s(80) }, "下载并安装", false);
-    app.button(dc, Id::DictUpdateCheck, RECT { left: x + app.s(166), top: cy + app.s(46), right: x + app.s(166) + app.s(140), bottom: cy + app.s(80) }, "检查词库更新", false);
     unsafe {
         text(dc, RECT { left: x + app.s(18), top: cy + app.s(92), right: x + col_w - app.s(18), bottom: cy + app.s(116) }, "下载并安装会下载官方安装包并启动（需要网络）", app.font_small, t.text3, DT_LEFT, true);
     }

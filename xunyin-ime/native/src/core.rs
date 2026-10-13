@@ -856,6 +856,14 @@ impl Core {
         open_path(&d)
     }
 
+    /// 一键更新词库：下载 → 校验（不过就不动数据目录）→ 部署 → 重建索引。
+    /// 界面只需要这一颗按钮：两步流程的安全性是内部保证的，不给用户添决策负担。
+    pub fn update_dict_now(&self) -> Result<String, String> {
+        let msg = update_dict_now(&self.shared_data_dir, &self.user_data_dir)?;
+        self.redeploy();
+        Ok(msg)
+    }
+
     // ---------------- 皮肤中心 ----------------
 
     /// 一位界面资源：名字、当前来源（皮肤目录 / 内置）、尺寸与像素。
@@ -1505,6 +1513,17 @@ pub fn dict_update_state(shared: &Path, user: &Path) -> DictUpdateState {
             .map(|s| s.to_string_lossy().to_string())
             .unwrap_or_default(),
     }
+}
+
+/// 一键更新词库（界面按钮用）：已是新版就跳过，否则 下载 → 校验 → 部署。
+pub fn update_dict_now(shared: &Path, user: &Path) -> Result<String, String> {
+    let (tag, _) = frost_dict_asset_url()?;
+    let cur = bundled_frost_version(shared);
+    if !cur.is_empty() && cur == tag.trim_start_matches('v') {
+        return Ok(format!("词库已是最新（{tag}），无需更新"));
+    }
+    download_dict_update(shared, user)?;
+    apply_dict_update(shared, user)
 }
 
 /// 第一步：下载上游词库包 → 解压到暂存区 → 校验 → 写 `pending.kv`。
