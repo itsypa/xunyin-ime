@@ -198,6 +198,10 @@ enum Id {
     SkinPackImport,
     CellDict(usize),
     CellApply,
+    DictDownload,
+    DictApply,
+    DictRollback,
+    DictOpenDir,
     UpdateInstall,
     DictUpdateCheck,
     DeleteKeyCombo,
@@ -246,6 +250,13 @@ struct App {
     /// 细胞词库勾选状态（未点「应用」前只是本地草稿）
     cells: Vec<CellDict>,
     cell_dirty: bool,
+    /// 上游词库更新状态（版本/暂存/备份）
+    dict_state: crate::core::DictUpdateState,
+    /// 后台任务结果槽（下载/部署/回滚都在后台线程做，避免界面卡住）
+    task: std::sync::Arc<std::sync::Mutex<Option<Result<String, String>>>>,
+    task_running: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// 1=下载词库 2=部署词库 3=回滚词库（决定完成后做什么）
+    task_kind: u8,
     page: usize,
     scroll: i32,
     hits: Vec<Hit>,
@@ -432,6 +443,7 @@ impl App {
         let cfg = core.load_config();
         let skins = core.skin_assets();
         let cells = core.cell_dicts();
+        let dict_state = core.dict_update_state();
         let dark = system_prefers_dark();
         let theme = theme_from(&cfg, dark);
         let mut app = Box::new(App {
@@ -455,6 +467,10 @@ impl App {
             skins,
             cells,
             cell_dirty: false,
+            dict_state,
+            task: std::sync::Arc::new(std::sync::Mutex::new(None)),
+            task_running: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            task_kind: 0,
             combo_open: None,
             dpi: 96,
             theme,
@@ -1205,6 +1221,42 @@ impl App {
         }
     }
 
+    /// 上游词库更新：下载/部署/回滚都放后台线程做（40MB 下载不能让界面卡住）。
+    /// kind: 1=下载到暂存 2=部署 3=回滚
+    fn spawn_dict_task(&mut self, kind: u8) {
+        use std::sync::atomic::Ordering;
+        if self.task_running.load(Ordering::SeqCst) {
+            self.toast("上一个任务还在跑，稍等一下");
+            return;
+        }
+        let shared = self.core.shared_data_dir.clone();
+        let user = self.core.user_data_dir.clone();
+        let slot = self.task.clone();
+        let flag = self.task_running.clone();
+        if let Ok(mut g) = self.task.lock() {
+            *g = None;
+        }
+        flag.store(true, Ordering::SeqCst);
+        self.task_kind = kind;
+        std::thread::spawn(move || {
+            let r = match kind {
+                1 => crate::core::download_dict_update(&shared, &user),
+                2 => crate::core::apply_dict_update(&shared, &user),
+                _ => crate::core::rollback_dict_update(&user),
+            };
+            *slot.lock().unwrap_or_else(|e| e.into_inner()) = Some(r);
+            flag.store(false, Ordering::SeqCst);
+        });
+        unsafe {
+            let _ = SetTimer(Some(self.hwnd), TIMER_TASK, 500, None);
+        }
+        self.toast(match kind {
+            1 => "正在下载上游词库（约 40MB），完成后提示…",
+            2 => "正在部署暂存的词库…",
+            _ => "正在回滚词库…",
+        });
+    }
+
     fn open_color(&mut self, i: usize) {
         unsafe {
             let mut custom = [COLORREF(0x00FF_FFFF); 16];
@@ -1492,6 +1544,14 @@ impl App {
                 Ok(msg) => self.toast(&msg),
                 Err(e) => self.toast(&format!("检查失败：{e}")),
             },
+            Id::DictDownload => self.spawn_dict_task(1),
+            Id::DictApply => self.spawn_dict_task(2),
+            Id::DictRollback => self.spawn_dict_task(3),
+            Id::DictOpenDir => {
+                if let Err(e) = self.core.open_dict_update_dir() {
+                    self.toast(&format!("打开失败：{e}"));
+                }
+            }
             Id::BackupNow => match self.core.backup_user_dict() {
                 Ok(p) => {
                     self.backups = self.core.list_backups();
@@ -1698,6 +1758,8 @@ const MSG_DEFERRED: u32 = WM_APP + 1;
 const TIMER_SAVE: usize = 1;
 const TIMER_TOAST: usize = 2;
 const TIMER_ENGINE: usize = 3;
+/// 后台任务轮询（词库下载/部署/回滚）
+const TIMER_TASK: usize = 4;
 
 fn point(lparam: LPARAM) -> POINT {
     POINT {
@@ -1892,6 +1954,37 @@ extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM
                         }
                         if app.engine_ready {
                             let _ = KillTimer(Some(hwnd), TIMER_ENGINE);
+                        }
+                    }
+                } else if wparam.0 == TIMER_TASK {
+                    // 后台任务（词库下载/部署/回滚）完成检查
+                    let mut done: Option<Result<String, String>> = None;
+                    let mut kind = 0u8;
+                    if let Some(app) = main_of(hwnd) {
+                        kind = app.task_kind;
+                        if let Ok(mut g) = app.task.lock() {
+                            if g.is_some() {
+                                done = g.take();
+                            }
+                        }
+                    }
+                    if let Some(r) = done {
+                        let _ = KillTimer(Some(hwnd), TIMER_TASK);
+                        if let Some(app) = main_of(hwnd) {
+                            app.task_kind = 0;
+                            match r {
+                                Ok(msg) => {
+                                    app.toast(&msg);
+                                    // 部署/回滚之后要重建索引并刷新统计
+                                    if kind == 2 || kind == 3 {
+                                        app.core.redeploy();
+                                        app.stats = app.core.dict_stats();
+                                    }
+                                }
+                                Err(e) => app.toast(&format!("失败：{e}")),
+                            }
+                            app.dict_state = app.core.dict_update_state();
+                            let _ = InvalidateRect(Some(hwnd), None, false);
                         }
                     }
                 }
@@ -2427,6 +2520,55 @@ fn draw_dict(app: &mut App, dc: HDC, x: i32, y0: i32, w: i32) -> i32 {
         fy += app.s(36);
     }
     y += sh + gap;
+
+    // 上游词库更新：暂存 → 校验 → 部署（可回滚）
+    {
+        let uh2 = app.s(196);
+        let cy = app.card(dc, x, y, col_w, uh2, "上游词库更新（rime-frost）", "");
+        let st = &app.dict_state;
+        let line1 = if st.bundled.is_empty() {
+            "当前版本：未记录".to_string()
+        } else {
+            format!("当前版本：{}", st.bundled)
+        };
+        let line2 = if st.staged.is_empty() {
+            "暂存：无（先「下载到暂存」，校验通过才会写入数据目录）".to_string()
+        } else {
+            format!("暂存：{} · {} 个词库文件待部署", st.staged, st.staged_files)
+        };
+        let line3 = if st.backup.is_empty() {
+            "备份：无".to_string()
+        } else {
+            format!("备份：{}（可回滚上次部署）", st.backup)
+        };
+        let mut ty = cy;
+        for l in [line1, line2, line3] {
+            unsafe {
+                text(dc, RECT { left: x + app.s(18), top: ty, right: x + col_w - app.s(18), bottom: ty + app.s(24) }, &l, app.font_small, t.text2, DT_LEFT, true);
+            }
+            ty += app.s(26);
+        }
+        let inner = col_w - app.s(36);
+        let bw2 = (inner - app.s(24)) / 4;
+        for (i, (id, label)) in [
+            (Id::DictUpdateCheck, "检查更新"),
+            (Id::DictDownload, "下载到暂存"),
+            (Id::DictApply, "部署到本机"),
+            (Id::DictRollback, "回滚上次"),
+        ]
+        .iter()
+        .enumerate()
+        {
+            let bx = x + app.s(18) + (i as i32) * (bw2 + app.s(8));
+            let primary = *id == Id::DictDownload || *id == Id::DictApply;
+            app.button(dc, *id, RECT { left: bx, top: cy + app.s(96), right: bx + bw2, bottom: cy + app.s(130) }, label, primary);
+        }
+        app.button(dc, Id::DictOpenDir, RECT { left: x + app.s(18), top: cy + app.s(140), right: x + app.s(18) + app.s(140), bottom: cy + app.s(174) }, "打开暂存目录", false);
+        unsafe {
+            text(dc, RECT { left: x + app.s(170), top: cy + app.s(146), right: x + col_w - app.s(18), bottom: cy + app.s(170) }, "下载/校验只写暂存区，部署时才动数据目录", app.font_small, t.text3, DT_LEFT, true);
+        }
+        y += uh2 + gap;
+    }
 
     let ih = app.s(124);
     let cy = app.card(dc, x, y, col_w, ih, "自定义短语", "");

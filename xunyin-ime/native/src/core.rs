@@ -785,6 +785,38 @@ impl Core {
         }
     }
 
+    // ---------------- 上游词库更新（暂存 → 校验 → 部署） ----------------
+
+    pub fn dict_update_state(&self) -> DictUpdateState {
+        dict_update_state(&self.shared_data_dir, &self.user_data_dir)
+    }
+
+    /// 第一步：把上游词库包下载到暂存区并校验（不动数据目录）。
+    pub fn download_dict_update(&self) -> Result<String, String> {
+        download_dict_update(&self.shared_data_dir, &self.user_data_dir)
+    }
+
+    /// 第二步：把暂存区里校验过的词库部署到数据目录（先备份旧文件）。
+    pub fn apply_dict_update(&self) -> Result<String, String> {
+        let msg = apply_dict_update(&self.shared_data_dir, &self.user_data_dir)?;
+        self.redeploy(); // 词库变了，重建索引
+        Ok(msg)
+    }
+
+    /// 回滚上次部署：用备份覆盖回去，并重建索引。
+    pub fn rollback_dict_update(&self) -> Result<String, String> {
+        let msg = rollback_dict_update(&self.user_data_dir)?;
+        self.redeploy();
+        Ok(msg)
+    }
+
+    /// 打开暂存/备份目录。
+    pub fn open_dict_update_dir(&self) -> Result<(), String> {
+        let d = dict_update_root(&self.user_data_dir);
+        std::fs::create_dir_all(&d).map_err(|e| e.to_string())?;
+        open_path(&d)
+    }
+
     // ---------------- 皮肤中心 ----------------
 
     /// 一位界面资源：名字、当前来源（皮肤目录 / 内置）、尺寸与像素。
@@ -1241,6 +1273,396 @@ fn http_get_bytes(url: &str) -> Result<Vec<u8>, String> {
     }
 }
 
+// ---------------- 上游词库更新：暂存 → 校验 → 部署（含回滚） ----------------
+//
+// 刻意分两步：第一步只往 `%APPDATA%\com.xunyin.ime\update\` 下载并校验，
+// 第二步才动数据目录（先备份旧文件，可一键回滚）。这样下载失败或包不对
+// 永远不会污染正在用的词库。
+
+/// 词库更新状态（界面展示）。
+pub struct DictUpdateState {
+    /// 随包记录的上游版本（UPSTREAM.md）
+    pub bundled: String,
+    /// 暂存区里待部署的版本（空 = 没有）
+    pub staged: String,
+    /// 暂存区里通过校验的词库文件数
+    pub staged_files: usize,
+    /// 上次部署留下的备份目录名（空 = 没有）
+    pub backup: String,
+}
+
+/// 设置中心自己的日志（GUI 程序没有控制台，排障靠它）。
+fn core_log(msg: &str) {
+    let dir = user_data_dir().join("logs");
+    let _ = std::fs::create_dir_all(&dir);
+    let line = format!("[{}] {msg}\n", stamp());
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(dir.join("settings.log"))
+    {
+        use std::io::Write;
+        let _ = f.write_all(line.as_bytes());
+    }
+}
+
+fn dict_update_root(user: &Path) -> PathBuf {
+    user.join("update")
+}
+
+/// 极简 key=value 状态文件（不引 JSON 依赖）。
+fn read_kv(path: &Path) -> Vec<(String, String)> {
+    std::fs::read_to_string(path)
+        .map(|t| {
+            t.lines()
+                .filter_map(|l| {
+                    let (k, v) = l.split_once('=')?;
+                    Some((k.trim().to_string(), v.trim().to_string()))
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn kv_get(kv: &[(String, String)], key: &str) -> String {
+    kv.iter()
+        .find(|(k, _)| k == key)
+        .map(|(_, v)| v.clone())
+        .unwrap_or_default()
+}
+
+fn write_kv(path: &Path, pairs: &[(&str, String)]) -> Result<(), String> {
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    }
+    let text: String = pairs.iter().map(|(k, v)| format!("{k}={v}\n")).collect();
+    std::fs::write(path, text).map_err(|e| e.to_string())
+}
+
+/// 随包记录的上游词库版本。
+fn bundled_frost_version(shared: &Path) -> String {
+    std::fs::read_to_string(shared.join("UPSTREAM.md"))
+        .ok()
+        .and_then(|t| {
+            t.lines()
+                .find(|l| l.contains("上游版本"))
+                .and_then(|l| l.split_whitespace().find_map(version_in))
+        })
+        .unwrap_or_default()
+}
+
+/// 上游最新词库包：(tag, 下载地址)。优先 `rime-frost-schemas.zip`。
+fn frost_dict_asset_url() -> Result<(String, String), String> {
+    let body = http_get("https://api.github.com/repos/gaboolic/rime-frost/releases/latest")?;
+    let tag = json_string_field(&body, "tag_name")
+        .ok_or_else(|| "无法解析上游 release 信息".to_string())?;
+    let mut fallback: Option<String> = None;
+    let mut rest = body.as_str();
+    while let Some(i) = rest.find("\"browser_download_url\"") {
+        rest = &rest[i + 22..];
+        let Some(start) = rest.find('"') else { break };
+        let tail = &rest[start + 1..];
+        let Some(end) = tail.find('"') else { break };
+        let url = &tail[..end];
+        if url.ends_with(".zip") {
+            if url.contains("schemas") {
+                return Ok((tag, url.to_string()));
+            }
+            fallback = Some(url.to_string());
+        }
+    }
+    fallback
+        .map(|u| (tag, u))
+        .ok_or_else(|| "上游这个版本没有可用的词库压缩包".to_string())
+}
+
+/// 在解压出来的目录里找 `cn_dicts` 与 `cn_dicts_cell`（上游包可能多套一层目录）。
+fn find_dict_roots(dir: &Path) -> Option<(PathBuf, PathBuf)> {
+    let mut stack = vec![dir.to_path_buf()];
+    let mut core_root: Option<PathBuf> = None;
+    let mut cell_root: Option<PathBuf> = None;
+    while let Some(d) = stack.pop() {
+        let Ok(rd) = std::fs::read_dir(&d) else { continue };
+        for e in rd.flatten() {
+            let p = e.path();
+            if !p.is_dir() {
+                continue;
+            }
+            match p.file_name().unwrap_or_default().to_string_lossy().as_ref() {
+                "cn_dicts" => core_root = Some(p),
+                "cn_dicts_cell" => cell_root = Some(p),
+                _ => stack.push(p),
+            }
+        }
+    }
+    Some((core_root?, cell_root?))
+}
+
+/// 一份 Rime 词库文件的粗校验：头部要有 `name:`，且不能是空文件。
+fn dict_file_ok(p: &Path) -> bool {
+    let Ok(text) = std::fs::read_to_string(p) else {
+        return false;
+    };
+    if text.trim().is_empty() {
+        return false;
+    }
+    // 上游词库的注释头可能上千行（base.dict.yaml 前 1890 行都是注释），所以不能只看开头：
+    // 头部必须有 `name:`，并以 `...` 结束（Rime 词库的约定）。
+    let mut has_name = false;
+    let mut has_end = false;
+    for l in text.lines().take(4000) {
+        let t = l.trim_start();
+        if !has_name && t.starts_with("name:") && t.len() > 6 {
+            has_name = true;
+        }
+        if t == "..." {
+            has_end = true;
+            break;
+        }
+    }
+    has_name && has_end
+}
+
+/// 收集目录里的 `*.dict.yaml`（相对路径 + 绝对路径）。
+fn collect_dicts(root: &Path, rel: &str, out: &mut Vec<(String, PathBuf)>) {
+    let Ok(rd) = std::fs::read_dir(root) else { return };
+    for e in rd.flatten() {
+        let p = e.path();
+        let name = p.file_name().unwrap_or_default().to_string_lossy().to_string();
+        if p.is_dir() {
+            collect_dicts(&p, &format!("{rel}/{name}"), out);
+        } else if name.ends_with(".dict.yaml") {
+            out.push((format!("{rel}/{name}"), p));
+        }
+    }
+}
+
+/// 目录是否可写（建删临时文件探测）：安装到 Program Files 时数据目录可能只读。
+fn dir_writable(dir: &Path) -> bool {
+    if !dir.is_dir() {
+        return false;
+    }
+    let probe = dir.join(format!(".xunyin-write-test-{}", std::process::id()));
+    match std::fs::write(&probe, b"1") {
+        Ok(()) => {
+            let _ = std::fs::remove_file(&probe);
+            true
+        }
+        Err(_) => false,
+    }
+}
+
+pub fn dict_update_state(shared: &Path, user: &Path) -> DictUpdateState {
+    let root = dict_update_root(user);
+    let pending = read_kv(&root.join("pending.kv"));
+    let applied = read_kv(&root.join("applied.kv"));
+    DictUpdateState {
+        bundled: bundled_frost_version(shared),
+        staged: kv_get(&pending, "tag"),
+        staged_files: kv_get(&pending, "files").parse().unwrap_or(0),
+        backup: PathBuf::from(kv_get(&applied, "backup"))
+            .file_name()
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_default(),
+    }
+}
+
+/// 第一步：下载上游词库包 → 解压到暂存区 → 校验 → 写 `pending.kv`。
+/// **不动数据目录**，失败也不会影响正在用的词库。
+pub fn download_dict_update(shared: &Path, user: &Path) -> Result<String, String> {
+    let _ = shared;
+    let (tag, url) = frost_dict_asset_url()?;
+    let root = dict_update_root(user);
+    let staged = root.join("staged");
+    let _ = std::fs::remove_dir_all(&staged);
+    std::fs::create_dir_all(&staged).map_err(|e| e.to_string())?;
+
+    core_log(&format!("词库更新：开始下载 {url}"));
+    let bytes = http_get_bytes(&url)?;
+    if bytes.len() < 1_000_000 || bytes.len() > 400_000_000 {
+        return Err(format!("下载内容大小异常（{} MB）", bytes.len() / 1_048_576));
+    }
+    let zip = root.join(format!("rime-frost-{tag}.zip"));
+    std::fs::write(&zip, &bytes).map_err(|e| e.to_string())?;
+    core_log(&format!(
+        "词库更新：下载完成 {} MB，开始解压",
+        bytes.len() / 1_048_576
+    ));
+    let status = std::process::Command::new("tar.exe")
+        .arg("-x")
+        .arg("-f")
+        .arg(&zip)
+        .arg("-C")
+        .arg(&staged)
+        .creation_flags(0x0800_0000)
+        .status()
+        .map_err(|e| format!("解压失败：{e}"))?;
+    if !status.success() {
+        return Err("解压失败（压缩包可能不完整）".into());
+    }
+
+    // 校验：必须找到两个词库目录，且里面的词库文件都像样
+    let (core_root, cell_root) = find_dict_roots(&staged)
+        .ok_or_else(|| "压缩包里找不到 cn_dicts / cn_dicts_cell".to_string())?;
+    let mut files = Vec::new();
+    collect_dicts(&core_root, "cn_dicts", &mut files);
+    let core_count = files.len();
+    collect_dicts(&cell_root, "cn_dicts_cell", &mut files);
+    let cell_count = files.len() - core_count;
+    for (rel, p) in files.iter() {
+        if !dict_file_ok(p) {
+            return Err(format!("词库文件校验失败：{rel}（不是有效的 Rime 词库）"));
+        }
+    }
+    if core_count < 3 || cell_count < 5 {
+        return Err(format!(
+            "词库数量异常（基础 {core_count} 个 / 细胞 {cell_count} 个），已放弃这次更新"
+        ));
+    }
+    write_kv(
+        &root.join("pending.kv"),
+        &[
+            ("tag", tag.clone()),
+            ("files", files.len().to_string()),
+            ("dir", staged.display().to_string()),
+            ("time", stamp()),
+        ],
+    )?;
+    let _ = std::fs::remove_file(&zip); // 暂存目录里已有解压结果，压缩包不留
+    core_log(&format!(
+        "词库更新：{tag} 已通过校验（{} 个词库文件）",
+        files.len()
+    ));
+    Ok(format!(
+        "已下载并校验上游词库 {tag}（{} 个词库文件），点「部署到本机」生效",
+        files.len()
+    ))
+}
+
+/// 第二步：把暂存区部署到数据目录（先备份旧文件），并更新 UPSTREAM.md 的版本行。
+pub fn apply_dict_update(shared: &Path, user: &Path) -> Result<String, String> {
+    let root = dict_update_root(user);
+    let pending = read_kv(&root.join("pending.kv"));
+    let tag = kv_get(&pending, "tag");
+    let staged = PathBuf::from(kv_get(&pending, "dir"));
+    if tag.is_empty() || !staged.is_dir() {
+        return Err("暂存区里没有待部署的词库，请先「下载到暂存」".into());
+    }
+    let (core_root, cell_root) =
+        find_dict_roots(&staged).ok_or_else(|| "暂存区目录不完整".to_string())?;
+    let mut files = Vec::new();
+    collect_dicts(&core_root, "cn_dicts", &mut files);
+    collect_dicts(&cell_root, "cn_dicts_cell", &mut files);
+
+    // 安装到 Program Files 时数据目录可能只读：写不进去就落到用户目录（Rime 用户目录优先）
+    let target = if dir_writable(shared) {
+        shared.to_path_buf()
+    } else {
+        core_log("词库更新：数据目录不可写，改装到用户目录");
+        user.to_path_buf()
+    };
+
+    // 备份将被覆盖的文件
+    let backup = root.join(format!("backup-{}", stamp()));
+    let mut replaced = 0usize;
+    for (rel, _) in &files {
+        let dst = target.join(rel);
+        if dst.is_file() {
+            let b = backup.join(rel);
+            if let Some(d) = b.parent() {
+                std::fs::create_dir_all(d).map_err(|e| e.to_string())?;
+            }
+            std::fs::copy(&dst, &b).map_err(|e| e.to_string())?;
+            replaced += 1;
+        }
+    }
+    // 覆盖 / 新增
+    let mut written = 0usize;
+    for (rel, src) in &files {
+        let dst = target.join(rel);
+        if let Some(d) = dst.parent() {
+            std::fs::create_dir_all(d).map_err(|e| e.to_string())?;
+        }
+        std::fs::copy(src, &dst).map_err(|e| format!("写入 {rel} 失败：{e}"))?;
+        written += 1;
+    }
+    // 版本记录：随包那份能写就更新它，这样「检查词库更新」下次不会又报有新版本
+    if target == shared {
+        let upstream = shared.join("UPSTREAM.md");
+        if let Ok(text) = std::fs::read_to_string(&upstream) {
+            let new = text
+                .lines()
+                .map(|l| {
+                    if l.contains("上游版本") {
+                        format!(
+                            "**上游版本：rime-frost {tag}**（更新上游词库时同步改这一行；设置中心的「检查词库更新」按它比对）"
+                        )
+                    } else {
+                        l.to_string()
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            let _ = std::fs::write(&upstream, format!("{new}\n"));
+        }
+    }
+    write_kv(
+        &root.join("applied.kv"),
+        &[
+            ("tag", tag.clone()),
+            ("files", written.to_string()),
+            ("target", target.display().to_string()),
+            ("backup", backup.display().to_string()),
+            ("time", stamp()),
+        ],
+    )?;
+    let _ = std::fs::remove_file(root.join("pending.kv"));
+    let _ = std::fs::remove_dir_all(&staged);
+    core_log(&format!(
+        "词库更新：{tag} 已部署到 {}（写入 {written}，覆盖 {replaced}）",
+        target.display()
+    ));
+    Ok(format!(
+        "已部署上游词库 {tag}：写入 {written} 个文件（覆盖 {replaced} 个，旧文件已备份），正在重建索引"
+    ))
+}
+
+/// 回滚：把上次部署备份的文件覆盖回去。
+pub fn rollback_dict_update(user: &Path) -> Result<String, String> {
+    let root = dict_update_root(user);
+    let applied = read_kv(&root.join("applied.kv"));
+    let backup = PathBuf::from(kv_get(&applied, "backup"));
+    let target = PathBuf::from(kv_get(&applied, "target"));
+    if backup.as_os_str().is_empty() || !backup.is_dir() || target.as_os_str().is_empty() {
+        return Err("没有可回滚的备份（只有部署过才需要回滚）".into());
+    }
+    let mut restored = 0usize;
+    let mut stack = vec![backup.clone()];
+    while let Some(d) = stack.pop() {
+        let Ok(rd) = std::fs::read_dir(&d) else { continue };
+        for e in rd.flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                stack.push(p);
+                continue;
+            }
+            let rel = p
+                .strip_prefix(&backup)
+                .map_err(|e| e.to_string())?
+                .to_path_buf();
+            let dst = target.join(&rel);
+            if let Some(d) = dst.parent() {
+                std::fs::create_dir_all(d).map_err(|e| e.to_string())?;
+            }
+            std::fs::copy(&p, &dst).map_err(|e| format!("回滚 {} 失败：{e}", rel.display()))?;
+            restored += 1;
+        }
+    }
+    let _ = std::fs::remove_file(root.join("applied.kv"));
+    core_log(&format!("词库更新：已回滚 {restored} 个文件"));
+    Ok(format!("已回滚 {restored} 个词库文件，正在重建索引"))
+}
+
 /// 从 JSON 文本里取一个字符串字段（不引 JSON 依赖，够用就行）。
 fn json_string_field(body: &str, key: &str) -> Option<String> {
     let pat = format!("\"{key}\"");
@@ -1313,6 +1735,99 @@ mod tests {
         println!("程序更新: {:?}", core.check_update());
         println!("安装包地址: {:?}", core.latest_installer_url());
         println!("词库更新: {:?}", core.check_dict_update());
+    }
+
+    /// 词库文件校验要能吃下"前面几十行注释头"的上游文件（41448.dict.yaml 就是这样）。
+    #[test]
+    fn dict_file_check_skips_comment_header() {
+        let p = std::env::temp_dir().join("xunyin-dict-header-test.yaml");
+        let mut text = String::from("# Rime dictionary\n# encoding: utf-8\n");
+        for i in 0..30 {
+            text.push_str(&format!("# 注释行 {i}\n"));
+        }
+        text.push_str("---\nname: cn_dicts/test\nversion: \"1\"\n...\n词\tci\n");
+        std::fs::write(&p, text).unwrap();
+        assert!(dict_file_ok(&p), "注释头很长时也应识别为有效词库");
+        std::fs::write(&p, "# 只有注释，没有 name\n").unwrap();
+        assert!(!dict_file_ok(&p), "没有 name 的不算词库");
+        let _ = std::fs::remove_file(&p);
+    }
+
+    /// 暂存 → 部署 → 回滚的完整文件流程（全程用临时目录，不碰真实词库）。
+    #[test]
+    #[ignore = "会写临时目录"]
+    fn dict_apply_and_rollback_roundtrip() {
+        let base = std::env::temp_dir().join("xunyin-dict-update-test");
+        let _ = std::fs::remove_dir_all(&base);
+        let shared = base.join("shared");
+        let user = base.join("user");
+
+        // 目标目录里现有的词库（验证「覆盖前先备份」）
+        for n in ["cn_dicts/base.dict.yaml", "cn_dicts_cell/food.dict.yaml"] {
+            let p = shared.join(n);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(&p, "---\nname: old\nversion: \"1\"\n...\n旧内容\n").unwrap();
+        }
+        // 暂存区：新版本词库
+        let staged = user.join("update").join("staged");
+        let names = [
+            "cn_dicts/base.dict.yaml",
+            "cn_dicts/ext.dict.yaml",
+            "cn_dicts/others.dict.yaml",
+            "cn_dicts_cell/food.dict.yaml",
+            "cn_dicts_cell/animal.dict.yaml",
+            "cn_dicts_cell/music.dict.yaml",
+            "cn_dicts_cell/game.dict.yaml",
+            "cn_dicts_cell/sport.dict.yaml",
+        ];
+        for n in names {
+            let p = staged.join(n);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(&p, "---\nname: new\nversion: \"9.9.9\"\n...\n新内容\n").unwrap();
+        }
+        write_kv(
+            &user.join("update").join("pending.kv"),
+            &[
+                ("tag", "9.9.9".to_string()),
+                ("files", names.len().to_string()),
+                ("dir", staged.display().to_string()),
+                ("time", "test".to_string()),
+            ],
+        )
+        .unwrap();
+
+        let msg = apply_dict_update(&shared, &user).unwrap();
+        println!("部署: {msg}");
+        assert!(shared.join("cn_dicts/ext.dict.yaml").is_file(), "新文件应被写入");
+        let base_after = std::fs::read_to_string(shared.join("cn_dicts/base.dict.yaml")).unwrap();
+        assert!(base_after.contains("新内容"), "同名文件应被覆盖");
+        let backup = PathBuf::from(kv_get(&read_kv(&user.join("update").join("applied.kv")), "backup"));
+        assert!(backup.join("cn_dicts/base.dict.yaml").is_file(), "覆盖过的文件要有备份");
+
+        let msg = rollback_dict_update(&user).unwrap();
+        println!("回滚: {msg}");
+        let base_back = std::fs::read_to_string(shared.join("cn_dicts/base.dict.yaml")).unwrap();
+        assert!(base_back.contains("旧内容"), "回滚应恢复原文件");
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// 真下载上游词库到暂存区（约 40MB，验证 URL/解压/校验；**不部署**）。
+    #[test]
+    #[ignore = "需要网络：下载 40MB"]
+    fn live_download_dict_update_to_staging() {
+        let shared = crate::core::resolve_data_dirs().0;
+        let user = std::env::temp_dir().join("xunyin-dict-dl-user");
+        let _ = std::fs::remove_dir_all(&user);
+        let msg = download_dict_update(&shared, &user).unwrap();
+        println!("下载: {msg}");
+        let st = dict_update_state(&shared, &user);
+        println!(
+            "状态：随包 {} / 暂存 {} / {} 个文件",
+            st.bundled, st.staged, st.staged_files
+        );
+        assert_eq!(st.staged, st.bundled.max(st.staged.clone()));
+        assert!(st.staged_files > 20, "上游词库文件数应当 > 20");
+        let _ = std::fs::remove_dir_all(&user);
     }
 }
 
