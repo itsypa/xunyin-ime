@@ -30,6 +30,8 @@ const PAD_X: i32 = 10;
 const PAD_TOP: i32 = 3;
 const PAD_BOTTOM: i32 = 3;
 const MIN_WIDTH: i32 = 110;
+/// 横排时候选项之间的间距（逻辑像素）。
+const CELL_GAP: i32 = 18;
 /// 组合期间光标追踪定时器（毫秒）。
 const CARET_TIMER_ID: usize = 1;
 const CARET_TIMER_MS: u32 = 80;
@@ -298,7 +300,7 @@ impl CandidateWindow {
                 96
             }
         };
-        let (font, row_h) = create_font(font_pt, dpi);
+        let (font, row_h) = create_font(font_pt, dpi, &cfg().appearance.font_family);
         Self {
             shared: Mutex::new(Some(shared)),
             hwnd,
@@ -330,7 +332,7 @@ impl CandidateWindow {
                 DeleteObject(HGDIOBJ(self.font.0));
             }
         }
-        let (font, row_h) = create_font(font_pt, dpi);
+        let (font, row_h) = create_font(font_pt, dpi, &cfg().appearance.font_family);
         self.font = font;
         self.row_h = row_h;
         self.font_pt.set(font_pt);
@@ -478,6 +480,27 @@ impl CandidateWindow {
                 dwFlags: 0,
             };
             if GetMonitorInfoW(mon, &mut mi).as_bool() {
+                // 固定位置模式：贴在工作区右下角（状态栏上方），不跟光标走
+                if cfg().appearance.follow_mode == "fixed" {
+                    let fx = mi.rcWork.right - w - 8;
+                    let fy = mi.rcWork.bottom - h - 8;
+                    let alpha = (cfg().appearance.opacity.clamp(0, 100) as u32) * 255 / 100;
+                    let _ = SetWindowPos(
+                        self.hwnd,
+                        Some(HWND_TOPMOST),
+                        fx,
+                        fy,
+                        w,
+                        h,
+                        SWP_NOACTIVATE | SWP_SHOWWINDOW,
+                    );
+                    crate::tsf_log!("candidate_place: 固定位置 -> ({fx},{fy}) size=({w},{h})");
+                    SetLayeredWindowAttributes(self.hwnd, COLORREF(0), alpha as u8, LWA_ALPHA);
+                    SetTimer(Some(self.hwnd), CARET_TIMER_ID, CARET_TIMER_MS, None);
+                    self.positioned.set(true);
+                    self.shown.set(true);
+                    return;
+                }
                 if x + w > mi.rcWork.right {
                     x = mi.rcWork.right - w;
                 }
@@ -541,7 +564,11 @@ impl CandidateWindow {
     fn measure(&self) -> (i32, i32) {
         let items = self.items.borrow();
         let comments = self.comments.borrow();
+        let c = cfg().appearance;
+        let horizontal = c.layout == "horizontal";
+        let show_comment = c.show_comment;
         let mut max_w = MIN_WIDTH;
+        let mut total_w = PAD_X * 2;
         let count = items.len().max(1);
         unsafe {
             let dc = GetDC(Some(self.hwnd));
@@ -549,7 +576,11 @@ impl CandidateWindow {
                 SelectObject(dc, HGDIOBJ(self.font.0));
                 for (i, item) in items.iter().enumerate() {
                     let label = format!("{}.{}", i + 1, item);
-                    let comment = comments.get(i).cloned().unwrap_or_default();
+                    let comment = if show_comment {
+                        comments.get(i).cloned().unwrap_or_default()
+                    } else {
+                        String::new()
+                    };
                     let mut sz = SIZE::default();
                     let label16: Vec<u16> =
                         label.encode_utf16().chain(std::iter::once(0)).collect();
@@ -564,9 +595,15 @@ impl CandidateWindow {
                     if total > max_w {
                         max_w = total;
                     }
+                    // 横排：整条宽度 = 各项内容宽度 + 项间距
+                    total_w += total - PAD_X * 2 + CELL_GAP;
                 }
                 ReleaseDC(Some(self.hwnd), dc);
             }
+        }
+        if horizontal {
+            total_w -= CELL_GAP; // 最后一个项后面不留间距
+            return (total_w.max(MIN_WIDTH), PAD_TOP + self.row_h + PAD_BOTTOM);
         }
         let h = PAD_TOP + (count as i32) * self.row_h + PAD_BOTTOM;
         (max_w, h)
@@ -612,15 +649,54 @@ impl CandidateWindow {
             let comments = self.comments.borrow();
             let count = items.len();
             let selected = self.selected.get();
-            for i in 0..count {
-                let y = PAD_TOP + (i as i32) * self.row_h;
+            // 布局：竖排每项占一整行；横排按内容宽度排成一行（x 依次累加，cell_w = 内容宽）
+            let mut layout: Vec<(i32, i32, i32)> = Vec::with_capacity(count); // (x, y, cell_w)
+            if c.layout == "horizontal" {
+                let mut x = PAD_X;
+                for i in 0..count {
+                    let label = if c.show_index {
+                        format!("{}.", i + 1)
+                    } else {
+                        String::new()
+                    };
+                    let lw = text_width(mem, &wide(&label));
+                    let iw = text_width(mem, &wide(&items[i]));
+                    let cw = if c.show_comment {
+                        text_width(mem, &wide(comments.get(i).map(|s| s.as_str()).unwrap_or("")))
+                    } else {
+                        0
+                    };
+                    let cell_w = lw + 6 + iw + if cw > 0 { 10 + cw } else { 0 };
+                    layout.push((x, PAD_TOP, cell_w));
+                    x += cell_w + CELL_GAP;
+                }
+            } else {
+                for i in 0..count {
+                    layout.push((
+                        PAD_X,
+                        PAD_TOP + (i as i32) * self.row_h,
+                        rc.right - 2 * PAD_X,
+                    ));
+                }
+            }
+            for (i, &(x, y, cell_w)) in layout.iter().enumerate() {
                 let is_sel = i == selected;
                 if is_sel {
-                    let sel_rect = RECT {
-                        left: 1,
-                        top: y,
-                        right: rc.right - 1,
-                        bottom: y + self.row_h,
+                    let sel_rect = if c.layout == "horizontal" {
+                        // 横排：高亮只包住这一项
+                        RECT {
+                            left: (x - 6).max(1),
+                            top: y,
+                            right: (x + cell_w + 6).min(rc.right - 1),
+                            bottom: y + self.row_h,
+                        }
+                    } else {
+                        RECT {
+                            left: 1,
+                            top: y,
+                            right: rc.right - 1,
+                            bottom: y + self.row_h,
+                        }
                     };
                     let hl = CreateSolidBrush(COLORREF(parse_color(&c.selected_bg, 0x002A6FDB)));
                     FillRect(mem, &sel_rect, hl);
@@ -632,14 +708,15 @@ impl CandidateWindow {
                 } else {
                     String::new()
                 };
-                let label16: Vec<u16> =
-                    label.encode_utf16().chain(std::iter::once(0)).collect();
+                let label16 = wide(&label);
                 let item = &items[i];
-                let item16: Vec<u16> =
-                    item.encode_utf16().chain(std::iter::once(0)).collect();
-                let comment = comments.get(i).cloned().unwrap_or_default();
-                let comment16: Vec<u16> =
-                    comment.encode_utf16().chain(std::iter::once(0)).collect();
+                let item16 = wide(item);
+                let comment = if c.show_comment {
+                    comments.get(i).cloned().unwrap_or_default()
+                } else {
+                    String::new()
+                };
+                let comment16 = wide(&comment);
                 let text_y = y + (self.row_h - self.font_height(mem)) / 2;
                 SetTextColor(
                     mem,
@@ -649,7 +726,7 @@ impl CandidateWindow {
                         parse_color(&c.comment, 0x00888888)
                     }),
                 );
-                TextOutW(mem, PAD_X, text_y, &label16);
+                TextOutW(mem, x, text_y, &label16);
                 let label_w = text_width(mem, &label16);
                 SetTextColor(
                     mem,
@@ -659,13 +736,13 @@ impl CandidateWindow {
                         parse_color(&c.text, 0x00222222)
                     }),
                 );
-                TextOutW(mem, PAD_X + label_w + 6, text_y, &item16);
+                TextOutW(mem, x + label_w + 6, text_y, &item16);
                 if !comment.is_empty() {
                     let item_w = text_width(mem, &item16);
                     SetTextColor(mem, COLORREF(parse_color(&c.comment, 0x00999999)));
                     TextOutW(
                         mem,
-                        PAD_X + label_w + 6 + item_w + 10,
+                        x + label_w + 6 + item_w + 10,
                         text_y,
                         &comment16,
                     );
@@ -715,6 +792,32 @@ impl CandidateWindow {
             Err(_) => return,
         };
         let Some(shared) = shared else { return };
+        // 叠加候选（快捷输入 / 联想 / v 模式）：点它就上屏，不走 Rime
+        let overlay = match shared.lock() {
+            Ok(st) => st.overlay.clone(),
+            Err(_) => Vec::new(),
+        };
+        if index < overlay.len() {
+            let text = overlay[index].clone();
+            crate::tsf_log!("candidate click: 叠加候选 {text:?}");
+            if let Ok(mut st) = shared.lock() {
+                st.overlay.clear();
+                st.v_mode = None;
+            }
+            if let Some(arc) = engine::ensure_engine() {
+                if let Ok(mut e) = arc.lock() {
+                    e.clear_composition(); // 丢掉 rq / v123 之类的组合
+                }
+            }
+            schedule_commit(&shared, text);
+            return;
+        }
+        // 黑名单过滤过候选，显示下标要用映射表换回 Rime 下标
+        let disp = index - overlay.len();
+        let index = match shared.lock() {
+            Ok(st) => st.cand_map.get(disp).copied().unwrap_or(disp),
+            Err(_) => disp,
+        };
         let mut commit = String::new();
         if let Some(eng) = engine::ensure_engine() {
             if let Ok(mut e) = eng.lock() {
@@ -788,11 +891,16 @@ fn dpi_for_point(x: i32, y: i32) -> i32 {
 }
 
 /// 创建界面字体并按给定显示器 DPI 缩放行高。
-fn create_font(font_pt: u32, dpi: i32) -> (HFONT, i32) {
+fn create_font(font_pt: u32, dpi: i32, family: &str) -> (HFONT, i32) {
     unsafe {
         let dpi = dpi.max(96);
         let height = -(dpi * font_pt as i32 / 72);
-        let name: Vec<u16> = "Microsoft YaHei UI"
+        let family = if family.trim().is_empty() {
+            "Microsoft YaHei UI"
+        } else {
+            family.trim()
+        };
+        let name: Vec<u16> = family
             .encode_utf16()
             .chain(std::iter::once(0))
             .collect();
@@ -823,6 +931,11 @@ fn text_width(hdc: HDC, text: &[u16]) -> i32 {
         GetTextExtentPoint32W(hdc, text, &mut sz);
         sz.cx
     }
+}
+
+/// 文本 → 以 0 结尾的 UTF-16（GDI 的 TextOutW/GetTextExtentPoint32W 用）。
+fn wide(s: &str) -> Vec<u16> {
+    s.encode_utf16().chain(std::iter::once(0)).collect()
 }
 
 /// 把候选窗实例指针存入 GWLP_USERDATA（x86 上 LONG_PTR 为 32 位，需适配）。

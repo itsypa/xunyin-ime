@@ -41,6 +41,18 @@ pub struct InputConfig {
     pub fuzzy: Vec<String>,
     /// 用户词典自学习（记新词 / 调频）总开关。
     pub enable_user_dict: bool,
+    /// 删词键：`ctrl_digit`=Ctrl+数字 删掉当前页第 N 个候选（默认）｜`off`=关闭。
+    pub delete_key: String,
+    /// 词语联想（本地学习：记住你打出某个词后常跟着打的词）。
+    pub enable_assoc: bool,
+    /// 快捷输入：日期 `rq` / 时间 `sj` / 星期 `xq` / `v` 模式（数字转换与计算）。
+    pub enable_quick_input: bool,
+    /// 候选来源：Emoji 候选（`emoji` 翻译器）。
+    pub enable_emoji: bool,
+    /// 候选来源：英文单词 / 中英混输（`melt_eng` + `cn_en` 翻译器）。
+    pub enable_english: bool,
+    /// 候选来源：自定义短语（`custom_phrase` 翻译器）。
+    pub enable_custom_phrase: bool,
 }
 
 /// 一条自定义标点映射。
@@ -68,9 +80,16 @@ impl Default for InputConfig {
             pinyin_separator: "'".into(),
             fuzzy: Vec::new(),
             enable_user_dict: true,
+            delete_key: "ctrl_digit".into(),
+            enable_assoc: true,
+            enable_quick_input: true,
+            enable_emoji: true,
+            enable_english: true,
+            enable_custom_phrase: true,
         }
     }
 }
+
 
 /// 模糊音可选组：id、设置页显示名、对应的 Rime algebra 规则。
 ///
@@ -153,7 +172,9 @@ impl InputConfig {
     /// 内置规则挤掉。
     pub fn schema_patch_yaml(&self, base_algebra: &[String]) -> Option<String> {
         let fuzzy = self.fuzzy_rules();
-        if fuzzy.is_empty() && self.enable_user_dict {
+        let sources_default =
+            self.enable_emoji && self.enable_english && self.enable_custom_phrase;
+        if fuzzy.is_empty() && self.enable_user_dict && sources_default {
             return None; // 无需补丁
         }
         let mut s = String::from("# 由迅音输入法设置中心生成；手工修改会在下次保存设置时被覆盖。\npatch:\n");
@@ -167,6 +188,22 @@ impl InputConfig {
         }
         if !self.enable_user_dict {
             s.push_str("  translator/enable_user_dict: false\n");
+        }
+        // 候选来源开关：Rime 的 patch 对列表是整体替换，这里按当前开关重建完整列表
+        if !sources_default {
+            s.push_str("  engine/translators:\n");
+            s.push_str("    - punct_translator\n");
+            s.push_str("    - script_translator\n");
+            if self.enable_custom_phrase {
+                s.push_str("    - table_translator@custom_phrase\n");
+            }
+            if self.enable_english {
+                s.push_str("    - table_translator@melt_eng\n");
+                s.push_str("    - table_translator@cn_en\n");
+            }
+            if self.enable_emoji {
+                s.push_str("    - table_translator@emoji\n");
+            }
         }
         Some(s)
     }
@@ -202,6 +239,14 @@ pub struct AppearanceConfig {
     pub show_index: bool,
     /// 是否显示右下角状态栏。
     pub show_status_bar: bool,
+    /// 候选窗排列：`vertical`=竖排（默认）｜`horizontal`=横排。
+    pub layout: String,
+    /// 候选窗位置：`caret`=跟随光标（默认）｜`fixed`=固定右下角（贴状态栏上方）。
+    pub follow_mode: String,
+    /// 候选窗字体族（默认微软雅黑 UI）。
+    pub font_family: String,
+    /// 是否显示候选注释（拼音/来源等）。
+    pub show_comment: bool,
 }
 
 impl Default for AppearanceConfig {
@@ -220,6 +265,10 @@ impl Default for AppearanceConfig {
             opacity: 100,
             show_index: true,
             show_status_bar: true,
+            layout: "vertical".into(),
+            follow_mode: "caret".into(),
+            font_family: "Microsoft YaHei UI".into(),
+            show_comment: true,
         }
     }
 }

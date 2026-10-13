@@ -7,8 +7,51 @@ use crate::{engine, key};
 use xunyin_rime::{kRimeModifierAlt, kRimeModifierControl};
 use std::sync::{Arc, Mutex};
 use windows::Win32::Foundation::{LPARAM, WPARAM};
+use windows::Win32::System::Variant::VT_I4;
 use windows::Win32::UI::TextServices::*;
 use windows_core::{implement, Interface, IUnknownImpl, Ref, Result, BOOL, GUID};
+
+/// 读某个 compartment 管理器上的「输入法已被禁用」标志（密码框等敏感输入）。
+fn compartment_disabled<T: Interface>(mgr: &T) -> bool {
+    let Ok(cm) = mgr.cast::<ITfCompartmentMgr>() else {
+        return false;
+    };
+    let Ok(c) = (unsafe { cm.GetCompartment(&GUID_COMPARTMENT_KEYBOARD_DISABLED) }) else {
+        return false;
+    };
+    let Ok(v) = (unsafe { c.GetValue() }) else {
+        return false;
+    };
+    // VARIANT 的内部是 union，读取需要 unsafe
+    unsafe {
+        let inner = &v.Anonymous.Anonymous;
+        inner.vt == VT_I4 && inner.Anonymous.lVal != 0
+    }
+}
+
+/// v 模式可接受的输入字符（数字与四则运算符）。
+fn v_mode_char(vk: u32, mask: i32) -> Option<char> {
+    let shift = mask & xunyin_rime::kRimeModifierShift != 0;
+    match vk {
+        0x30..=0x39 if !shift => Some((b'0' + (vk - 0x30) as u8) as char),
+        0x30 if shift => Some(')'),
+        0x39 if shift => Some('('),
+        0x38 if shift => Some('*'),
+        0xBB if shift => Some('+'),
+        0xBD => Some('-'),
+        0xBF => Some('/'),
+        0xBE => Some('.'),
+        0x35 if shift => Some('%'),
+        // 小键盘：数字与 + - * / .（v 模式算式的常用输入）
+        0x60..=0x69 => Some((b'0' + (vk - 0x60) as u8) as char),
+        0x6A => Some('*'),
+        0x6B => Some('+'),
+        0x6D => Some('-'),
+        0x6E => Some('.'),
+        0x6F => Some('/'),
+        _ => None,
+    }
+}
 
 /// 分隔符可配置后，"拼音串（Rime 用空格分音节）"与"显示串"之间需要双向换算：
 /// - TSF 组合串要用显示串、显示光标（`to_display`：原始位置 → 显示位置）
@@ -110,6 +153,18 @@ pub struct SharedState {
     pub ui_element_mgr: Option<ITfUIElementMgr>,
     pub ui_element: Option<windows_core::ComObject<CandidateListUI>>,
     pub ui_element_id: Option<u32>,
+    /// 叠加候选（快捷输入 / 联想）：显示在 Rime 候选之前，选中后直接上屏。
+    /// 点击候选窗时按这个列表映射下标。
+    pub overlay: Vec<String>,
+    /// 最近一次上屏后的联想词（上屏那一刻就算好，随即显示）。
+    pub assoc: Vec<String>,
+    /// 上一次上屏的文本与时间（联想学习用；隔太久的不配对，避免学出无意义的组合）。
+    pub last_commit: Option<(String, std::time::Instant)>,
+    /// v 模式缓冲（含开头的 `v`，如 `v123`）；None = 未激活。
+    pub v_mode: Option<String>,
+    /// 候选下标映射：显示下标（去掉叠加候选后的偏移）→ Rime 候选下标。
+    /// 黑名单过滤掉候选后，靠它把选词下标对上（空表示恒等映射）。
+    pub cand_map: Vec<usize>,
 }
 
 // SAFETY: 如模块注释所述，所有访问都发生在 TSF 线程；跨线程仅传递所有权。
@@ -196,6 +251,186 @@ impl TextService_Impl {
         Ok(())
     }
 
+    /// 当前上下文是否被应用禁用了输入法（密码框、受保护输入等）：
+    /// 这种情况下不能接管按键，也不能弹候选窗。
+    fn keyboard_disabled(&self) -> bool {
+        let (tm, dm) = match self.shared.lock() {
+            Ok(st) => (st.thread_mgr.clone(), st.focused_doc.clone()),
+            Err(_) => return false,
+        };
+        if let Some(tm) = tm {
+            if compartment_disabled(&tm) {
+                return true;
+            }
+        }
+        if let Some(dm) = dm {
+            if compartment_disabled(&dm) {
+                return true;
+            }
+        }
+        false
+    }
+
+    /// 清掉叠加候选（快捷输入 / 联想）。
+    fn clear_overlay(&self) {
+        if let Ok(mut st) = self.shared.lock() {
+            st.overlay.clear();
+        }
+    }
+
+    /// v 模式的按键处理（`v123` / `v1+2*3`）：Rime 的 speller 不收数字，
+    /// 所以进入 v 模式后组合串由我们自己维护。返回 Some 表示按键已处理完。
+    fn v_mode_key(&self, context: &ITfContext, vk: u32, mask: i32) -> Option<bool> {
+        if !cached_cfg().input.enable_quick_input {
+            return None;
+        }
+        let plain = mask & (kRimeModifierControl | kRimeModifierAlt) == 0;
+        let current = match self.shared.lock() {
+            Ok(st) => st.v_mode.clone(),
+            Err(_) => None,
+        };
+        let Some(buf) = current else {
+            // 进入条件：Rime 组合里恰好是 "v"，紧接着按数字或运算符
+            if !plain {
+                return None;
+            }
+            let ch = v_mode_char(vk, mask)?;
+            let only_v = engine::engine()
+                .and_then(|a| a.lock().ok().and_then(|e| e.get_context()))
+                .map(|c| c.preedit.eq_ignore_ascii_case("v"))
+                .unwrap_or(false);
+            if !only_v {
+                return None;
+            }
+            self.v_mode_update(context, &format!("v{ch}"));
+            return Some(true);
+        };
+        if vk == 0x1B {
+            // Esc：退出 v 模式并清掉组合
+            self.v_mode_leave();
+            let _ = self.schedule_edit(context, "", "", 0);
+            crate::candidate_window::hide_candidates();
+            return Some(true);
+        }
+        if vk == 0x08 {
+            // Backspace：退到只剩 "v" 就退出
+            let mut chars: Vec<char> = buf.chars().collect();
+            if chars.len() <= 1 {
+                self.v_mode_leave();
+                let _ = self.schedule_edit(context, "", "", 0);
+                crate::candidate_window::hide_candidates();
+            } else {
+                chars.pop();
+                self.v_mode_update(context, &chars.into_iter().collect::<String>());
+            }
+            return Some(true);
+        }
+        // 注意：v 模式里数字是**输入**（v123 的 1/2/3），不能当候选选择键用，
+        // 否则第二个数字就会变成"选第 2 项"（实测踩过）。上屏统一用空格/回车。
+        if plain && (vk == 0x20 || vk == 0x0D) {
+            let cands = crate::quick_input::v_mode_candidates(&buf);
+            let text = cands
+                .first()
+                .map(|(t, _)| t.clone())
+                .unwrap_or_else(|| buf.clone());
+            crate::tsf_log!("vmode: 上屏 {text:?}（buf={buf:?}）");
+            self.v_mode_leave();
+            let _ = self.schedule_edit(context, "", &text, 0);
+            crate::candidate_window::hide_candidates();
+            return Some(true);
+        }
+        if plain {
+            if let Some(ch) = v_mode_char(vk, mask) {
+                self.v_mode_update(context, &format!("{buf}{ch}"));
+                return Some(true);
+            }
+        }
+        // 其它键：退出 v 模式，让按键继续走正常流程
+        self.v_mode_leave();
+        let _ = self.schedule_edit(context, "", "", 0);
+        None
+    }
+
+    /// 刷新 v 模式的组合串与候选。
+    fn v_mode_update(&self, context: &ITfContext, buf: &str) {
+        if let Ok(mut st) = self.shared.lock() {
+            st.v_mode = Some(buf.to_string());
+        }
+        let caret = buf.encode_utf16().count();
+        let _ = self.schedule_edit(context, buf, "", caret);
+        let cands = crate::quick_input::v_mode_candidates(buf);
+        let (items, comments): (Vec<String>, Vec<String>) = cands.into_iter().unzip();
+        crate::tsf_log!("vmode: buf={buf:?} 候选={items:?}");
+        if let Ok(mut st) = self.shared.lock() {
+            st.overlay = items.clone();
+        }
+        self.update_candidates(items, comments, 0, 0, cached_cfg().input.page_size as usize);
+    }
+
+    fn v_mode_leave(&self) {
+        if let Ok(mut st) = self.shared.lock() {
+            st.v_mode = None;
+            st.overlay.clear();
+        }
+    }
+
+    /// 叠加候选（快捷输入 / 联想）的选择键：空格（第一项）或 1-9。
+    /// 命中就上屏，不再交给 Rime。返回 Some 表示按键已处理完。
+    fn overlay_select_key(&self, context: &ITfContext, vk: u32, mask: i32) -> Option<bool> {
+        if mask & (kRimeModifierControl | kRimeModifierAlt) != 0 {
+            return None;
+        }
+        if vk != 0x20 && !(0x31..=0x39).contains(&vk) {
+            return None;
+        }
+        let overlay = match self.shared.lock() {
+            Ok(st) => st.overlay.clone(),
+            Err(_) => Vec::new(),
+        };
+        if overlay.is_empty() {
+            return None;
+        }
+        let idx = if vk == 0x20 {
+            0
+        } else {
+            (vk - 0x31) as usize
+        };
+        if idx < overlay.len() {
+            let text = overlay[idx].clone();
+            crate::tsf_log!("overlay: 上屏 {text:?}（快捷输入/联想）");
+            if let Some(arc) = engine::ensure_engine() {
+                if let Ok(mut e) = arc.lock() {
+                    e.clear_composition(); // 丢掉 rq 之类的拼音
+                }
+            }
+            self.clear_overlay();
+            let _ = self.schedule_edit(context, "", &text, 0);
+            crate::candidate_window::hide_candidates();
+            return Some(true);
+        }
+        // 下标落在 Rime 候选段：换算成 Rime 下标（黑名单过滤过要查映射表），选它并上屏
+        let disp = idx - overlay.len();
+        let rime_idx = match self.shared.lock() {
+            Ok(st) => st.cand_map.get(disp).copied().unwrap_or(disp),
+            Err(_) => disp,
+        };
+        let mut commit = String::new();
+        if let Some(arc) = engine::ensure_engine() {
+            if let Ok(mut e) = arc.lock() {
+                if e.select_candidate(rime_idx) {
+                    commit = e.get_commit_text();
+                }
+            }
+        }
+        if commit.is_empty() {
+            return None; // 越界：交给正常流程
+        }
+        self.clear_overlay();
+        let _ = self.schedule_edit(context, "", &commit, 0);
+        crate::candidate_window::hide_candidates();
+        Some(true)
+    }
+
     /// 刷新自绘候选窗（有候选则显示/定位，无则隐藏）。
     fn update_candidates(
         &self,
@@ -277,6 +512,29 @@ impl TextService_Impl {
             return false;
         }
         let mask = key::modifier_mask();
+        // 应用禁用输入法时（密码框等）不接管按键，也不弹候选窗
+        if self.keyboard_disabled() {
+            crate::tsf_log!("keydown: vk=0x{vk:02X} -> 敏感输入（应用已禁用输入法），不接管");
+            crate::candidate_window::hide_candidates();
+            return false;
+        }
+        // v 模式（v123 / v1+2*3）由我们自己维护组合串；命中即消费按键
+        if let Some(consumed) = self.v_mode_key(context, vk, mask) {
+            return consumed;
+        }
+        // 叠加候选（快捷输入 / 联想）的选择键优先
+        if let Some(consumed) = self.overlay_select_key(context, vk, mask) {
+            return consumed;
+        }
+        // Ctrl+数字：删词（把误上屏的词从用户词库/词频里去掉）
+        let mut delete_index: Option<usize> = None;
+        if mask & kRimeModifierControl != 0
+            && mask & kRimeModifierAlt == 0
+            && (0x31..=0x39).contains(&vk)
+            && cached_cfg().input.delete_key == "ctrl_digit"
+        {
+            delete_index = Some((vk - 0x31) as usize);
+        }
         // Ctrl+. ：切换中英标点（搜狗标准快捷键），其余 Ctrl/Alt 交给应用
         if mask & kRimeModifierControl != 0 && mask & kRimeModifierAlt == 0 {
             if vk == 0xBE {
@@ -314,9 +572,12 @@ impl TextService_Impl {
                 }
                 return true;
             }
-            return false;
+            // Ctrl+数字（删词）继续往下走，其余 Ctrl/Alt 组合交给应用
+            if delete_index.is_none() {
+                return false;
+            }
         }
-        if mask & (kRimeModifierControl | kRimeModifierAlt) != 0 {
+        if mask & (kRimeModifierControl | kRimeModifierAlt) != 0 && delete_index.is_none() {
             crate::tsf_log!("keydown: vk=0x{vk:02X} mask=0x{mask:X} -> passthrough (ctrl/alt)");
             return false;
         }
@@ -440,7 +701,36 @@ impl TextService_Impl {
         }
         let consumed = match enter_override {
             Some(c) => c,
-            None => match key::vk_to_punct(vk, shift) {
+            None => match delete_index {
+                // Ctrl+数字：删掉当前页第 N 个候选（误上屏的词不再出现）
+                Some(i) => {
+                    // 显示下标 → Rime 下标 → 被删的词
+                    let (overlay, map) = match self.shared.lock() {
+                        Ok(st) => (st.overlay.clone(), st.cand_map.clone()),
+                        Err(_) => (Vec::new(), Vec::new()),
+                    };
+                    let victim = if i < overlay.len() {
+                        Some(overlay[i].clone())
+                    } else {
+                        let disp = i - overlay.len();
+                        let rime_idx = map.get(disp).copied().unwrap_or(disp);
+                        eng.get_context()
+                            .and_then(|c| c.candidates.get(rime_idx).map(|x| x.text.clone()))
+                    };
+                    // librime 的删词只对用户词库的学习词有效，词库原生词删不掉，
+                    // 所以再记一层自己的黑名单，保证"删了就不再出现"。
+                    let api_ok = eng.delete_candidate_on_current_page(i.saturating_sub(overlay.len()));
+                    let blocked = victim.as_deref().map(crate::blocklist::block).unwrap_or(false);
+                    match &victim {
+                        Some(w) => crate::tsf_log!(
+                            "keydown: Ctrl+{} 删词 {w:?}（librime={api_ok} 黑名单={blocked}）",
+                            i + 1
+                        ),
+                        None => crate::tsf_log!("keydown: Ctrl+{} 删词：该位置没有候选", i + 1),
+                    }
+                    true
+                }
+                None => match key::vk_to_punct(vk, shift) {
                 Some(ch) => {
                 let cfg = cached_cfg();
                 let ascii_now = eng
@@ -468,6 +758,7 @@ impl TextService_Impl {
                 }
             }
             None => eng.process_key(keycode, mask),
+                },
             },
         };
         crate::tsf_log!(
@@ -502,6 +793,31 @@ impl TextService_Impl {
         }
         let commit = custom_commit.unwrap_or_else(|| eng.get_commit_text());
         let snapshot = eng.get_context();
+        // 联想：学习「上一词 → 本词」，并取出本词之后的联想候选
+        if !commit.is_empty() {
+            let cfg = cached_cfg();
+            let prev = match self.shared.lock() {
+                Ok(mut st) => st.last_commit.take(),
+                Err(_) => None,
+            };
+            if cfg.input.enable_assoc {
+                if let Some((p, t)) = prev {
+                    // 隔太久的不算「接着打」，避免学出无意义的搭配
+                    if t.elapsed() < std::time::Duration::from_secs(5) {
+                        crate::assoc::learn_and_maybe_save(&p, &commit);
+                    }
+                }
+                let followers = crate::assoc::followers(&commit);
+                if let Ok(mut st) = self.shared.lock() {
+                    st.assoc = followers;
+                }
+            } else if let Ok(mut st) = self.shared.lock() {
+                st.assoc.clear();
+            }
+            if let Ok(mut st) = self.shared.lock() {
+                st.last_commit = Some((commit.clone(), std::time::Instant::now()));
+            }
+        }
         // 记录当前模式（候选窗状态标记：中/英、全/半角）
         if let Ok(mut st) = self.shared.lock() {
             if let Some(status) = eng.get_status() {
@@ -568,7 +884,56 @@ impl TextService_Impl {
         } else {
             let _ = self.schedule_edit(context, &preedit, &commit, caret);
         }
-        self.update_candidates(candidates, comments, selected, page, page_size);
+        // 叠加候选：快捷输入（rq/sj/xq）→ 联想 → Rime 候选
+        let cfg = cached_cfg();
+        let mut overlay: Vec<String> = Vec::new();
+        let mut overlay_comments: Vec<String> = Vec::new();
+        if cfg.input.enable_quick_input {
+            if let Some(t) = snapshot
+                .as_ref()
+                .and_then(|s| crate::quick_input::trigger(&s.preedit))
+            {
+                for (text, comment) in
+                    crate::quick_input::date_candidates(t, &crate::quick_input::local_now())
+                {
+                    overlay.push(text);
+                    overlay_comments.push(comment);
+                }
+                crate::tsf_log!("keydown: 快捷输入 {t} -> {} 个候选", overlay.len());
+            }
+        }
+        if overlay.is_empty() && cfg.input.enable_assoc && preedit.is_empty() {
+            let assoc = match self.shared.lock() {
+                Ok(st) => st.assoc.clone(),
+                Err(_) => Vec::new(),
+            };
+            for w in assoc {
+                overlay_comments.push("联想".into());
+                overlay.push(w);
+            }
+        }
+        // 黑名单：删掉的错词不再展示；顺带记下显示下标 → Rime 下标的映射
+        let mut cand_map: Vec<usize> = Vec::with_capacity(candidates.len());
+        let (disp_candidates, disp_comments) = {
+            let mut c = overlay.clone();
+            let mut m = overlay_comments;
+            for (i, (t, cm)) in candidates.into_iter().zip(comments.into_iter()).enumerate() {
+                if crate::blocklist::is_blocked(&t) {
+                    crate::tsf_log!("keydown: 候选 {t:?} 已被删词过滤");
+                    continue;
+                }
+                cand_map.push(i);
+                c.push(t);
+                m.push(cm);
+            }
+            (c, m)
+        };
+        let disp_selected = if overlay.is_empty() { selected } else { 0 };
+        if let Ok(mut st) = self.shared.lock() {
+            st.overlay = overlay;
+            st.cand_map = cand_map;
+        }
+        self.update_candidates(disp_candidates, disp_comments, disp_selected, page, page_size);
         crate::tsf_log!(
             "keydown: vk=0x{vk:02X} -> consumed, preedit={preedit:?} commit={commit:?} candidates={cand_count}"
         );
@@ -640,6 +1005,17 @@ fn test_key(vk: u32, lparam: usize) -> bool {
     // Ctrl+.：中英标点切换（本输入法消费）
     if mask & kRimeModifierControl != 0 && mask & kRimeModifierAlt == 0 && vk == 0xBE {
         return true;
+    }
+    // Ctrl+数字：删词。**只在组合中**接管——否则会把浏览器的 Ctrl+1..9
+    // （切换标签页）抢走。
+    if mask & kRimeModifierControl != 0
+        && mask & kRimeModifierAlt == 0
+        && (0x31..=0x39).contains(&vk)
+        && cached_cfg().input.delete_key == "ctrl_digit"
+    {
+        return engine::engine()
+            .map(|e| e.lock().map(|mut e| e.is_composing()).unwrap_or(false))
+            .unwrap_or(false);
     }
     if mask & (kRimeModifierControl | kRimeModifierAlt) != 0 {
         return false;

@@ -179,11 +179,28 @@ enum Id {
     OpenData,
     OpenLogs,
     OpenSkins,
+    SkinRestore,
     ClearLogs,
     ReloadConfig,
     Redeploy,
     ResetAll,
     Update,
+    UpdateCheck,
+    DiagExport,
+    ConfigExport,
+    ConfigImport,
+    ClearUserDict,
+    ExportUserDict,
+    SegLayout,
+    SegFollow,
+    FontCombo,
+    DeleteKeyCombo,
+    SwitchComment,
+    SwitchAssoc,
+    SwitchQuick,
+    SwitchEmoji,
+    SwitchEnglish,
+    SwitchPhrase,
     ComboItem(usize),
 }
 
@@ -566,6 +583,8 @@ impl App {
                 Id::SegFull => Id::ComboItem(100 + i),
                 Id::SegPunct => Id::ComboItem(200 + i),
                 Id::SegAscii => Id::ComboItem(300 + i),
+                Id::SegLayout => Id::ComboItem(400 + i),
+                Id::SegFollow => Id::ComboItem(500 + i),
                 _ => id,
             };
             self.push_hit(sub, lr);
@@ -908,6 +927,21 @@ const SEP_ITEMS: [(&str, &str); 5] = [
     ("", "不显示  nihao"),
 ];
 
+/// 删词键（误上屏的词：Ctrl+数字 删掉当前页第 N 个候选）。
+const DELETE_ITEMS: [(&str, &str); 2] = [
+    ("ctrl_digit", "Ctrl + 数字"),
+    ("off", "关闭"),
+];
+
+/// 候选窗字体（名称必须是系统里真实存在的字体族）。
+const FONT_ITEMS: [(&str, &str); 5] = [
+    ("Microsoft YaHei UI", "微软雅黑 UI"),
+    ("Microsoft YaHei", "微软雅黑"),
+    ("SimSun", "宋体"),
+    ("SimHei", "黑体"),
+    ("DengXian", "等线"),
+];
+
 fn find_label(items: &[(&str, &str)], key: &str) -> String {
     items
         .iter()
@@ -1214,12 +1248,34 @@ impl App {
                             self.mark_dirty();
                         }
                     }
+                    Some(Id::DeleteKeyCombo) => {
+                        if let Some((k, _)) = DELETE_ITEMS.get(i) {
+                            self.cfg.input.delete_key = (*k).into();
+                            self.mark_dirty();
+                        }
+                    }
+                    Some(Id::FontCombo) => {
+                        if let Some((k, _)) = FONT_ITEMS.get(i) {
+                            self.cfg.appearance.font_family = (*k).into();
+                            self.mark_dirty();
+                        }
+                    }
+                    Some(Id::SegLayout) => {
+                        self.cfg.appearance.layout = if i == 1 { "horizontal".into() } else { "vertical".into() };
+                        self.mark_dirty();
+                    }
+                    Some(Id::SegFollow) => {
+                        self.cfg.appearance.follow_mode = if i == 1 { "fixed".into() } else { "caret".into() };
+                        self.mark_dirty();
+                    }
                     _ => {}
                 }
             }
             Id::SegFull => {}
             Id::SegPunct => {}
             Id::SegAscii => {}
+            Id::SegLayout => {}
+            Id::SegFollow => {}
             Id::SwitchLearn => {
                 self.cfg.input.enable_user_dict = !self.cfg.input.enable_user_dict;
                 self.mark_dirty();
@@ -1230,6 +1286,30 @@ impl App {
             }
             Id::SwitchStatus => {
                 self.cfg.appearance.show_status_bar = !self.cfg.appearance.show_status_bar;
+                self.mark_dirty();
+            }
+            Id::SwitchComment => {
+                self.cfg.appearance.show_comment = !self.cfg.appearance.show_comment;
+                self.mark_dirty();
+            }
+            Id::SwitchAssoc => {
+                self.cfg.input.enable_assoc = !self.cfg.input.enable_assoc;
+                self.mark_dirty();
+            }
+            Id::SwitchQuick => {
+                self.cfg.input.enable_quick_input = !self.cfg.input.enable_quick_input;
+                self.mark_dirty();
+            }
+            Id::SwitchEmoji => {
+                self.cfg.input.enable_emoji = !self.cfg.input.enable_emoji;
+                self.mark_dirty();
+            }
+            Id::SwitchEnglish => {
+                self.cfg.input.enable_english = !self.cfg.input.enable_english;
+                self.mark_dirty();
+            }
+            Id::SwitchPhrase => {
+                self.cfg.input.enable_custom_phrase = !self.cfg.input.enable_custom_phrase;
                 self.mark_dirty();
             }
             Id::Fuzzy(i) => {
@@ -1312,6 +1392,46 @@ impl App {
                 Ok(p) => self.toast(&format!("已导出：{}", p.display())),
                 Err(e) => self.toast(&format!("导出失败：{e}")),
             },
+            Id::ExportUserDict => match self.core.export_user_dict() {
+                Ok(p) => self.toast(&format!("用户词库已导出：{}", p.display())),
+                Err(e) => self.toast(&format!("导出失败：{e}")),
+            },
+            Id::ClearUserDict => match self.core.clear_user_dict() {
+                Ok(msg) => {
+                    self.stats = self.core.dict_stats();
+                    self.toast(&msg);
+                }
+                Err(e) => self.toast(&format!("清空失败：{e}")),
+            },
+            Id::DiagExport => match self.core.export_diag() {
+                Ok(p) => self.toast(&format!("诊断包已导出：{}", p.display())),
+                Err(e) => self.toast(&format!("导出失败：{e}")),
+            },
+            Id::ConfigExport => match self.core.export_config() {
+                Ok(p) => self.toast(&format!("配置已导出：{}", p.display())),
+                Err(e) => self.toast(&format!("导出失败：{e}")),
+            },
+            Id::ConfigImport => {
+                if let Some(path) = pick_file(self.hwnd, &[("配置文件", "*.json"), ("所有文件", "*.*")], "json") {
+                    match self.core.import_config(&path) {
+                        Ok(cfg) => {
+                            self.cfg = cfg;
+                            self.theme = theme_from(&self.cfg, self.theme.dark);
+                            self.stats = self.core.dict_stats();
+                            self.toast("配置已导入（输入法会自动重载）");
+                        }
+                        Err(e) => self.toast(&format!("导入失败：{e}")),
+                    }
+                }
+            }
+            Id::UpdateCheck => match self.core.check_update() {
+                Ok(msg) => self.toast(&msg),
+                Err(e) => self.toast(&format!("检查更新失败：{e}")),
+            },
+            Id::SkinRestore => match self.core.restore_builtin_skin() {
+                Ok(msg) => self.toast(&msg),
+                Err(e) => self.toast(&format!("恢复失败：{e}")),
+            },
             Id::BackupNow => match self.core.backup_user_dict() {
                 Ok(p) => {
                     self.backups = self.core.list_backups();
@@ -1392,6 +1512,8 @@ fn combo_items(app: &App, id: Id) -> Option<Vec<(String, String)>> {
         Id::EnterCombo => ENTER_ITEMS.iter().map(|(k, l)| ((*k).to_string(), (*l).to_string())).collect(),
         Id::ToggleCombo => TOGGLE_ITEMS.iter().map(|(k, l)| ((*k).to_string(), (*l).to_string())).collect(),
         Id::SepCombo => SEP_ITEMS.iter().map(|(k, l)| ((*k).to_string(), (*l).to_string())).collect(),
+        Id::DeleteKeyCombo => DELETE_ITEMS.iter().map(|(k, l)| ((*k).to_string(), (*l).to_string())).collect(),
+        Id::FontCombo => FONT_ITEMS.iter().map(|(k, l)| ((*k).to_string(), (*l).to_string())).collect(),
         _ => return None,
     })
 }
@@ -1918,13 +2040,15 @@ fn draw_input(app: &mut App, dc: HDC, x: i32, y0: i32, w: i32) -> i32 {
     app.slider(dc, Id::PageSize, sl, app.cfg.input.page_size as i32, 3, 10, " 个");
     y += app.s(104) + gap;
 
-    let keys_h = app.s(196);
+    // 4 个下拉（回车/中英切换/分隔符/删词）+ 2 个开关（联想/快捷输入）
+    let keys_h = app.s(196 + 52 + 46 * 2);
     let cy = app.card(dc, x, y, col_w, keys_h, "按键行为", "");
     let mut ry = cy;
     for (label, id, shown) in [
         ("回车键", Id::EnterCombo, enter_text(app)),
         ("中英切换键", Id::ToggleCombo, toggle_text(app)),
         ("拼音分隔符", Id::SepCombo, sep_text(app)),
+        ("删词键", Id::DeleteKeyCombo, find_label(&DELETE_ITEMS, &app.cfg.input.delete_key)),
     ] {
         let r = app.row(dc, x + app.s(18), ry, col_w - app.s(36), label, "");
         // 下拉宽度收窄：以前 230 宽右对齐，左边缘会压到左侧标签文字上
@@ -1932,6 +2056,12 @@ fn draw_input(app: &mut App, dc: HDC, x: i32, y0: i32, w: i32) -> i32 {
         app.combo(dc, id, cb, &shown);
         ry += app.s(52);
     }
+    let r = app.row(dc, x + app.s(18), ry, col_w - app.s(36), "词语联想", "上屏后接着给出常跟的词");
+    app.toggle_switch(dc, Id::SwitchAssoc, r, app.cfg.input.enable_assoc);
+    ry += app.s(46);
+    let r = app.row(dc, x + app.s(18), ry, col_w - app.s(36), "快捷输入", "rq 日期 / sj 时间 / xq 星期 / v 模式");
+    app.toggle_switch(dc, Id::SwitchQuick, r, app.cfg.input.enable_quick_input);
+    ry += app.s(46);
     y += keys_h + gap;
 
     // 右栏
@@ -2021,6 +2151,28 @@ fn draw_appearance(app: &mut App, dc: HDC, x: i32, y0: i32, w: i32) -> i32 {
     app.button(dc, Id::SkinImport, RECT { left: x + app.s(146), top: cy, right: x + app.s(146) + app.s(120), bottom: cy + app.s(34) }, "导入皮肤", false);
     y += sh + gap;
 
+    // 候选窗：排列 / 位置 / 字体 / 注释（这几项都由输入法实时读取，热生效）
+    let cw_h = app.s(46 + 46 * 2 + 52 + 46);
+    let cy = app.card(dc, x, y, col_w, cw_h, "候选窗", "");
+    let mut fy = cy;
+    for (label, desc, id, names, sel) in [
+        ("排列", "竖排（一列）或横排（一行）", Id::SegLayout, ["竖排", "横排"], if app.cfg.appearance.layout == "horizontal" { 1 } else { 0 }),
+        ("位置", "跟随光标 或 固定在工作区右下角", Id::SegFollow, ["跟随光标", "固定右下"], if app.cfg.appearance.follow_mode == "fixed" { 1 } else { 0 }),
+    ] {
+        let r = app.row(dc, x + app.s(18), fy, col_w - app.s(36), label, desc);
+        let seg = RECT { left: r.right - app.s(148), top: r.top + app.s(6), right: r.right, bottom: r.top + app.s(36) };
+        app.segmented(dc, id, seg, &names, sel);
+        fy += app.s(46);
+    }
+    let r = app.row(dc, x + app.s(18), fy, col_w - app.s(36), "字体", "候选窗使用的字体");
+    let shown = find_label(&FONT_ITEMS, &app.cfg.appearance.font_family);
+    let cb = RECT { left: r.right - app.s(160), top: r.top + app.s(4), right: r.right, bottom: r.top + app.s(36) };
+    app.combo(dc, Id::FontCombo, cb, &shown);
+    fy += app.s(52);
+    let r = app.row(dc, x + app.s(18), fy, col_w - app.s(36), "显示候选注释", "拼音/来源等附加说明");
+    app.toggle_switch(dc, Id::SwitchComment, r, app.cfg.appearance.show_comment);
+    y += cw_h + gap;
+
     let rx = x + col_w + gap;
     let mut ry = y0;
     let ch = app.s(46 + 40 * 7);
@@ -2102,10 +2254,27 @@ fn draw_dict(app: &mut App, dc: HDC, x: i32, y0: i32, w: i32) -> i32 {
     }
     y += ih + gap;
 
+    // 候选来源：关掉某个翻译器即不再出该类候选（走方案补丁，保存后自动重建）
+    let srch = app.s(46 * 3 + 46);
+    let cy = app.card(dc, x, y, col_w, srch, "候选来源", "");
+    let mut fy = cy;
+    for (label, desc, id, on) in [
+        ("Emoji", "拼音候选里带上 emoji", Id::SwitchEmoji, app.cfg.input.enable_emoji),
+        ("英文单词", "中英混输与英文补全", Id::SwitchEnglish, app.cfg.input.enable_english),
+        ("自定义短语", "你自己导入的短语表", Id::SwitchPhrase, app.cfg.input.enable_custom_phrase),
+    ] {
+        let r = app.row(dc, x + app.s(18), fy, col_w - app.s(36), label, desc);
+        app.toggle_switch(dc, id, r, on);
+        fy += app.s(46);
+    }
+    y += srch + gap;
+
     let rx = x + col_w + gap;
-    let bh = app.s(346);
+    let bh = app.s(346 + 46);
     let cy = app.card(dc, rx, y0, col_w, bh, "用户词库备份 / 恢复", "");
     app.button(dc, Id::BackupNow, RECT { left: rx + app.s(18), top: cy, right: rx + app.s(18) + app.s(120), bottom: cy + app.s(34) }, "立即备份", true);
+    app.button(dc, Id::ExportUserDict, RECT { left: rx + app.s(146), top: cy, right: rx + app.s(146) + app.s(120), bottom: cy + app.s(34) }, "导出用户词库", false);
+    app.button(dc, Id::ClearUserDict, RECT { left: rx + app.s(274), top: cy, right: rx + app.s(274) + app.s(120), bottom: cy + app.s(34) }, "清空用户词库", false);
     let lr = RECT { left: rx + app.s(18), top: cy + app.s(48), right: rx + col_w - app.s(18), bottom: cy + app.s(208) };
     let items: Vec<String> = app
         .backups
@@ -2129,7 +2298,7 @@ fn draw_about(app: &mut App, dc: HDC, x: i32, y0: i32, w: i32) -> i32 {
     let t = app.theme.clone();
     let mut y = y0;
 
-    let mh = app.s(200);
+    let mh = app.s(200 + 42 * 2);
     let cy = app.card(dc, x, y, col_w, mh, "维护与诊断", "");
     // 两列两行排（以前一列横排三个，第三颗会溢出卡片右边缘）
     let inner = col_w - app.s(36);
@@ -2158,13 +2327,34 @@ fn draw_about(app: &mut App, dc: HDC, x: i32, y0: i32, w: i32) -> i32 {
     }
     y += mh + gap;
 
-    let uh = app.s(92);
+    // 诊断与配置：一键打包现场（日志+配置+环境），以及整套设置的导入导出
+    let dh = app.s(140);
+    let cy = app.card(dc, x, y, col_w, dh, "诊断与配置", "");
+    let inner2 = col_w - app.s(36);
+    let bw2 = (inner2 - app.s(8)) / 2;
+    for (i, (id, label)) in [
+        (Id::DiagExport, "导出诊断包"),
+        (Id::ConfigExport, "导出全部设置"),
+        (Id::ConfigImport, "导入全部设置"),
+        (Id::SkinRestore, "恢复内置皮肤"),
+    ]
+    .iter()
+    .enumerate()
+    {
+        let bx = x + app.s(18) + ((i as i32) % 2) * (bw2 + app.s(8));
+        let by = cy + ((i as i32) / 2) * app.s(42);
+        app.button(dc, *id, RECT { left: bx, top: by, right: bx + bw2, bottom: by + app.s(34) }, label, false);
+    }
+    y += dh + gap;
+
+    let uh = app.s(100);
     let cy = app.card(dc, x, y, col_w, uh, "更新", "");
-    app.button(dc, Id::Update, RECT { left: x + app.s(18), top: cy, right: x + app.s(18) + app.s(140), bottom: cy + app.s(34) }, "查看最新版本", true);
+    app.button(dc, Id::UpdateCheck, RECT { left: x + app.s(18), top: cy, right: x + app.s(18) + app.s(140), bottom: cy + app.s(34) }, "检查更新", true);
+    app.button(dc, Id::Update, RECT { left: x + app.s(166), top: cy, right: x + app.s(166) + app.s(140), bottom: cy + app.s(34) }, "打开下载页", false);
     y += uh + gap;
 
     let rx = x + col_w + gap;
-    let kh = app.s(396);
+    let kh = app.s(396 + 34 * 4);
     let cy = app.card(dc, rx, y0, col_w, kh, "快捷键", "");
     let lines = [
         ("Shift", "组合中上屏拼音；未组合切换中/英"),
@@ -2172,7 +2362,10 @@ fn draw_about(app: &mut App, dc: HDC, x: i32, y0: i32, w: i32) -> i32 {
         ("空格", "确认高亮候选词"),
         ("1-9", "选择对应候选"),
         ("Ctrl+.", "切换中英标点"),
+        ("Ctrl+数字", "删掉这个错词（不再出现）"),
         ("Tab / [ ] / - =", "候选翻页"),
+        ("rq / sj / xq", "日期 / 时间 / 星期"),
+        ("v 数字或算式", "中文大写、进制转换、算结果"),
         ("← / →", "拼音内逐字移动"),
         ("状态栏「符号」", "打开/收起符号面板"),
         ("右键状态栏", "开关菜单"),

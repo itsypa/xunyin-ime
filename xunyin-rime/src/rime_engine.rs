@@ -502,6 +502,33 @@ impl RimeEngine {
         false
     }
 
+    /// 删除当前页第 `index` 个候选（Ctrl+数字）：从用户词库/词频里抹掉这个错词，
+    /// 之后不再优先出现。librime 1.7+ 提供该接口。
+    pub fn delete_candidate_on_current_page(&mut self, index: usize) -> bool {
+        let id = self.ensure_session();
+        if id == 0 {
+            return false;
+        }
+        let api = unsafe { &*self.api };
+        if let Some(f) = api.delete_candidate_on_current_page {
+            return unsafe { f(id, index) } != 0;
+        }
+        false
+    }
+
+    /// 删除整页里第 `global_index` 个候选（跨页序号）。
+    pub fn delete_candidate(&mut self, global_index: usize) -> bool {
+        let id = self.ensure_session();
+        if id == 0 {
+            return false;
+        }
+        let api = unsafe { &*self.api };
+        if let Some(f) = api.delete_candidate {
+            return unsafe { f(id, global_index) } != 0;
+        }
+        false
+    }
+
     /// 候选翻页。
     pub fn page_up(&mut self) -> bool {
         self.process_key(0xff55 /* PageUp */, 0)
