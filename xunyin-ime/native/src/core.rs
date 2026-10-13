@@ -28,6 +28,8 @@ pub struct DictStats {
 pub struct SkinAsset {
     pub name: String,
     pub label: String,
+    /// 一句话说明（皮肤中心鼠标悬停时显示）
+    pub desc: String,
     /// "皮肤" = 来自皮肤目录；"内置" = 来自 DLL 内嵌副本
     pub source: String,
     pub w: usize,
@@ -77,20 +79,57 @@ fn embedded_asset(name: &str) -> Option<&'static [u8]> {
 }
 
 fn skin_asset_label(name: &str) -> &'static str {
+    // 格子只有 ~137px，标签控制在 3 个汉字以内；完整说明见 skin_asset_desc
     match name {
-        "bar_bg.bin" => "状态栏底",
-        "cell_hover.bin" => "悬停高亮",
-        "cell_active.bin" => "激活高亮",
-        "icon_gear.bin" => "设置齿轮",
-        "glyph_quan.bin" => "全角·满月",
-        "glyph_ban.bin" => "半角·半月",
-        "glyph_punct_cn.bin" => "中文标点",
-        "glyph_punct_en.bin" => "英文标点",
-        "glyph_zhong.bin" => "中文模式",
-        "glyph_ying.bin" => "英文模式",
-        "glyph_symbol.bin" => "符号面板",
+        "bar_bg.bin" => "条底",
+        "cell_hover.bin" => "悬停",
+        "cell_active.bin" => "激活",
+        "icon_gear.bin" => "齿轮",
+        "glyph_quan.bin" => "全角",
+        "glyph_ban.bin" => "半角",
+        "glyph_punct_cn.bin" => "中标点",
+        "glyph_punct_en.bin" => "英标点",
+        "glyph_zhong.bin" => "中文",
+        "glyph_ying.bin" => "英文",
+        "glyph_symbol.bin" => "符号",
         _ => "资源",
     }
+}
+
+/// 每份资源的用途说明（皮肤中心悬停提示 + 导出一项后给用户的提示语）。
+fn skin_asset_desc(name: &str) -> &'static str {
+    match name {
+        "bar_bg.bin" => "状态栏整条：白底圆角、边框、左侧拖动柄点阵",
+        "cell_hover.bin" => "鼠标悬停某一格时的高亮胶囊",
+        "cell_active.bin" => "激活格（中文模式、符号面板打开时）的蓝底胶囊",
+        "icon_gear.bin" => "最右侧设置齿轮图标",
+        "glyph_quan.bin" => "全角状态图标（满月）",
+        "glyph_ban.bin" => "半角状态图标（半月）",
+        "glyph_punct_cn.bin" => "中文标点状态图标（，。）",
+        "glyph_punct_en.bin" => "英文标点状态图标（,.）",
+        "glyph_zhong.bin" => "中文模式格图标",
+        "glyph_ying.bin" => "英文模式格图标",
+        "glyph_symbol.bin" => "符号面板格图标（※）",
+        _ => "界面资源",
+    }
+}
+
+/// 导出单份资源到皮肤目录（点皮肤中心的一项时调用）。返回文件路径。
+pub fn export_skin_asset(name: &str) -> Result<PathBuf, String> {
+    if !SKIN_ASSET_FILES.contains(&name) {
+        return Err("未知的资源名".into());
+    }
+    let bytes = match std::fs::read(user_data_dir().join("skins").join(name)) {
+        Ok(b) if asset_size_ok(&b, name) => b,
+        _ => embedded_asset(name)
+            .ok_or_else(|| "找不到这份资源".to_string())?
+            .to_vec(),
+    };
+    let dir = user_data_dir().join("skins");
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let dst = dir.join(name);
+    std::fs::write(&dst, bytes).map_err(|e| e.to_string())?;
+    Ok(dst)
 }
 
 /// 资源尺寸：8 字节头 + w*h*4。
@@ -835,6 +874,7 @@ impl Core {
             out.push(SkinAsset {
                 name: (*name).to_string(),
                 label: skin_asset_label(name).to_string(),
+                desc: skin_asset_desc(name).to_string(),
                 source,
                 w,
                 h,
@@ -1716,6 +1756,22 @@ mod tests {
         assert!(asset_size_ok(&buf, "glyph_ban.bin"));
         assert!(!asset_size_ok(&buf, "bar_bg.bin"));
         assert!(!asset_size_ok(&buf[..100], "glyph_ban.bin"));
+    }
+
+    /// 皮肤中心「点一项就导出」的底层动作：写文件、尺寸正确、来源变成"皮肤"。
+    #[test]
+    fn export_skin_asset_writes_usable_file() {
+        let name = "glyph_symbol.bin";
+        let p = export_skin_asset(name).expect("导出应成功");
+        assert!(p.is_file(), "导出后文件应存在");
+        let b = std::fs::read(&p).unwrap();
+        assert!(asset_size_ok(&b, name), "导出的资源尺寸要合法");
+        let core = Core::new();
+        if let Some(a) = core.skin_assets().into_iter().find(|a| a.name == name) {
+            assert_eq!(a.source, "皮肤", "皮肤目录里有文件后来源应变成皮肤");
+            assert!(!a.desc.is_empty(), "每项都要有说明（悬停提示用）");
+        }
+        let _ = std::fs::remove_file(&p);
     }
 
     /// 内嵌资源必须齐全且尺寸合法（皮肤中心、导出资源包都依赖它）。

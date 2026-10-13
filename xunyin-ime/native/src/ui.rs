@@ -11,6 +11,7 @@
 
 #![allow(clippy::too_many_arguments)]
 
+use std::os::windows::process::CommandExt;
 use crate::core::{CellDict, Core, DictStats, SkinAsset};
 use xunyin_rime::config::{AppearanceConfig, XunyinConfig};
 use std::mem::size_of;
@@ -128,6 +129,14 @@ fn balance(hs: &[i32], x0: i32, y0: i32, w: i32, gap: i32) -> Vec<(i32, i32, i32
         cursor[c] += h + gap;
     }
     out
+}
+
+/// 在资源管理器里定位到某个文件（explorer /select,<path>）。
+fn reveal_in_explorer(path: &std::path::Path) {
+    let _ = std::process::Command::new("explorer.exe")
+        .arg(format!("/select,{}", path.display()))
+        .creation_flags(0x0800_0000)
+        .spawn();
 }
 
 /// 内容区页头：大标题 + 一句话说明（以前内容区直接是卡片，看着像没做完）。
@@ -281,6 +290,7 @@ enum Id {
     FontCombo,
     SkinPackExport,
     SkinPackImport,
+    SkinItem(usize),
     CellDict(usize),
     CellApply,
     DictDownload,
@@ -367,6 +377,8 @@ struct App {
     scroll_max: i32,
     /// 本帧画过的卡片矩形（XUNYIN_UI_DUMP 时导出，用于自动检查越界/重叠）
     cards: Vec<RECT>,
+    /// 最近一次鼠标位置（悬停提示用）
+    mouse: POINT,
 }
 
 fn main_of(hwnd: HWND) -> Option<&'static mut App> {
@@ -572,6 +584,7 @@ impl App {
             gdiplus: 0,
             scroll_max: 0,
             cards: Vec::new(),
+            mouse: POINT { x: 0, y: 0 },
         });
         unsafe {
             app.dpi = GetDpiForWindow(hwnd).max(96);
@@ -1614,6 +1627,22 @@ impl App {
                     }
                 }
             }
+            Id::SkinItem(i) => {
+                // 点某一项 = 把这份资源导到皮肤目录并定位到文件，方便直接改
+                let name = self.skins.get(i).map(|a| a.name.clone());
+                if let Some(name) = name {
+                    match crate::core::export_skin_asset(&name) {
+                        Ok(p) => {
+                            self.skins = self.core.skin_assets();
+                            reveal_in_explorer(&p);
+                            self.toast(&format!(
+                                "已导出 {name} 到皮肤目录并用资源管理器打开；改完点「重载配置」即时生效"
+                            ));
+                        }
+                        Err(e) => self.toast(&format!("导出失败：{e}")),
+                    }
+                }
+            }
             Id::CellDict(i) => {
                 if let Some(c) = self.cells.get_mut(i) {
                     c.enabled = !c.enabled;
@@ -1932,6 +1961,7 @@ extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM
             WM_MOUSEMOVE => {
                 if let Some(app) = main_of(hwnd) {
                     let pt = point(lparam);
+                    app.mouse = pt;
                     if let Some(id) = app.dragging_slider {
                         drag_slider(app, id, pt.x);
                         let _ = InvalidateRect(Some(hwnd), None, false);
@@ -2325,6 +2355,82 @@ fn paint(app: &mut App) {
         // 下拉浮层
         app.draw_combo_popup(mem);
 
+        // 悬停提示（皮肤中心的每一项、按钮等给一句话说明）
+        // 悬停提示：(标题, 说明, 操作提示) 三行
+        let tip: Option<(String, String, String)> = match app.hover {
+            Some(Id::SkinItem(i)) => app.skins.get(i).map(|a| {
+                (
+                    format!("{} · {}", a.label, a.name),
+                    a.desc.to_string(),
+                    "点一下：导出到皮肤目录并定位文件；改完点「重载配置」即时生效".to_string(),
+                )
+            }),
+            Some(Id::DictDownload) => Some((
+                "下载到暂存（不动当前词库）".into(),
+                "从上游 rime-frost 下载词库包并校验，只写入 update 暂存区".into(),
+                "校验通过后才会提示可部署".into(),
+            )),
+            Some(Id::DictApply) => Some((
+                "部署到本机（会把暂存词库写进数据目录）".into(),
+                "覆盖前逐个备份旧文件，可用「回滚上次」恢复".into(),
+                String::new(),
+            )),
+            Some(Id::DictRollback) => Some((
+                "回滚上次部署".into(),
+                "用备份覆盖回去并重建索引".into(),
+                String::new(),
+            )),
+            Some(Id::SkinRestore) => Some((
+                "恢复内置皮肤".into(),
+                "删掉皮肤目录里的覆盖文件，回到内置图标".into(),
+                String::new(),
+            )),
+            _ => None,
+        };
+        if let Some((msg, desc, hint)) = tip {
+            {
+                let lines: Vec<&str> = if hint.is_empty() {
+                    vec![msg.as_str(), desc.as_str()]
+                } else {
+                    vec![msg.as_str(), desc.as_str(), hint.as_str()]
+                };
+                let tw = lines
+                    .iter()
+                    .map(|l| App::text_width_of(mem, l, app.font_small))
+                    .max()
+                    .unwrap_or(app.s(200))
+                    + app.s(24);
+                let th = app.s(12 + 24 * lines.len() as i32);
+                let mut tx = app.mouse.x + app.s(14);
+                let mut ty = app.mouse.y + app.s(18);
+                if tx + tw > w - app.s(8) {
+                    tx = (w - app.s(8) - tw).max(app.s(8));
+                }
+                if ty + th > h - app.s(8) {
+                    ty = (app.mouse.y - th - app.s(8)).max(app.s(8));
+                }
+                let tr = RECT { left: tx, top: ty, right: tx + tw, bottom: ty + th };
+                if let Some(g) = Gfx::new(mem) {
+                    g.fill_round(tr, 8, if t.dark { 0xFF2E323C } else { 0xFF23304A });
+                }
+                unsafe {
+                    for (i, l) in lines.iter().enumerate() {
+                        let top = tr.top + app.s(6) + (i as i32) * app.s(24);
+                        let color = if i == 0 { 0xFFFFFFFF } else { 0xFFBFD3F5 };
+                        text(
+                            mem,
+                            RECT { left: tr.left + app.s(12), top, right: tr.right - app.s(12), bottom: top + app.s(22) },
+                            l,
+                            app.font_small,
+                            color,
+                            DT_LEFT,
+                            true,
+                        );
+                    }
+                }
+            }
+        }
+
         // 提示条
         if !app.toast.is_empty() && std::time::Instant::now() < app.toast_until {
             let msg = app.toast.clone();
@@ -2478,9 +2584,12 @@ fn draw_input(app: &mut App, dc: HDC, x0: i32, y0: i32, w: i32) -> i32 {
 fn draw_appearance(app: &mut App, dc: HDC, x0: i32, y0: i32, w: i32) -> i32 {
     let gap = app.s(16);
     let y0 = page_header(app, dc, x0, y0, w, "外观主题", "候选窗、状态栏与配色的即时预览");
-    let skin_rows = app.skins.len().div_ceil(4).max(1) as i32;
-    // 46=卡头 56=每行缩略图 116=两行按钮 + 内边距（实测加到位才不越界）
-    let skin_h = app.s(46) + skin_rows * app.s(56) + app.s(116);
+    // 3 列：4 列时每格只有 ~109px，缩略图占 39px 后中文名被挤没了（用户反馈"看不懂"）；
+    // 2 列虽然更宽但卡片太高，3 列是"标签放得下 + 页面不至于太长"的折中
+    let skin_cols = 3usize;
+    let skin_rows = app.skins.len().div_ceil(skin_cols).max(1) as i32;
+    // 46=卡头 50=每行 42=说明行 116=两行按钮 + 内边距
+    let skin_h = app.s(46) + skin_rows * app.s(50) + app.s(42) + app.s(116);
     let hs = [
         app.s(232),                                  // 候选窗预览
         app.s(92),                                   // 主题预设
@@ -2520,37 +2629,68 @@ fn draw_appearance(app: &mut App, dc: HDC, x0: i32, y0: i32, w: i32) -> i32 {
     let (x, cy0, col_w) = slots[3];
     // 皮肤中心：状态栏资源一览（缩略图 + 来源）+ 导入导出资源包
     {
-        let cols = 4usize;
+        let cols = skin_cols;
         let rows = app.skins.len().div_ceil(cols).max(1);
-        let cell_h = app.s(56);
+        let cell_h = app.s(50);
         let grid_h = rows as i32 * cell_h;
-        // 两行按钮（四颗按钮横排会被标签挤爆，两行两列更稳），卡片高度要留够
-        let card_h = app.s(46) + grid_h + app.s(116);
+        let card_h = app.s(46) + grid_h + app.s(42) + app.s(116);
         debug_assert_eq!(card_h, skin_h);
         let cy = app.card(dc, x, cy0, col_w, card_h, "皮肤中心（状态栏资源）", "");
         let inner = col_w - app.s(36);
         let cell_w = inner / cols as i32;
         let thumb = app.s(26);
         let t = app.theme.clone();
-        for (i, a) in app.skins.iter().enumerate() {
-            let cx = x + app.s(18) + (i % cols) as i32 * cell_w;
-            let cyy = cy + (i / cols) as i32 * cell_h;
-            let tr = RECT { left: cx + app.s(4), top: cyy + app.s(2), right: cx + app.s(4) + thumb, bottom: cyy + app.s(2) + thumb };
-            // 缩略图底色用卡片底色，图标按正文色 tint
-            unsafe {
-                draw_skin_thumb(dc, tr, a, t.text, t.card);
-            }
-            let lr = RECT { left: tr.right + app.s(4), top: cyy, right: cx + cell_w - app.s(2), bottom: cyy + app.s(20) };
-            unsafe {
-                text(dc, lr, &a.label, app.font_small, t.text, DT_LEFT, true);
-            }
-            let sr = RECT { left: tr.right + app.s(4), top: cyy + app.s(18), right: cx + cell_w - app.s(2), bottom: cyy + app.s(38) };
-            let color = if a.source == "皮肤" { t.accent } else { t.text3 };
-            unsafe {
-                text(dc, sr, &a.source, app.font_small, color, DT_LEFT, true);
+        // 先画内容（只读 skins），再登记命中区（需要 &mut app）
+        let mut cells: Vec<RECT> = Vec::with_capacity(app.skins.len());
+        {
+            for (i, a) in app.skins.iter().enumerate() {
+                let cx = x + app.s(18) + (i % cols) as i32 * cell_w;
+                let cyy = cy + (i / cols) as i32 * cell_h;
+                // 整格可点：点一下就把这份资源导到皮肤目录并定位文件
+                let cell = RECT {
+                    left: cx,
+                    top: cyy - app.s(4),
+                    right: cx + cell_w - app.s(6),
+                    bottom: cyy + cell_h - app.s(8),
+                };
+                cells.push(cell);
+                let tr = RECT {
+                    left: cx + app.s(6),
+                    top: cyy + app.s(2),
+                    right: cx + app.s(6) + thumb,
+                    bottom: cyy + app.s(2) + thumb,
+                };
+                // 缩略图底色用卡片底色，图标按正文色 tint
+                unsafe {
+                    draw_skin_thumb(dc, tr, a, t.text, t.card);
+                }
+                let lr = RECT { left: tr.right + app.s(8), top: cyy + app.s(2), right: cx + cell_w - app.s(10), bottom: cyy + app.s(22) };
+                unsafe {
+                    text(dc, lr, &a.label, app.font_small, t.text, DT_LEFT, true);
+                }
+                let sr = RECT { left: tr.right + app.s(8), top: cyy + app.s(22), right: cx + cell_w - app.s(10), bottom: cyy + app.s(40) };
+                let color = if a.source == "皮肤" { t.accent } else { t.text3 };
+                unsafe {
+                    text(dc, sr, &a.source, app.font_small, color, DT_LEFT, true);
+                }
             }
         }
-        let by = cy + app.s(46) + grid_h + app.s(8);
+        for (i, c) in cells.iter().enumerate() {
+            if app.hover == Some(Id::SkinItem(i)) {
+                unsafe {
+                    if let Some(g) = Gfx::new(dc) {
+                        g.fill_round(*c, 8, t.hover);
+                    }
+                }
+            }
+            app.push_hit(Id::SkinItem(i), *c);
+        }
+        // 说明行：这堆东西是干什么的 + 怎么改
+        let hr = RECT { left: x + app.s(18), top: cy + app.s(40) + grid_h, right: x + col_w - app.s(18), bottom: cy + app.s(40) + grid_h + app.s(34) };
+        unsafe {
+            text(dc, hr, "每项 = 状态栏的一个位图。点一下会导出成文件并用资源管理器定位，改完点「重载配置」即时生效。", app.font_small, t.text3, DT_LEFT, true);
+        }
+        let by = cy + app.s(46) + grid_h + app.s(42);
         let bw2 = (inner - app.s(8)) / 2;
         for (i, (id, label)) in [
             (Id::SkinPackExport, "导出资源包"),
