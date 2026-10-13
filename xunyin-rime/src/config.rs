@@ -247,6 +247,16 @@ pub struct AppearanceConfig {
     pub font_family: String,
     /// 是否显示候选注释（拼音/来源等）。
     pub show_comment: bool,
+    /// 候选窗左右内边距（逻辑像素，按显示器 DPI 缩放）。
+    pub cand_pad_x: u32,
+    /// 候选窗上下内边距（逻辑像素）。
+    pub cand_pad_y: u32,
+    /// 候选窗最小宽度（逻辑像素）。
+    pub cand_min_width: u32,
+    /// 横排候选窗各项之间的间距（逻辑像素）。
+    pub cand_gap: u32,
+    /// 状态栏距工作区右下角的边距（逻辑像素）。
+    pub bar_margin: u32,
 }
 
 impl Default for AppearanceConfig {
@@ -269,6 +279,11 @@ impl Default for AppearanceConfig {
             follow_mode: "caret".into(),
             font_family: "Microsoft YaHei UI".into(),
             show_comment: true,
+            cand_pad_x: 10,
+            cand_pad_y: 3,
+            cand_min_width: 110,
+            cand_gap: 18,
+            bar_margin: 8,
         }
     }
 }

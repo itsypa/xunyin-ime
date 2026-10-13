@@ -550,7 +550,9 @@ impl StatusBar {
         // 默认：工作区右下角，紧贴任务栏上方与右侧边缘
         let r = work_area();
         let (ww, wh) = self.win_size();
-        let p = (r.right - ww - 2, r.bottom - wh - 2);
+        // 边距走配置（appearance.bar_margin），改 config.json 重载即生效，不用重编 DLL
+        let m = (xunyin_rime::config::load_config().appearance.bar_margin as i32).max(0);
+        let p = (r.right - ww - m, r.bottom - wh - m);
         mem_pos_set(p);
         p
     }

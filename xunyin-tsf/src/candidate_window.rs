@@ -26,12 +26,12 @@ use windows::Win32::UI::WindowsAndMessaging::*;
 use windows_core::{implement, w, Ref, Result, PCWSTR};
 
 const WND_CLASS: &str = "Xunyin.CandidateWindow";
-const PAD_X: i32 = 10;
-const PAD_TOP: i32 = 3;
-const PAD_BOTTOM: i32 = 3;
-const MIN_WIDTH: i32 = 110;
-/// 横排时候选项之间的间距（逻辑像素）。
-const CELL_GAP: i32 = 18;
+// 以下四项是**默认值**，实际取 config.json 的 appearance.cand_*（改配置不用重编 DLL，
+// 存盘后写一次重载请求即可生效）。数值都是逻辑像素，按显示器 DPI 缩放。
+const PAD_X_DEFAULT: i32 = 10;
+const PAD_Y_DEFAULT: i32 = 3;
+const MIN_WIDTH_DEFAULT: i32 = 110;
+const CELL_GAP_DEFAULT: i32 = 18;
 /// 组合期间光标追踪定时器（毫秒）。
 const CARET_TIMER_ID: usize = 1;
 const CARET_TIMER_MS: u32 = 80;
@@ -262,6 +262,11 @@ pub struct CandidateWindow {
     hwnd: HWND,
     font: HFONT,
     row_h: i32,
+    /// 内边距/最小宽度/项间距（每次 update 从配置刷新，所以改配置即时生效）
+    pad_x: i32,
+    pad_y: i32,
+    min_w: i32,
+    gap: i32,
     items: RefCell<Vec<String>>,
     comments: RefCell<Vec<String>>,
     selected: Cell<usize>,
@@ -306,6 +311,10 @@ impl CandidateWindow {
             hwnd,
             font,
             row_h,
+            pad_x: PAD_X_DEFAULT * dpi / 96,
+            pad_y: PAD_Y_DEFAULT * dpi / 96,
+            min_w: MIN_WIDTH_DEFAULT * dpi / 96,
+            gap: CELL_GAP_DEFAULT * dpi / 96,
             items: RefCell::new(Vec::new()),
             comments: RefCell::new(Vec::new()),
             selected: Cell::new(0),
@@ -335,6 +344,13 @@ impl CandidateWindow {
         let (font, row_h) = create_font(font_pt, dpi, &cfg().appearance.font_family);
         self.font = font;
         self.row_h = row_h;
+        // 内边距等也从配置读，改 config.json 后重载即生效（不用重编 DLL）
+        let a = &cfg().appearance;
+        let sc = |v: u32| (v.max(1) as i32 * dpi / 96).max(1);
+        self.pad_x = sc(a.cand_pad_x);
+        self.pad_y = sc(a.cand_pad_y);
+        self.min_w = sc(a.cand_min_width);
+        self.gap = sc(a.cand_gap);
         self.font_pt.set(font_pt);
         self.dpi.set(dpi);
     }
@@ -567,8 +583,8 @@ impl CandidateWindow {
         let c = cfg().appearance;
         let horizontal = c.layout == "horizontal";
         let show_comment = c.show_comment;
-        let mut max_w = MIN_WIDTH;
-        let mut total_w = PAD_X * 2;
+        let mut max_w = self.min_w;
+        let mut total_w = self.pad_x * 2;
         let count = items.len().max(1);
         unsafe {
             let dc = GetDC(Some(self.hwnd));
@@ -585,7 +601,7 @@ impl CandidateWindow {
                     let label16: Vec<u16> =
                         label.encode_utf16().chain(std::iter::once(0)).collect();
                     GetTextExtentPoint32W(dc, &label16, &mut sz);
-                    let mut total = PAD_X * 2 + sz.cx + 24;
+                    let mut total = self.pad_x * 2 + sz.cx + 24;
                     if !comment.is_empty() {
                         let comment16: Vec<u16> =
                             comment.encode_utf16().chain(std::iter::once(0)).collect();
@@ -596,16 +612,16 @@ impl CandidateWindow {
                         max_w = total;
                     }
                     // 横排：整条宽度 = 各项内容宽度 + 项间距
-                    total_w += total - PAD_X * 2 + CELL_GAP;
+                    total_w += total - self.pad_x * 2 + self.gap;
                 }
                 ReleaseDC(Some(self.hwnd), dc);
             }
         }
         if horizontal {
-            total_w -= CELL_GAP; // 最后一个项后面不留间距
-            return (total_w.max(MIN_WIDTH), PAD_TOP + self.row_h + PAD_BOTTOM);
+            total_w -= self.gap; // 最后一个项后面不留间距
+            return (total_w.max(self.min_w), self.pad_y + self.row_h + self.pad_y);
         }
-        let h = PAD_TOP + (count as i32) * self.row_h + PAD_BOTTOM;
+        let h = self.pad_y + (count as i32) * self.row_h + self.pad_y;
         (max_w, h)
     }
 
@@ -652,7 +668,7 @@ impl CandidateWindow {
             // 布局：竖排每项占一整行；横排按内容宽度排成一行（x 依次累加，cell_w = 内容宽）
             let mut layout: Vec<(i32, i32, i32)> = Vec::with_capacity(count); // (x, y, cell_w)
             if c.layout == "horizontal" {
-                let mut x = PAD_X;
+                let mut x = self.pad_x;
                 for i in 0..count {
                     let label = if c.show_index {
                         format!("{}.", i + 1)
@@ -667,15 +683,15 @@ impl CandidateWindow {
                         0
                     };
                     let cell_w = lw + 6 + iw + if cw > 0 { 10 + cw } else { 0 };
-                    layout.push((x, PAD_TOP, cell_w));
-                    x += cell_w + CELL_GAP;
+                    layout.push((x, self.pad_y, cell_w));
+                    x += cell_w + self.gap;
                 }
             } else {
                 for i in 0..count {
                     layout.push((
-                        PAD_X,
-                        PAD_TOP + (i as i32) * self.row_h,
-                        rc.right - 2 * PAD_X,
+                        self.pad_x,
+                        self.pad_y + (i as i32) * self.row_h,
+                        rc.right - 2 * self.pad_x,
                     ));
                 }
             }
@@ -759,7 +775,7 @@ impl CandidateWindow {
                 let mut sz = SIZE::default();
                 GetTextExtentPoint32W(mem, &text16, &mut sz);
                 SetTextColor(mem, COLORREF(parse_color(&c.comment, 0x00999999)));
-                TextOutW(mem, rc.right - PAD_X - sz.cx, rc.bottom - PAD_BOTTOM - sz.cy, &text16);
+                TextOutW(mem, rc.right - self.pad_x - sz.cx, rc.bottom - self.pad_y - sz.cy, &text16);
             }
             BitBlt(
                 hdc,
@@ -990,8 +1006,8 @@ extern "system" fn wnd_proc(
             }
             WM_LBUTTONUP => {
                 let y = ((lparam.0 >> 16) & 0xFFFF) as i32;
-                if y >= PAD_TOP {
-                    let row = (y - PAD_TOP) / this.row_h;
+                if y >= this.pad_y {
+                    let row = (y - this.pad_y) / this.row_h;
                     this.on_click(row as usize);
                 }
                 LRESULT(0)
