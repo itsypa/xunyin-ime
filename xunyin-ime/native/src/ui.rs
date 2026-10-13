@@ -178,6 +178,7 @@ enum Id {
     BackupRow(usize),
     OpenData,
     OpenLogs,
+    OpenSkins,
     ClearLogs,
     ReloadConfig,
     Redeploy,
@@ -1340,6 +1341,11 @@ impl App {
                     self.toast(&format!("打开失败：{e}"));
                 }
             }
+            Id::OpenSkins => {
+                if let Err(e) = self.core.open_skin_dir() {
+                    self.toast(&format!("打开失败：{e}"));
+                }
+            }
             Id::ClearLogs => {
                 let freed = self.core.clear_logs();
                 self.toast(&format!("已清空日志（{} KB）", freed / 1024));
@@ -2131,6 +2137,7 @@ fn draw_about(app: &mut App, dc: HDC, x: i32, y0: i32, w: i32) -> i32 {
     for (i, (id, label)) in [
         (Id::OpenData, "打开数据目录"),
         (Id::OpenLogs, "打开日志目录"),
+        (Id::OpenSkins, "打开皮肤目录"),
         (Id::ClearLogs, "清空日志"),
         (Id::ResetAll, "恢复默认设置"),
         (Id::ReloadConfig, "重载配置"),

@@ -93,6 +93,7 @@ const CMD_OPEN_LOGS: usize = 1174;
 const CMD_CLEAR_LOGS: usize = 1175;
 const CMD_UPDATE: usize = 1176;
 const CMD_RELOAD: usize = 1177;
+const CMD_SKIN_DIR: usize = 1178;
 
 const THEME_PRESETS: [(&str, [&str; 8]); 3] = [
     (
@@ -151,46 +152,175 @@ fn mem_pos_set(p: (i32, i32)) {
     *mem_pos().lock().unwrap_or_else(|e| e.into_inner()) = Some(p);
 }
 
-// ---------------- 预渲染资源 ----------------
+// ---------------- 预渲染资源（磁盘可热替换）--------------------------------
+//
+// 资源优先从磁盘上的「皮肤」目录读，读不到或格式不合法才回退内嵌副本。
+// 这是"改图标不用重启应用"的关键：内嵌资源换不掉（DLL 映像被进程锁住），
+// 磁盘文件却可以随时改，配合「重载配置」（reload.request）让各宿主进程
+// 清掉资源缓存、下一帧重新读盘即可生效。
+//
+// 查找顺序见 skin_dirs()：XUNYIN_SKIN_DIR → %APPDATA%\com.xunyin.ime\skins →
+// DLL 同目录的 skins\（随包皮肤）→ 内嵌。
 
-struct Assets {
-    bar_bg: &'static [u8],
-    cell_hover: &'static [u8],
-    cell_active: &'static [u8],
-    icon_gear: &'static [u8],
-    glyph_quan: &'static [u8],
-    glyph_ban: &'static [u8],
-    glyph_punct_cn: &'static [u8],
-    glyph_punct_en: &'static [u8],
-    glyph_zhong: &'static [u8],
-    glyph_ying: &'static [u8],
-    glyph_symbol: &'static [u8],
+/// 资源文件格式：u32 w + u32 h + BGRA 像素（自顶向下），与生成脚本一致。
+/// 尺寸必须与代码里的几何常量一致——blit 按常量步长取像素，尺寸不对会读越界。
+fn valid_asset(data: &[u8], want: (usize, usize)) -> bool {
+    if data.len() < 8 {
+        return false;
+    }
+    let w = u32::from_le_bytes([data[0], data[1], data[2], data[3]]) as usize;
+    let h = u32::from_le_bytes([data[4], data[5], data[6], data[7]]) as usize;
+    w == want.0 && h == want.1 && data.len() == 8 + w * h * 4
 }
 
-fn assets() -> &'static Assets {
-    static A: OnceLock<Assets> = OnceLock::new();
-    A.get_or_init(|| Assets {
-        bar_bg: include_bytes!("assets/bar_bg.bin"),
-        cell_hover: include_bytes!("assets/cell_hover.bin"),
-        cell_active: include_bytes!("assets/cell_active.bin"),
-        icon_gear: include_bytes!("assets/icon_gear.bin"),
-        glyph_quan: include_bytes!("assets/glyph_quan.bin"),
-        glyph_ban: include_bytes!("assets/glyph_ban.bin"),
-        glyph_punct_cn: include_bytes!("assets/glyph_punct_cn.bin"),
-        glyph_punct_en: include_bytes!("assets/glyph_punct_en.bin"),
-        glyph_zhong: include_bytes!("assets/glyph_zhong.bin"),
-        glyph_ying: include_bytes!("assets/glyph_ying.bin"),
-        glyph_symbol: include_bytes!("assets/glyph_symbol.bin"),
-    })
+/// 用户皮肤目录（工具导出、菜单打开都用它）。
+pub fn skins_dir() -> std::path::PathBuf {
+    std::env::var_os("APPDATA")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| std::path::PathBuf::from("."))
+        .join("com.xunyin.ime")
+        .join("skins")
+}
+
+/// 皮肤搜索目录，磁盘优先、按顺序命中即用。
+fn skin_dirs() -> Vec<std::path::PathBuf> {
+    let mut v = Vec::new();
+    if let Some(d) = std::env::var_os("XUNYIN_SKIN_DIR") {
+        v.push(std::path::PathBuf::from(d));
+    }
+    v.push(skins_dir());
+    if let Some(dll) = module_dir() {
+        v.push(dll.join("skins"));
+    }
+    v
+}
+
+/// 取一份资源：磁盘优先，找不到/不合法则用内嵌副本。
+/// 返回 (字节, 来源文件)，来源为 None 表示用的内嵌。
+fn asset_bytes(
+    name: &str,
+    embedded: &'static [u8],
+    want: (usize, usize),
+    dirs: &[std::path::PathBuf],
+) -> (Vec<u8>, Option<std::path::PathBuf>) {
+    for d in dirs {
+        let p = d.join(name);
+        let Ok(data) = std::fs::read(&p) else {
+            continue;
+        };
+        if valid_asset(&data, want) {
+            return (data, Some(p));
+        }
+        crate::tsf_log!(
+            "status bar skin: 忽略 {}（要求 {}x{} 的 BGRA 资源，实际 {} 字节）",
+            p.display(),
+            want.0,
+            want.1,
+            data.len()
+        );
+    }
+    (embedded.to_vec(), None)
+}
+
+struct Assets {
+    bar_bg: Vec<u8>,
+    cell_hover: Vec<u8>,
+    cell_active: Vec<u8>,
+    icon_gear: Vec<u8>,
+    glyph_quan: Vec<u8>,
+    glyph_ban: Vec<u8>,
+    glyph_punct_cn: Vec<u8>,
+    glyph_punct_en: Vec<u8>,
+    glyph_zhong: Vec<u8>,
+    glyph_ying: Vec<u8>,
+    glyph_symbol: Vec<u8>,
+}
+
+impl Assets {
+    fn load() -> Assets {
+        let dirs = skin_dirs();
+        let mut from_disk: Vec<String> = Vec::new();
+        // 每个资源：磁盘优先 → 内嵌兜底，并记录来源用于日志
+        macro_rules! asset {
+            ($name:literal, $want:expr) => {{
+                let (data, from) = asset_bytes(
+                    $name,
+                    include_bytes!(concat!("assets/", $name)),
+                    $want,
+                    &dirs,
+                );
+                if let Some(p) = from {
+                    from_disk.push(format!("{}={}", $name, p.display()));
+                }
+                data
+            }};
+        }
+        let tile = (TILE, TILE);
+        let bar_bg = asset!("bar_bg.bin", (ASSET_W, ASSET_H));
+        let cell_hover = asset!("cell_hover.bin", tile);
+        let cell_active = asset!("cell_active.bin", tile);
+        let icon_gear = asset!("icon_gear.bin", tile);
+        let glyph_quan = asset!("glyph_quan.bin", tile);
+        let glyph_ban = asset!("glyph_ban.bin", tile);
+        let glyph_punct_cn = asset!("glyph_punct_cn.bin", tile);
+        let glyph_punct_en = asset!("glyph_punct_en.bin", tile);
+        let glyph_zhong = asset!("glyph_zhong.bin", tile);
+        let glyph_ying = asset!("glyph_ying.bin", tile);
+        let glyph_symbol = asset!("glyph_symbol.bin", tile);
+        if from_disk.is_empty() {
+            crate::tsf_log!("status bar skin: 使用内嵌资源（皮肤目录里没有覆盖文件）");
+        } else {
+            crate::tsf_log!("status bar skin: 使用磁盘资源 {}", from_disk.join(" "));
+        }
+        Assets {
+            bar_bg,
+            cell_hover,
+            cell_active,
+            icon_gear,
+            glyph_quan,
+            glyph_ban,
+            glyph_punct_cn,
+            glyph_punct_en,
+            glyph_zhong,
+            glyph_ying,
+            glyph_symbol,
+        }
+    }
+}
+
+/// 资源缓存：命中即用；[`invalidate_assets`] 清掉后下一帧重新读盘。
+static ASSETS: Mutex<Option<Arc<Assets>>> = Mutex::new(None);
+
+fn assets() -> Arc<Assets> {
+    let mut g = ASSETS.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(a) = g.as_ref() {
+        return a.clone();
+    }
+    let a = Arc::new(Assets::load());
+    *g = Some(a.clone());
+    a
+}
+
+/// 丢掉资源缓存：下一次绘制会重新从皮肤目录读盘。
+/// 「重载配置 / 重新部署」时会调用，于是换图标、换皮肤对已打开的应用立即生效。
+pub fn invalidate_assets() {
+    let mut g = ASSETS.lock().unwrap_or_else(|e| e.into_inner());
+    if g.take().is_some() {
+        crate::tsf_log!("status bar skin: 资源缓存已失效，下一帧重新读盘");
+    }
 }
 
 /// 解码 BGRA 资源（文件头：u32 w + u32 h + BGRA 像素，自顶向下）。
 fn decode(data: &[u8]) -> Vec<u8> {
-    data[8..].to_vec()
+    data.get(8..).unwrap_or(&[]).to_vec()
 }
 
 /// 把 tile（TILE×TILE BGRA）以 source-over 混合到整帧 dst（dst_w 宽）的 (ox, oy)。
 fn blit_over(dst: &mut [u8], dst_w: usize, tile: &[u8], ox: usize, oy: usize) {
+    // tile 来自磁盘皮肤时长度不可信，先兜一道：宁可少画一格也不能读越界
+    if tile.len() < TILE * TILE * 4 || dst.len() < ASSET_H * dst_w * 4 {
+        return;
+    }
     for ty in 0..TILE {
         let dy = oy + ty;
         if dy >= ASSET_H {
@@ -233,6 +363,9 @@ fn blit_over(dst: &mut [u8], dst_w: usize, tile: &[u8], ox: usize, oy: usize) {
 /// 蒙版只用其 alpha（预渲染为白色），颜色完全由 tint 决定——与 WindInput 的
 /// "SVG 仅作 alpha 蒙版、由工具栏按主题 tint" 同一模型。
 fn blit_tinted(dst: &mut [u8], dst_w: usize, mask: &[u8], ox: usize, oy: usize, tint: [u8; 3]) {
+    if mask.len() < TILE * TILE * 4 || dst.len() < ASSET_H * dst_w * 4 {
+        return;
+    }
     for ty in 0..TILE {
         let dy = oy + ty;
         if dy >= ASSET_H {
@@ -272,31 +405,36 @@ fn blit_tinted(dst: &mut [u8], dst_w: usize, mask: &[u8], ox: usize, oy: usize, 
 /// 合成一帧：整条背景 + 各格高亮/悬停 + 各格内容（图标/文字按状态 tint）。
 fn composite_frame(hover: i32, ascii: bool, full: bool, punct: bool, symbol_on: bool) -> Vec<u8> {
     let a = assets();
-    let mut f = decode(a.bar_bg);
+    let mut f = decode(&a.bar_bg);
+    // 皮肤文件可能被人手改坏（长度不足会在 blit 里读越界）——宁可只画底色也别崩宿主进程
+    if f.len() < ASSET_W * ASSET_H * 4 {
+        crate::tsf_log!("status bar skin: bar_bg 尺寸不足，回退空白底");
+        f.resize(ASSET_W * ASSET_H * 4, 0);
+    }
     for i in 0..CELL_COUNT {
         let ox = (cell_x(i) as usize) * 2;
         // 激活格：中文模式、符号面板打开，都是蓝底
         let active = (i == CELL_MODE && !ascii) || (i == CELL_SYMBOL && symbol_on);
         if active {
-            blit_over(&mut f, ASSET_W, &decode(a.cell_active), ox, 0);
+            blit_over(&mut f, ASSET_W, &decode(&a.cell_active), ox, 0);
         } else if hover == i {
-            blit_over(&mut f, ASSET_W, &decode(a.cell_hover), ox, 0);
+            blit_over(&mut f, ASSET_W, &decode(&a.cell_hover), ox, 0);
         }
         let (mask, tint) = match i {
             CELL_MODE => (
-                if ascii { a.glyph_ying } else { a.glyph_zhong },
+                if ascii { a.glyph_ying.as_slice() } else { a.glyph_zhong.as_slice() },
                 if active { HL_FG } else { FG },
             ),
             CELL_PUNCT => (
-                if punct { a.glyph_punct_en } else { a.glyph_punct_cn },
+                if punct { a.glyph_punct_en.as_slice() } else { a.glyph_punct_cn.as_slice() },
                 FG,
             ),
             CELL_WIDTH => (
-                if full { a.glyph_quan } else { a.glyph_ban },
+                if full { a.glyph_quan.as_slice() } else { a.glyph_ban.as_slice() },
                 FG,
             ),
-            CELL_SYMBOL => (a.glyph_symbol, if active { HL_FG } else { FG }),
-            _ => (a.icon_gear, SETTINGS_FG),
+            CELL_SYMBOL => (a.glyph_symbol.as_slice(), if active { HL_FG } else { FG }),
+            _ => (a.icon_gear.as_slice(), SETTINGS_FG),
         };
         blit_tinted(&mut f, ASSET_W, mask, ox, 0, tint);
     }
@@ -703,6 +841,7 @@ impl StatusBar {
             add(menu, MF_STRING, CMD_REDEPLOY, "重新部署（重建索引）");
             add(menu, MF_STRING, CMD_OPEN_DATA, "打开数据目录");
             add(menu, MF_STRING, CMD_OPEN_LOGS, "打开日志目录");
+            add(menu, MF_STRING, CMD_SKIN_DIR, "打开皮肤目录");
             add(menu, MF_STRING, CMD_CLEAR_LOGS, "清空日志");
             AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null()).ok();
             add(menu, MF_STRING, CMD_UPDATE, "查看最新版本");
@@ -741,6 +880,12 @@ impl StatusBar {
                     engine::poll_reload();
                 }
                 CMD_OPEN_DATA => open_dir(&xunyin_rime::config::user_data_dir()),
+                CMD_SKIN_DIR => {
+                    // 皮肤目录：磁盘资源优先于内嵌资源，改完点「重载配置」即可生效
+                    let d = skins_dir();
+                    let _ = std::fs::create_dir_all(&d);
+                    open_dir(&d);
+                }
                 CMD_OPEN_LOGS => open_dir(&xunyin_rime::config::user_data_dir().join("logs")),
                 CMD_CLEAR_LOGS => clear_logs(),
                 CMD_UPDATE => open_url("https://github.com/itsypa/xunyin-ime/releases/latest"),
@@ -1400,4 +1545,81 @@ pub fn refresh_status_bar(shared: &Arc<Mutex<SharedState>>) {
         Err(_) => return,
     };
     show_status_bar(shared.clone(), ascii, full, punct);
+}
+
+#[cfg(test)]
+mod asset_tests {
+    use super::*;
+
+    /// 写一份合法的 BGRA 资源（w×h，alpha 全为 a）。
+    fn write_asset(path: &std::path::Path, w: usize, h: usize, a: u8) {
+        let mut d = Vec::with_capacity(8 + w * h * 4);
+        d.extend_from_slice(&(w as u32).to_le_bytes());
+        d.extend_from_slice(&(h as u32).to_le_bytes());
+        for _ in 0..w * h {
+            d.extend_from_slice(&[255, 255, 255, a]);
+        }
+        std::fs::write(path, d).unwrap();
+    }
+
+    fn tmp_dir(tag: &str) -> std::path::PathBuf {
+        let d = std::env::temp_dir().join(format!("xunyin-skin-test-{tag}"));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    /// 皮肤目录里的合法文件优先于内嵌副本。
+    #[test]
+    fn skin_override_wins_over_embedded() {
+        let dir = tmp_dir("override");
+        let embedded: &'static [u8] = include_bytes!("assets/glyph_ban.bin");
+        // 没有覆盖文件 → 用内嵌
+        let (data, from) = asset_bytes("glyph_ban.bin", embedded, (TILE, TILE), &[dir.clone()]);
+        assert_eq!(data, embedded.to_vec());
+        assert!(from.is_none(), "没有皮肤文件时不应报来源");
+        // 放了合法覆盖 → 磁盘优先
+        write_asset(&dir.join("glyph_ban.bin"), TILE, TILE, 200);
+        let (data, from) = asset_bytes("glyph_ban.bin", embedded, (TILE, TILE), &[dir.clone()]);
+        assert_eq!(data.len(), 8 + TILE * TILE * 4);
+        assert!(from.is_some(), "有皮肤文件时应该用磁盘那份");
+        assert_eq!(data[8 + 3], 200, "用的应该是皮肤文件里的 alpha");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 皮肤文件被改坏（尺寸不符）时回退内嵌，并且不能 panic —— blit 按常量步长
+    /// 取像素，长度不足会读越界并把宿主进程带崩。
+    #[test]
+    fn corrupt_skin_falls_back_to_embedded() {
+        let dir = tmp_dir("corrupt");
+        let embedded: &'static [u8] = include_bytes!("assets/glyph_quan.bin");
+        std::fs::write(dir.join("glyph_quan.bin"), vec![7u8; 40]).unwrap();
+        let (data, from) = asset_bytes("glyph_quan.bin", embedded, (TILE, TILE), &[dir.clone()]);
+        assert_eq!(data, embedded.to_vec());
+        assert!(from.is_none());
+        // 尺寸对但声明值不对（比如把 w/h 写成别的尺寸）也要挡掉
+        write_asset(&dir.join("glyph_quan.bin"), TILE, TILE - 1, 255);
+        let (data, _) = asset_bytes("glyph_quan.bin", embedded, (TILE, TILE), &[dir.clone()]);
+        assert_eq!(data, embedded.to_vec());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 缓存失效后能拿到新内容：这正是「换图标 + 重载配置」生效的机制。
+    #[test]
+    fn invalidate_reloads_from_disk() {
+        let dir = tmp_dir("invalidate");
+        let src = dir.join("bar_bg.bin");
+        write_asset(&src, ASSET_W, ASSET_H, 128);
+        // 直接走 asset_bytes 验证「同一路径内容变了会读到新内容」
+        let embedded: &'static [u8] = include_bytes!("assets/bar_bg.bin");
+        let (first, _) = asset_bytes("bar_bg.bin", embedded, (ASSET_W, ASSET_H), &[dir.clone()]);
+        assert_eq!(first[8 + 3], 128);
+        write_asset(&src, ASSET_W, ASSET_H, 64);
+        let (second, _) = asset_bytes("bar_bg.bin", embedded, (ASSET_W, ASSET_H), &[dir.clone()]);
+        assert_eq!(second[8 + 3], 64, "重载后应该读到新文件内容");
+        // invalidate_assets 只影响进程内缓存，重复调用安全
+        invalidate_assets();
+        invalidate_assets();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

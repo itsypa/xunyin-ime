@@ -204,6 +204,8 @@ pub fn reload(with_deploy: bool) -> bool {
     drop(guard);
     // 重载后组合态已丢失：收起可能还停留在屏幕上的候选窗。
     crate::candidate_window::hide_candidates();
+    // 皮肤资源（状态栏图标等）从磁盘读，重载时清缓存 → 下一帧就用上新文件
+    crate::status_bar::invalidate_assets();
     crate::status_bar::notify_repaint();
     crate::tsf_log!("engine reload: 完成");
     true

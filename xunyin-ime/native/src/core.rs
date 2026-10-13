@@ -348,6 +348,14 @@ impl Core {
         open_path(&dir)
     }
 
+    /// 打开皮肤目录：里面的 `*.bin` 覆盖内置界面资源（状态栏图标等），
+    /// 改完点「重载配置」即可生效，不用重启应用。
+    pub fn open_skin_dir(&self) -> Result<(), String> {
+        let dir = user_data_dir().join("skins");
+        std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+        open_path(&dir)
+    }
+
     pub fn clear_logs(&self) -> u64 {
         let mut freed = 0u64;
         let mut targets: Vec<PathBuf> = Vec::new();
