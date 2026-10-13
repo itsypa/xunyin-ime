@@ -11,7 +11,7 @@
 
 #![allow(clippy::too_many_arguments)]
 
-use crate::core::{Core, DictStats};
+use crate::core::{CellDict, Core, DictStats, SkinAsset};
 use xunyin_rime::config::{AppearanceConfig, XunyinConfig};
 use std::mem::size_of;
 use windows::core::PCWSTR;
@@ -194,6 +194,12 @@ enum Id {
     SegLayout,
     SegFollow,
     FontCombo,
+    SkinPackExport,
+    SkinPackImport,
+    CellDict(usize),
+    CellApply,
+    UpdateInstall,
+    DictUpdateCheck,
     DeleteKeyCombo,
     SwitchComment,
     SwitchAssoc,
@@ -235,6 +241,11 @@ struct App {
     schemas: Vec<(String, String)>,
     stats: DictStats,
     backups: Vec<std::path::PathBuf>,
+    /// 皮肤中心的资源列表（皮肤目录优先，否则内置）
+    skins: Vec<SkinAsset>,
+    /// 细胞词库勾选状态（未点「应用」前只是本地草稿）
+    cells: Vec<CellDict>,
+    cell_dirty: bool,
     page: usize,
     scroll: i32,
     hits: Vec<Hit>,
@@ -419,6 +430,8 @@ impl App {
     fn create(hwnd: HWND) -> Box<App> {
         let core = Core::new();
         let cfg = core.load_config();
+        let skins = core.skin_assets();
+        let cells = core.cell_dicts();
         let dark = system_prefers_dark();
         let theme = theme_from(&cfg, dark);
         let mut app = Box::new(App {
@@ -439,6 +452,9 @@ impl App {
             punct_out: String::new(),
             punct_sel: None,
             backup_sel: 0,
+            skins,
+            cells,
+            cell_dirty: false,
             combo_open: None,
             dpi: 96,
             theme,
@@ -1432,6 +1448,50 @@ impl App {
                 Ok(msg) => self.toast(&msg),
                 Err(e) => self.toast(&format!("恢复失败：{e}")),
             },
+            Id::SkinPackExport => match self.core.export_skin_pack() {
+                Ok(p) => self.toast(&format!("皮肤包已导出：{}", p.display())),
+                Err(e) => self.toast(&format!("导出失败：{e}")),
+            },
+            Id::SkinPackImport => {
+                if let Some(path) = pick_file(self.hwnd, &[("皮肤包", "*.zip"), ("所有文件", "*.*")], "zip") {
+                    match self.core.import_skin_pack(&path) {
+                        Ok(msg) => {
+                            self.skins = self.core.skin_assets();
+                            self.toast(&msg);
+                        }
+                        Err(e) => self.toast(&format!("导入失败：{e}")),
+                    }
+                }
+            }
+            Id::CellDict(i) => {
+                if let Some(c) = self.cells.get_mut(i) {
+                    c.enabled = !c.enabled;
+                    self.cell_dirty = true;
+                }
+            }
+            Id::CellApply => {
+                let enabled: Vec<String> = self
+                    .cells
+                    .iter()
+                    .filter(|c| c.enabled)
+                    .map(|c| c.id.clone())
+                    .collect();
+                match self.core.apply_cell_dicts(&enabled) {
+                    Ok(msg) => {
+                        self.cell_dirty = false;
+                        self.toast(&msg);
+                    }
+                    Err(e) => self.toast(&format!("应用失败：{e}")),
+                }
+            }
+            Id::UpdateInstall => match self.core.download_and_install() {
+                Ok(msg) => self.toast(&msg),
+                Err(e) => self.toast(&format!("更新失败：{e}")),
+            },
+            Id::DictUpdateCheck => match self.core.check_dict_update() {
+                Ok(msg) => self.toast(&msg),
+                Err(e) => self.toast(&format!("检查失败：{e}")),
+            },
             Id::BackupNow => match self.core.backup_user_dict() {
                 Ok(p) => {
                     self.backups = self.core.list_backups();
@@ -1499,6 +1559,88 @@ impl App {
             let _ = InvalidateRect(Some(self.hwnd), None, false);
         }
     }
+}
+
+/// 下拉项来源。
+/// 皮肤资源缩略图：把 BGRA 资源按方框平均缩放并**预先与底色混合**（GDI 的
+/// StretchDIBits 不做 per-pixel alpha），图标类按主题色 tint。
+unsafe fn draw_skin_thumb(dc: HDC, r: RECT, a: &SkinAsset, tint: u32, bg: u32) {
+    let (sw, sh) = (a.w, a.h);
+    let (dw, dh) = ((r.right - r.left).max(1) as usize, (r.bottom - r.top).max(1) as usize);
+    if sw == 0 || sh == 0 || a.bytes.len() < 8 + sw * sh * 4 {
+        return;
+    }
+    // 底色（含主题 tint 的合成底）：图标是白色蒙版，按 tint 上色后再混到底色上
+    let (bg_b, bg_g, bg_r) = ((bg & 0xFF) as f32, ((bg >> 8) & 0xFF) as f32, ((bg >> 16) & 0xFF) as f32);
+    let is_bar = a.name == "bar_bg.bin";
+    let (t_b, t_g, t_r) = ((tint & 0xFF) as f32, ((tint >> 8) & 0xFF) as f32, ((tint >> 16) & 0xFF) as f32);
+    let src = &a.bytes[8..];
+    let mut buf = vec![0u8; dw * dh * 4];
+    for y in 0..dh {
+        for x in 0..dw {
+            // 源区间（方框平均）
+            let x0 = x * sw / dw;
+            let x1 = (((x + 1) * sw).div_ceil(dw)).min(sw).max(x0 + 1);
+            let y0 = y * sh / dh;
+            let y1 = (((y + 1) * sh).div_ceil(dh)).min(sh).max(y0 + 1);
+            let mut sa = 0f32;
+            let mut sb = 0f32;
+            let mut sg = 0f32;
+            let mut sr = 0f32;
+            let mut n = 0f32;
+            for sy in y0..y1 {
+                for sx in x0..x1 {
+                    let o = (sy * sw + sx) * 4;
+                    let alpha = src[o + 3] as f32 / 255.0;
+                    if is_bar {
+                        sb += src[o] as f32 * alpha;
+                        sg += src[o + 1] as f32 * alpha;
+                        sr += src[o + 2] as f32 * alpha;
+                    } else {
+                        // 图标只用 alpha（预渲染为白色），颜色取 tint
+                        sb += t_b * alpha;
+                        sg += t_g * alpha;
+                        sr += t_r * alpha;
+                    }
+                    sa += alpha;
+                    n += 1.0;
+                }
+            }
+            if n == 0.0 {
+                continue;
+            }
+            let a_avg = (sa / n).clamp(0.0, 1.0);
+            let (cr, cg, cb) = (sr / n, sg / n, sb / n);
+            let o = (y * dw + x) * 4;
+            let mix = |c: f32, bgc: f32| (c * a_avg + bgc * (1.0 - a_avg)).clamp(0.0, 255.0) as u8;
+            buf[o] = mix(cb, bg_b);
+            buf[o + 1] = mix(cg, bg_g);
+            buf[o + 2] = mix(cr, bg_r);
+            buf[o + 3] = 255;
+        }
+    }
+    let mut bi = BITMAPINFO::default();
+    bi.bmiHeader.biSize = size_of::<BITMAPINFOHEADER>() as u32;
+    bi.bmiHeader.biWidth = dw as i32;
+    bi.bmiHeader.biHeight = -(dh as i32); // 自顶向下
+    bi.bmiHeader.biPlanes = 1;
+    bi.bmiHeader.biBitCount = 32;
+    bi.bmiHeader.biCompression = BI_RGB.0;
+    StretchDIBits(
+        dc,
+        r.left,
+        r.top,
+        dw as i32,
+        dh as i32,
+        0,
+        0,
+        dw as i32,
+        dh as i32,
+        Some(buf.as_ptr() as *const std::ffi::c_void),
+        &bi,
+        DIB_RGB_COLORS,
+        SRCCOPY,
+    );
 }
 
 /// 下拉项来源。
@@ -2146,10 +2288,57 @@ fn draw_appearance(app: &mut App, dc: HDC, x: i32, y0: i32, w: i32) -> i32 {
     y += th + gap;
 
     let sh = app.s(92);
-    let cy = app.card(dc, x, y, col_w, sh, "皮肤导入导出", "");
-    app.button(dc, Id::SkinExport, RECT { left: x + app.s(18), top: cy, right: x + app.s(18) + app.s(120), bottom: cy + app.s(34) }, "导出皮肤", false);
-    app.button(dc, Id::SkinImport, RECT { left: x + app.s(146), top: cy, right: x + app.s(146) + app.s(120), bottom: cy + app.s(34) }, "导入皮肤", false);
+    let cy = app.card(dc, x, y, col_w, sh, "外观预设（配色）", "");
+    app.button(dc, Id::SkinExport, RECT { left: x + app.s(18), top: cy, right: x + app.s(18) + app.s(120), bottom: cy + app.s(34) }, "导出配色", false);
+    app.button(dc, Id::SkinImport, RECT { left: x + app.s(146), top: cy, right: x + app.s(146) + app.s(120), bottom: cy + app.s(34) }, "导入配色", false);
     y += sh + gap;
+
+    // 皮肤中心：状态栏资源一览（缩略图 + 来源）+ 导入导出资源包
+    {
+        let cols = 4usize;
+        let rows = app.skins.len().div_ceil(cols).max(1);
+        let cell_h = app.s(56);
+        let grid_h = rows as i32 * cell_h;
+        let card_h = app.s(46) + grid_h + app.s(52);
+        let cy = app.card(dc, x, y, col_w, card_h, "皮肤中心（状态栏资源）", "");
+        let inner = col_w - app.s(36);
+        let cell_w = inner / cols as i32;
+        let thumb = app.s(26);
+        let t = app.theme.clone();
+        for (i, a) in app.skins.iter().enumerate() {
+            let cx = x + app.s(18) + (i % cols) as i32 * cell_w;
+            let cyy = cy + (i / cols) as i32 * cell_h;
+            let tr = RECT { left: cx + app.s(4), top: cyy + app.s(2), right: cx + app.s(4) + thumb, bottom: cyy + app.s(2) + thumb };
+            // 缩略图底色用卡片底色，图标按正文色 tint
+            unsafe {
+                draw_skin_thumb(dc, tr, a, t.text, t.card);
+            }
+            let lr = RECT { left: tr.right + app.s(4), top: cyy, right: cx + cell_w - app.s(2), bottom: cyy + app.s(20) };
+            unsafe {
+                text(dc, lr, &a.label, app.font_small, t.text, DT_LEFT, true);
+            }
+            let sr = RECT { left: tr.right + app.s(4), top: cyy + app.s(18), right: cx + cell_w - app.s(2), bottom: cyy + app.s(38) };
+            let color = if a.source == "皮肤" { t.accent } else { t.text3 };
+            unsafe {
+                text(dc, sr, &a.source, app.font_small, color, DT_LEFT, true);
+            }
+        }
+        let by = cy + app.s(46) + grid_h + app.s(8);
+        let bw2 = (inner - app.s(24)) / 4;
+        for (i, (id, label)) in [
+            (Id::SkinPackExport, "导出资源包"),
+            (Id::SkinPackImport, "导入资源包"),
+            (Id::OpenSkins, "打开皮肤目录"),
+            (Id::SkinRestore, "恢复内置"),
+        ]
+        .iter()
+        .enumerate()
+        {
+            let bx = x + app.s(18) + (i as i32) * (bw2 + app.s(8));
+            app.button(dc, *id, RECT { left: bx, top: by, right: bx + bw2, bottom: by + app.s(34) }, label, false);
+        }
+        y += card_h + gap;
+    }
 
     // 候选窗：排列 / 位置 / 字体 / 注释（这几项都由输入法实时读取，热生效）
     let cw_h = app.s(46 + 46 * 2 + 52 + 46);
@@ -2289,6 +2478,40 @@ fn draw_dict(app: &mut App, dc: HDC, x: i32, y0: i32, w: i32) -> i32 {
         text(dc, hr, "恢复前自动另存当前词库", app.font_small, t.text3, DT_LEFT, true);
     }
     y = y.max(y0 + bh) + gap;
+
+    // 细胞词库（专业词库）：勾选后重建索引生效（词库大，重建要分钟级）
+    {
+        let rows = app.cells.len().div_ceil(2).max(1) as i32;
+        let ch2 = app.s(70) + rows * app.s(28) + app.s(52);
+        let cy = app.card(dc, rx, y, col_w, ch2, "细胞词库（专业词库）", "");
+        let inner = col_w - app.s(36);
+        let half = inner / 2;
+        // 先取出 (标签, 勾选) 快照，避免遍历 app.cells 的同时可变借用 app
+        let items: Vec<(String, bool)> = app.cells.iter().map(|c| (c.label.clone(), c.enabled)).collect();
+        for (i, (label, on)) in items.iter().enumerate() {
+            let bx = rx + app.s(18) + (i as i32 % 2) * half;
+            let by = cy + (i as i32 / 2) * app.s(28);
+            app.checkbox(
+                dc,
+                Id::CellDict(i),
+                RECT { left: bx, top: by, right: bx + half - app.s(6), bottom: by + app.s(24) },
+                label,
+                *on,
+            );
+        }
+        let mut by = cy + app.s(6) + rows * app.s(28) + app.s(8);
+        let hint = if app.cell_dirty {
+            "勾选有改动：点「应用」会重建词库索引（约 1~3 分钟）"
+        } else {
+            "关掉用不到的专业词库可以减小索引、加快部署"
+        };
+        unsafe {
+            text(dc, RECT { left: rx + app.s(18), top: by, right: rx + col_w - app.s(18), bottom: by + app.s(22) }, hint, app.font_small, t.text3, DT_LEFT, true);
+        }
+        by += app.s(24);
+        app.button(dc, Id::CellApply, RECT { left: rx + app.s(18), top: by, right: rx + app.s(18) + app.s(120), bottom: by + app.s(34) }, "应用", true);
+        y += ch2 + gap;
+    }
     y + app.s(10)
 }
 
@@ -2347,10 +2570,15 @@ fn draw_about(app: &mut App, dc: HDC, x: i32, y0: i32, w: i32) -> i32 {
     }
     y += dh + gap;
 
-    let uh = app.s(100);
+    let uh = app.s(150);
     let cy = app.card(dc, x, y, col_w, uh, "更新", "");
     app.button(dc, Id::UpdateCheck, RECT { left: x + app.s(18), top: cy, right: x + app.s(18) + app.s(140), bottom: cy + app.s(34) }, "检查更新", true);
     app.button(dc, Id::Update, RECT { left: x + app.s(166), top: cy, right: x + app.s(166) + app.s(140), bottom: cy + app.s(34) }, "打开下载页", false);
+    app.button(dc, Id::UpdateInstall, RECT { left: x + app.s(18), top: cy + app.s(46), right: x + app.s(18) + app.s(140), bottom: cy + app.s(80) }, "下载并安装", false);
+    app.button(dc, Id::DictUpdateCheck, RECT { left: x + app.s(166), top: cy + app.s(46), right: x + app.s(166) + app.s(140), bottom: cy + app.s(80) }, "检查词库更新", false);
+    unsafe {
+        text(dc, RECT { left: x + app.s(18), top: cy + app.s(92), right: x + col_w - app.s(18), bottom: cy + app.s(116) }, "下载并安装会下载官方安装包并启动（需要网络）", app.font_small, t.text3, DT_LEFT, true);
+    }
     y += uh + gap;
 
     let rx = x + col_w + gap;

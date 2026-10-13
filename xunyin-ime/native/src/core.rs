@@ -23,6 +23,118 @@ pub struct DictStats {
     pub last_import: String,
 }
 
+/// 一位界面资源（皮肤中心用）。
+#[derive(Clone)]
+pub struct SkinAsset {
+    pub name: String,
+    pub label: String,
+    /// "皮肤" = 来自皮肤目录；"内置" = 来自 DLL 内嵌副本
+    pub source: String,
+    pub w: usize,
+    pub h: usize,
+    pub bytes: Vec<u8>,
+}
+
+/// 一个细胞词库：目录名、中文名、是否启用。
+#[derive(Clone)]
+pub struct CellDict {
+    pub id: String,
+    pub label: String,
+    pub enabled: bool,
+}
+
+/// 皮肤资源文件名（与 xunyin-tsf 内置资源、tools/export-skin-assets.ps1 一致）。
+pub const SKIN_ASSET_FILES: [&str; 11] = [
+    "bar_bg.bin",
+    "cell_hover.bin",
+    "cell_active.bin",
+    "icon_gear.bin",
+    "glyph_quan.bin",
+    "glyph_ban.bin",
+    "glyph_punct_cn.bin",
+    "glyph_punct_en.bin",
+    "glyph_zhong.bin",
+    "glyph_ying.bin",
+    "glyph_symbol.bin",
+];
+
+/// 内置资源：直接复用 TSF 里的同一批文件（编译进本程序，导出/预览时用）。
+fn embedded_asset(name: &str) -> Option<&'static [u8]> {
+    Some(match name {
+        "bar_bg.bin" => include_bytes!("../../../xunyin-tsf/src/assets/bar_bg.bin"),
+        "cell_hover.bin" => include_bytes!("../../../xunyin-tsf/src/assets/cell_hover.bin"),
+        "cell_active.bin" => include_bytes!("../../../xunyin-tsf/src/assets/cell_active.bin"),
+        "icon_gear.bin" => include_bytes!("../../../xunyin-tsf/src/assets/icon_gear.bin"),
+        "glyph_quan.bin" => include_bytes!("../../../xunyin-tsf/src/assets/glyph_quan.bin"),
+        "glyph_ban.bin" => include_bytes!("../../../xunyin-tsf/src/assets/glyph_ban.bin"),
+        "glyph_punct_cn.bin" => include_bytes!("../../../xunyin-tsf/src/assets/glyph_punct_cn.bin"),
+        "glyph_punct_en.bin" => include_bytes!("../../../xunyin-tsf/src/assets/glyph_punct_en.bin"),
+        "glyph_zhong.bin" => include_bytes!("../../../xunyin-tsf/src/assets/glyph_zhong.bin"),
+        "glyph_ying.bin" => include_bytes!("../../../xunyin-tsf/src/assets/glyph_ying.bin"),
+        "glyph_symbol.bin" => include_bytes!("../../../xunyin-tsf/src/assets/glyph_symbol.bin"),
+        _ => return None,
+    })
+}
+
+fn skin_asset_label(name: &str) -> &'static str {
+    match name {
+        "bar_bg.bin" => "状态栏底",
+        "cell_hover.bin" => "悬停高亮",
+        "cell_active.bin" => "激活高亮",
+        "icon_gear.bin" => "设置齿轮",
+        "glyph_quan.bin" => "全角·满月",
+        "glyph_ban.bin" => "半角·半月",
+        "glyph_punct_cn.bin" => "中文标点",
+        "glyph_punct_en.bin" => "英文标点",
+        "glyph_zhong.bin" => "中文模式",
+        "glyph_ying.bin" => "英文模式",
+        "glyph_symbol.bin" => "符号面板",
+        _ => "资源",
+    }
+}
+
+/// 资源尺寸：8 字节头 + w*h*4。
+fn asset_dims(b: &[u8]) -> (usize, usize) {
+    if b.len() < 8 {
+        return (0, 0);
+    }
+    (
+        u32::from_le_bytes([b[0], b[1], b[2], b[3]]) as usize,
+        u32::from_le_bytes([b[4], b[5], b[6], b[7]]) as usize,
+    )
+}
+
+fn asset_size_ok(b: &[u8], name: &str) -> bool {
+    let (w, h) = asset_dims(b);
+    let want = if name == "bar_bg.bin" { (324, 60) } else { (60, 60) };
+    (w, h) == want && b.len() == 8 + w * h * 4
+}
+
+/// 从一段文本里抠出版本号：`1.0.4**（更新…` → `1.0.4`。
+fn version_in(s: &str) -> Option<String> {
+    let s = s.trim_start_matches(['v', 'V']);
+    let mut out = String::new();
+    let mut dots = 0usize;
+    for c in s.chars() {
+        if c.is_ascii_digit() {
+            out.push(c);
+        } else if c == '.' && !out.is_empty() && !out.ends_with('.') {
+            out.push(c);
+            dots += 1;
+        } else {
+            break;
+        }
+    }
+    while out.ends_with('.') {
+        out.pop();
+    }
+    if dots >= 1 && !out.is_empty() {
+        Some(out)
+    } else {
+        None
+    }
+}
+
 impl Core {
     pub fn new() -> Self {
         let (shared, user) = resolve_data_dirs();
@@ -428,6 +540,59 @@ impl Core {
         Ok(dst)
     }
 
+    // ---------------- 细胞词库（专业词库）开关 ----------------
+
+    /// 列出细胞词库：id、中文名、是否启用（读当前生效的词库导入表）。
+    pub fn cell_dicts(&self) -> Vec<CellDict> {
+        let imported = self.imported_cell_dicts();
+        let mut ids: Vec<String> = Vec::new();
+        if let Ok(rd) = std::fs::read_dir(self.shared_data_dir.join("cn_dicts_cell")) {
+            for e in rd.flatten() {
+                let n = e.file_name().to_string_lossy().into_owned();
+                if let Some(id) = n.strip_suffix(".dict.yaml") {
+                    ids.push(id.to_string());
+                }
+            }
+        }
+        ids.sort();
+        ids.into_iter()
+            .map(|id| CellDict {
+                enabled: imported.iter().any(|x| *x == id),
+                label: cell_dict_label(&id).to_string(),
+                id,
+            })
+            .collect()
+    }
+
+    /// 当前生效的细胞词库 id：优先用户级词库（有就是用户在设置里选过的），否则随包词库。
+    fn imported_cell_dicts(&self) -> Vec<String> {
+        let user = self.user_data_dir.join("rime_xunyin.dict.yaml");
+        let path = if user.is_file() {
+            user
+        } else {
+            self.shared_data_dir.join("rime_xunyin.dict.yaml")
+        };
+        std::fs::read_to_string(path)
+            .map(|t| parse_cell_imports(&t))
+            .unwrap_or_default()
+    }
+
+    /// 应用细胞词库勾选：生成**用户级** `rime_xunyin.dict.yaml`（随包的那份一个字不动），
+    /// 然后重建索引。Rime 读词库时用户目录优先，所以这份覆盖立即生效。
+    pub fn apply_cell_dicts(&self, enabled: &[String]) -> Result<String, String> {
+        let base = std::fs::read_to_string(self.shared_data_dir.join("rime_xunyin.dict.yaml"))
+            .map_err(|e| format!("读随包词库清单失败：{e}"))?;
+        let out = regenerate_dict_yaml(&base, enabled);
+        std::fs::create_dir_all(&self.user_data_dir).map_err(|e| e.to_string())?;
+        let dst = self.user_data_dir.join("rime_xunyin.dict.yaml");
+        std::fs::write(&dst, out).map_err(|e| e.to_string())?;
+        self.redeploy();
+        Ok(format!(
+            "已应用 {} 个细胞词库，正在重建索引（约 1~3 分钟，完成后自动生效）",
+            enabled.len()
+        ))
+    }
+
     /// 导出诊断包：版本、配置、日志、词库统计打成一个 zip（用系统自带 tar）。
     pub fn export_diag(&self) -> Result<PathBuf, String> {
         let root = user_data_dir().join("diag");
@@ -543,8 +708,13 @@ impl Core {
     pub fn check_update(&self) -> Result<String, String> {
         let url = "https://api.github.com/repos/itsypa/xunyin-ime/releases/latest";
         let body = http_get(url)?;
-        let tag = json_string_field(&body, "tag_name")
-            .ok_or_else(|| "无法解析服务器返回内容".to_string())?;
+        let Some(tag) = json_string_field(&body, "tag_name") else {
+            // 仓库还没有 Release 时 GitHub 返回的是带 message 的错误对象
+            if let Some(msg) = json_string_field(&body, "message") {
+                return Err(format!("仓库暂时没有可用版本（{msg}）"));
+            }
+            return Err("无法解析服务器返回内容".into());
+        };
         let cur = env!("CARGO_PKG_VERSION");
         let latest = tag.trim_start_matches('v');
         if latest == cur {
@@ -552,6 +722,187 @@ impl Core {
         } else {
             Ok(format!("发现新版本 v{latest}（当前 v{cur}）——点「打开下载页」更新"))
         }
+    }
+
+    /// 最新版本的安装包下载地址（Release 资产里带 Setup 与 x64 的那个）。
+    pub fn latest_installer_url(&self) -> Result<String, String> {
+        let body = http_get("https://api.github.com/repos/itsypa/xunyin-ime/releases/latest")?;
+        let mut hit: Option<String> = None;
+        let mut rest = body.as_str();
+        while let Some(i) = rest.find("\"browser_download_url\"") {
+            rest = &rest[i + 22..];
+            let Some(start) = rest.find('"') else { break };
+            let tail = &rest[start + 1..];
+            let Some(end) = tail.find('"') else { break };
+            let url = &tail[..end];
+            if url.contains("Setup") && url.contains("x64") && url.ends_with(".exe") {
+                hit = Some(url.to_string());
+                break;
+            }
+        }
+        hit.ok_or_else(|| "这个版本还没有 x64 安装包（可能是便携包）".to_string())
+    }
+
+    /// 下载并运行最新安装包（安装器会自己结束本程序/覆盖安装）。
+    pub fn download_and_install(&self) -> Result<String, String> {
+        let url = self.latest_installer_url()?;
+        let name = url.rsplit('/').next().unwrap_or("XunyinIME-Setup.exe");
+        let dst = std::env::temp_dir().join(name);
+        let bytes = http_get_bytes(&url)?;
+        if bytes.len() < 100_000 {
+            return Err(format!("下载内容异常（{} 字节）", bytes.len()));
+        }
+        std::fs::write(&dst, &bytes).map_err(|e| e.to_string())?;
+        std::process::Command::new(&dst)
+            .spawn()
+            .map_err(|e| format!("启动安装包失败：{e}"))?;
+        Ok(format!("已下载并启动安装包：{}", dst.display()))
+    }
+
+    /// 检查上游词库（rime-frost）是否有新版本：比对内置记录里的版本号。
+    pub fn check_dict_update(&self) -> Result<String, String> {
+        // UPSTREAM.md 里记录着随包的上游版本：`上游版本：rime-frost 1.0.4`
+        let bundled = std::fs::read_to_string(self.shared_data_dir.join("UPSTREAM.md"))
+            .ok()
+            .and_then(|t| {
+                t.lines()
+                    .find(|l| l.contains("上游版本"))
+                    .and_then(|l| l.split_whitespace().find_map(version_in))
+            });
+        let body = http_get("https://api.github.com/repos/gaboolic/rime-frost/releases/latest")?;
+        let tag = json_string_field(&body, "tag_name")
+            .ok_or_else(|| "无法解析服务器返回内容".to_string())?;
+        let latest = tag.trim_start_matches('v');
+        let cur = bundled.as_deref().unwrap_or("");
+        if cur == latest {
+            Ok(format!("词库已是最新（上游 {tag}）"))
+        } else if cur.is_empty() {
+            Ok(format!("上游词库最新版本：{tag}（本机未记录版本号）"))
+        } else {
+            Ok(format!(
+                "上游词库有新版本：{tag}（本机 {cur}）。用 tools/update-upstream-dicts.ps1 同步后重新部署即可。"
+            ))
+        }
+    }
+
+    // ---------------- 皮肤中心 ----------------
+
+    /// 一位界面资源：名字、当前来源（皮肤目录 / 内置）、尺寸与像素。
+    pub fn skin_assets(&self) -> Vec<SkinAsset> {
+        let mut out = Vec::new();
+        for name in SKIN_ASSET_FILES {
+            let file = user_data_dir().join("skins").join(name);
+            let (bytes, source) = match std::fs::read(&file) {
+                Ok(b) if asset_size_ok(&b, name) => (b, "皮肤".to_string()),
+                _ => match embedded_asset(name) {
+                    Some(b) => (b.to_vec(), "内置".to_string()),
+                    None => continue,
+                },
+            };
+            let (w, h) = asset_dims(&bytes);
+            out.push(SkinAsset {
+                name: (*name).to_string(),
+                label: skin_asset_label(name).to_string(),
+                source,
+                w,
+                h,
+                bytes,
+            });
+        }
+        out
+    }
+
+    /// 导出皮肤包：把**当前生效**的 11 个资源放到一个 zip 里（可直接分享/备份）。
+    pub fn export_skin_pack(&self) -> Result<PathBuf, String> {
+        let root = user_data_dir().join("export");
+        let stage = root.join(format!("skin_{}", stamp()));
+        std::fs::create_dir_all(&stage).map_err(|e| e.to_string())?;
+        for a in self.skin_assets() {
+            std::fs::write(stage.join(&a.name), &a.bytes).map_err(|e| e.to_string())?;
+        }
+        // 附一份说明，方便别人看懂这些 bin 是什么
+        let readme = "迅音输入法皮肤包\n\n每个 *.bin = 8 字节头（u32 宽 + u32 高，小端）+ BGRA 像素。\n\
+            图标类文件只用 alpha 通道（颜色由主题决定），做单色蒙版即可。\n\
+            导入方式：设置中心 → 外观主题 → 皮肤中心 → 导入皮肤包。\n";
+        std::fs::write(stage.join("说明.txt"), readme).map_err(|e| e.to_string())?;
+        let zip = root.join(format!("xunyin-skin-{}.zip", stamp()));
+        match std::process::Command::new("tar.exe")
+            .arg("-a")
+            .arg("-c")
+            .arg("-f")
+            .arg(&zip)
+            .arg("-C")
+            .arg(&root)
+            .arg(stage.file_name().unwrap())
+            .creation_flags(0x0800_0000)
+            .status()
+        {
+            Ok(s) if s.success() => {
+                let _ = std::fs::remove_dir_all(&stage);
+                let _ = open_path(&root);
+                Ok(zip)
+            }
+            _ => {
+                let _ = open_path(&stage);
+                Ok(stage)
+            }
+        }
+    }
+
+    /// 导入皮肤包（zip 或目录）：把里面的 *.bin 放进皮肤目录并让输入法重载。
+    pub fn import_skin_pack(&self, src: &Path) -> Result<String, String> {
+        let skins = user_data_dir().join("skins");
+        std::fs::create_dir_all(&skins).map_err(|e| e.to_string())?;
+        let mut copied = 0usize;
+        let mut temp: Option<PathBuf> = None;
+        let dir = if src.is_dir() {
+            src.to_path_buf()
+        } else {
+            // zip：用系统自带 tar 解到临时目录
+            let t = std::env::temp_dir().join(format!("xunyin-skin-{}", stamp()));
+            std::fs::create_dir_all(&t).map_err(|e| e.to_string())?;
+            let status = std::process::Command::new("tar.exe")
+                .arg("-x")
+                .arg("-f")
+                .arg(src)
+                .arg("-C")
+                .arg(&t)
+                .creation_flags(0x0800_0000)
+                .status()
+                .map_err(|e| format!("解压失败：{e}"))?;
+            if !status.success() {
+                return Err("解压失败：请确认是 zip 皮肤包".into());
+            }
+            temp = Some(t.clone());
+            t
+        };
+        // 递归找 *.bin（皮肤包可能多套一层目录）
+        let mut stack = vec![dir.clone()];
+        while let Some(d) = stack.pop() {
+            let Ok(rd) = std::fs::read_dir(&d) else { continue };
+            for e in rd.flatten() {
+                let p = e.path();
+                if p.is_dir() {
+                    stack.push(p);
+                } else if SKIN_ASSET_FILES.contains(
+                    &p.file_name().unwrap_or_default().to_string_lossy().to_string().as_str(),
+                ) {
+                    let name = p.file_name().unwrap().to_string_lossy().to_string();
+                    if asset_size_ok(&std::fs::read(&p).unwrap_or_default(), &name) {
+                        std::fs::copy(&p, skins.join(&name)).map_err(|e| e.to_string())?;
+                        copied += 1;
+                    }
+                }
+            }
+        }
+        if let Some(t) = temp {
+            let _ = std::fs::remove_dir_all(t);
+        }
+        if copied == 0 {
+            return Err("皮肤包里没有有效资源（只认 11 个已知的 .bin 文件名）".into());
+        }
+        xunyin_rime::reload::mark(xunyin_rime::reload::REQUEST_RELOAD);
+        Ok(format!("已导入 {copied} 个皮肤资源（正在输入的应用会自动重载）"))
     }
 
     pub fn clear_logs(&self) -> u64 {
@@ -672,8 +1023,123 @@ fn copy_dir_all(src: &Path, dst: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
+/// 细胞词库中文名（上游 rime-frost 的细胞词库目录名 → 中文名）。
+fn cell_dict_label(id: &str) -> &'static str {
+    match id {
+        "medication" => "医药",
+        "industry_product" => "工业产品",
+        "exthot" => "网络热词",
+        "chess" => "象棋",
+        "chess2" => "围棋",
+        "animal" => "动物",
+        "game" => "游戏",
+        "idiom" => "成语",
+        "sport" => "体育",
+        "media" => "影视媒体",
+        "shulihua" => "数理化",
+        "food" => "饮食",
+        "inputmethod" => "输入法用语",
+        "history" => "历史",
+        "place" => "地名",
+        "geography" => "地理",
+        "name2" => "人名（扩展）",
+        "literature" => "文学",
+        "music" => "音乐",
+        "computer" => "计算机",
+        "composite" => "综合",
+        "name" => "人名",
+        "luna" => "月相（备用）",
+        _ => "细胞词库",
+    }
+}
+
+/// 从词库 yaml 的 import_tables 里取出被导入的细胞词库 id（注释行不算）。
+fn parse_cell_imports(text: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut in_block = false;
+    for line in text.lines() {
+        let t = line.trim();
+        if t.starts_with("import_tables:") {
+            in_block = true;
+            continue;
+        }
+        if !in_block {
+            continue;
+        }
+        if let Some(item) = t.strip_prefix("- ") {
+            let id = item.split('#').next().unwrap_or("").trim();
+            if let Some(cell) = id.strip_prefix("cn_dicts_cell/") {
+                if !cell.is_empty() {
+                    out.push(cell.to_string());
+                }
+            }
+        } else if t.is_empty() || t.starts_with('#') {
+            continue;
+        } else {
+            break; // 出了 import_tables 块
+        }
+    }
+    out
+}
+
+/// 重排词库清单：核心导入原样保留，细胞词库按勾选重建。
+fn regenerate_dict_yaml(base: &str, enabled: &[String]) -> String {
+    let lines: Vec<&str> = base.lines().collect();
+    let mut out: Vec<String> = Vec::new();
+    let mut i = 0usize;
+    while i < lines.len() {
+        let line = lines[i];
+        if line.trim_start().starts_with("import_tables:") {
+            out.push(line.to_string());
+            i += 1;
+            // 收集原来那一块：核心项原样保留，细胞项记下原始行以便按勾选回填
+            let mut core: Vec<String> = Vec::new();
+            let mut cell: Vec<(String, String)> = Vec::new();
+            while i < lines.len() {
+                let raw = lines[i];
+                let t = raw.trim();
+                if let Some(item) = t.strip_prefix("- ") {
+                    let id = item.split('#').next().unwrap_or("").trim();
+                    match id.strip_prefix("cn_dicts_cell/") {
+                        Some(c) if !c.is_empty() => cell.push((c.to_string(), raw.to_string())),
+                        _ => core.push(raw.to_string()),
+                    }
+                    i += 1;
+                } else if t.starts_with('#') {
+                    core.push(raw.to_string()); // 块内注释保留（含被注释掉的导入）
+                    i += 1;
+                } else if t.is_empty() {
+                    i += 1;
+                } else {
+                    break;
+                }
+            }
+            out.extend(core);
+            out.push(String::new());
+            out.push("  # 细胞词库（由设置中心 → 词库管理 → 细胞词库 勾选生成）".to_string());
+            for id in enabled {
+                match cell.iter().find(|(cid, _)| cid == id) {
+                    Some((_, raw)) => out.push(raw.clone()),
+                    None => out.push(format!("  - cn_dicts_cell/{id}")),
+                }
+            }
+            continue;
+        }
+        out.push(line.to_string());
+        i += 1;
+    }
+    let mut s = out.join("\n");
+    s.push('\n');
+    s
+}
+
 /// 极简 HTTPS GET（WinHTTP，不引第三方依赖）：检查更新用。
 fn http_get(url: &str) -> Result<String, String> {
+    String::from_utf8(http_get_bytes(url)?).map_err(|e| e.to_string())
+}
+
+/// 同上，但返回原始字节（下载安装包用）。
+fn http_get_bytes(url: &str) -> Result<Vec<u8>, String> {
     use std::ffi::c_void;
     type Handle = *mut c_void;
     const WINHTTP_FLAG_SECURE: u32 = 0x0080_0000;
@@ -771,7 +1237,7 @@ fn http_get(url: &str) -> Result<String, String> {
         if !ok {
             return Err("网络请求失败（检查网络或代理）".into());
         }
-        String::from_utf8(body).map_err(|e| e.to_string())
+        Ok(body)
     }
 }
 
@@ -785,6 +1251,69 @@ fn json_string_field(body: &str, key: &str) -> Option<String> {
     let rest = rest.strip_prefix('"')?;
     let end = rest.find('"')?;
     Some(rest[..end].to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const SAMPLE: &str = "name: rime_xunyin\nversion: \"1\"\nimport_tables:\n  - cn_dicts/base     # 基础词库\n  - cn_dicts/others\n\n  # 细胞词库\n  - cn_dicts_cell/food\n  - cn_dicts_cell/animal\n...\n\n词\tci\n";
+
+    #[test]
+    fn parse_cell_imports_reads_only_cell_entries() {
+        let v = parse_cell_imports(SAMPLE);
+        assert_eq!(v, vec!["food".to_string(), "animal".to_string()]);
+    }
+
+    #[test]
+    fn regenerate_keeps_core_and_applies_selection() {
+        let out = regenerate_dict_yaml(SAMPLE, &["animal".to_string(), "music".to_string()]);
+        // 核心导入原样保留（含行尾注释）
+        assert!(out.contains("  - cn_dicts/base     # 基础词库"));
+        assert!(out.contains("  - cn_dicts/others"));
+        // 勾选里的 food 被去掉，animal 保留，music 新增
+        assert!(!out.contains("cn_dicts_cell/food"));
+        assert!(out.contains("cn_dicts_cell/animal"));
+        assert!(out.contains("cn_dicts_cell/music"));
+        // 表格数据与结尾的 ... 不能丢
+        assert!(out.contains("\n..."));
+        assert!(out.ends_with("词\tci\n"));
+        // 重新解析应当只剩勾选的两个
+        assert_eq!(
+            parse_cell_imports(&out),
+            vec!["animal".to_string(), "music".to_string()]
+        );
+    }
+
+    #[test]
+    fn asset_validation() {
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&60u32.to_le_bytes());
+        buf.extend_from_slice(&60u32.to_le_bytes());
+        buf.extend(std::iter::repeat(0u8).take(60 * 60 * 4));
+        assert!(asset_size_ok(&buf, "glyph_ban.bin"));
+        assert!(!asset_size_ok(&buf, "bar_bg.bin"));
+        assert!(!asset_size_ok(&buf[..100], "glyph_ban.bin"));
+    }
+
+    /// 内嵌资源必须齐全且尺寸合法（皮肤中心、导出资源包都依赖它）。
+    #[test]
+    fn embedded_skin_assets_are_complete() {
+        for f in SKIN_ASSET_FILES {
+            let b = embedded_asset(f).unwrap_or_else(|| panic!("缺内嵌资源 {f}"));
+            assert!(asset_size_ok(b, f), "内嵌资源尺寸不对：{f}");
+        }
+    }
+
+    /// 联网检查（CI 不跑）：cargo test -- --ignored --nocapture
+    #[test]
+    #[ignore = "需要网络"]
+    fn live_update_checks() {
+        let core = Core::new();
+        println!("程序更新: {:?}", core.check_update());
+        println!("安装包地址: {:?}", core.latest_installer_url());
+        println!("词库更新: {:?}", core.check_dict_update());
+    }
 }
 
 fn backup_root() -> PathBuf {
