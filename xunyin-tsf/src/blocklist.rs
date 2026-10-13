@@ -92,11 +92,23 @@ mod tests {
 
     #[test]
     fn block_and_lookup() {
-        let w = "测试词abcd";
-        assert!(!is_blocked(w));
-        assert!(block(w));
-        assert!(is_blocked(w));
-        assert!(!block(w), "重复加入不算新增");
+        // 用独一无二的键：这个测试会真的写 blocked.txt（用户文件），
+        // 所以既不能依赖"文件里没有它"，跑完也要把测试条目清掉。
+        let w = format!(
+            "测试词{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        );
+        assert!(!is_blocked(&w));
+        assert!(block(&w));
+        assert!(is_blocked(&w));
+        assert!(!block(&w), "重复加入不算新增");
         assert!(!is_blocked(""));
+        with_set(|s| {
+            s.remove(&w);
+        });
+        save();
     }
 }

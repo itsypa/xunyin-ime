@@ -29,6 +29,12 @@ fn compartment_disabled<T: Interface>(mgr: &T) -> bool {
     }
 }
 
+/// 顿号键判定：`/`(VK_OEM_2) 与 `\`(VK_OEM_5) 在**没有按 Shift**时直接上屏「、」。
+/// 按了 Shift 就不是顿号键了（Shift+/ = `?` → 交给 Rime 出「？」，Shift+\ = `|`）。
+fn is_dunhao_key(vk: u32, shift: bool) -> bool {
+    !shift && matches!(vk, 0xBF | 0xDC)
+}
+
 /// v 模式可接受的输入字符（数字与四则运算符）。
 fn v_mode_char(vk: u32, mask: i32) -> Option<char> {
     let shift = mask & xunyin_rime::kRimeModifierShift != 0;
@@ -665,8 +671,11 @@ impl TextService_Impl {
         // 背景：方案里改 punctuator、以及改 symbols.yaml 的 full_shape '/' 都试过，
         // 实测仍会出全角斜杠 ／（Rime 的 full_shape 全角转换在标点表之上生效）。
         // 这一层是我们自己能完全掌控的位置，实测 consumed=true 且直接上屏「、」。
-        // 英文模式（ascii_mode / 英文标点）不拦，按键照原样透传。
-        if (vk == 0xBF || vk == 0xDC) && !eng.is_composing() {
+        //
+        // 注意：**必须放掉 Shift 组合**——Shift+/ 是问号（要出「？」），
+        // Shift+\ 是竖线；早期版本不看 shift，把问号也吃成了「、」（用户实测反馈）。
+        // 英文模式（ascii_mode / 英文标点）同样不拦，按键照原样透传。
+        if is_dunhao_key(vk, shift) && !eng.is_composing() {
             let ascii_now = eng.get_status().map(|s| s.is_ascii_mode).unwrap_or(false);
             if !ascii_now && !cached_cfg().input.ascii_punct {
                 crate::tsf_log!("keydown: 顿号键 vk=0x{vk:02X} -> 直接上屏「、」");
@@ -1409,6 +1418,16 @@ impl ITfCompositionSink_Impl for TextService_Impl {
 mod tests {
     use super::*;
     use windows_core::ComObject;
+
+    /// 顿号键判定：不带 Shift 才算顿号键；Shift+/ 必须留给问号（用户实测反馈的 bug）。
+    #[test]
+    fn dunhao_key_requires_no_shift() {
+        assert!(is_dunhao_key(0xBF, false));
+        assert!(is_dunhao_key(0xDC, false));
+        assert!(!is_dunhao_key(0xBF, true), "Shift+/ 是问号，不能当顿号吃掉");
+        assert!(!is_dunhao_key(0xDC, true), "Shift+\\ 是竖线");
+        assert!(!is_dunhao_key(0xBE, false), "句号键不是顿号键");
+    }
 
     #[test]
     fn format_preedit_logic() {
