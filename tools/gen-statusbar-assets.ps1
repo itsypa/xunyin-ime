@@ -156,9 +156,8 @@ Make-Icon "icon_gear" {
     $g.CompositingMode = [System.Drawing.Drawing2D.CompositingMode]::SourceOver
 }
 
-# ── 文字蒙版：中 / 英 / 全 / 半 / 标点（白色 + alpha，运行时 tint）──────────
-# 标点与全半角也用文字而不是图形：圆环/实心圆/弯月的隐喻太含糊（实测两个圆
-# 挨在一起分不清哪个是标点哪个是全角），文字最直观。
+# ── 文字蒙版：中 / 英 / 标点（白色 + alpha，运行时 tint）────────────────────
+# 中/英用汉字最直观；全半角见下面的月亮图标。
 function Make-Glyph([string]$text, [string]$name, [double]$fontPx = 18.0) {
     # 先画到临时画布量出**墨迹包围盒**，再按墨迹居中贴进方格。
     # 必要性：全角标点（，。）的墨迹天生挤在字框左下角，直接居中排版会显得
@@ -200,8 +199,61 @@ function Make-Glyph([string]$text, [string]$name, [double]$fontPx = 18.0) {
 Make-Glyph "中" "glyph_zhong"
 Make-Glyph "英" "glyph_ying"
 Make-Glyph "※" "glyph_symbol"
-Make-Glyph "全" "glyph_quan"
-Make-Glyph "半" "glyph_ban"
+
+# ── 全角 / 半角：满月 / 半月（白 + alpha 蒙版，运行时 tint）──────────────────
+# 全角 = 满月（实心圆），半角 = 半月（月牙）。这是中文输入法通行的隐喻
+# （搜狗、微软拼音都一样），比「全/半」两个字更省地方、也更容易一眼分辨。
+# 月牙用「画满圆 → 用 SourceCopy 擦掉一个右移的圆」得到，与齿轮中心镂空同一手法。
+function Make-Moon([string]$name, [bool]$full, [double]$diaPx = 15.0) {
+    # 先画到大画布，再按**墨迹包围盒**居中贴进方格：月牙的墨迹天生偏左，
+    # 直接按几何中心摆放，格子里会明显偏左（与按墨迹居中的中/英图标对不齐）。
+    $tmpSize = 120
+    $tmp = New-Object System.Drawing.Bitmap($tmpSize, $tmpSize, [System.Drawing.Imaging.PixelFormat]::Format32bppArgb)
+    $g = [System.Drawing.Graphics]::FromImage($tmp)
+    $g.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::AntiAlias
+    $d = $diaPx * $S
+    $cx = $tmpSize / 2.0
+    $cy = $tmpSize / 2.0
+    $white = New-Object System.Drawing.SolidBrush([System.Drawing.Color]::White)
+    $g.FillEllipse($white, [float]($cx - $d / 2), [float]($cy - $d / 2), [float]$d, [float]$d)
+    if (-not $full) {
+        # 擦除圆比满月略大并右移 40% 直径：左侧留下约 0.39d 厚的月牙，
+        # 上下两只角自然收细，开口朝右。
+        $g.CompositingMode = [System.Drawing.Drawing2D.CompositingMode]::SourceCopy
+        $er = New-Object System.Drawing.SolidBrush([System.Drawing.Color]::FromArgb(0, 0, 0, 0))
+        $ed = $d * 1.02
+        $ex = $cx + $d * 0.40
+        $g.FillEllipse($er, [float]($ex - $ed / 2), [float]($cy - $ed / 2), [float]$ed, [float]$ed)
+        $er.Dispose()
+        $g.CompositingMode = [System.Drawing.Drawing2D.CompositingMode]::SourceOver
+    }
+    $white.Dispose(); $g.Dispose()
+
+    $minX = $tmpSize; $maxX = -1; $minY = $tmpSize; $maxY = -1
+    for ($y = 0; $y -lt $tmpSize; $y++) {
+        for ($x = 0; $x -lt $tmpSize; $x++) {
+            if ($tmp.GetPixel($x, $y).A -gt 20) {
+                if ($x -lt $minX) { $minX = $x }
+                if ($x -gt $maxX) { $maxX = $x }
+                if ($y -lt $minY) { $minY = $y }
+                if ($y -gt $maxY) { $maxY = $y }
+            }
+        }
+    }
+    $ctx = New-Bmp $Tile $Tile
+    if ($maxX -ge $minX -and $maxY -ge $minY) {
+        $inkW = $maxX - $minX + 1
+        $inkH = $maxY - $minY + 1
+        $dx = [int](($Tile - $inkW) / 2) - $minX
+        $dy = [int](($Tile - $inkH) / 2) - $minY
+        $ctx.G.DrawImage($tmp, (New-Object System.Drawing.Rectangle($dx, $dy, $tmpSize, $tmpSize)))
+    }
+    $tmp.Dispose()
+    Save-Bgra $ctx $name
+}
+
+Make-Moon "glyph_quan" $true   # 全角：满月
+Make-Moon "glyph_ban" $false   # 半角：半月
 
 # 把单个字符画到临时画布并按墨迹裁成紧致位图（返回位图与尺寸）。
 function Render-Ink([string]$text, [double]$fontPx) {
