@@ -203,8 +203,9 @@ Make-Glyph "※" "glyph_symbol"
 # ── 全角 / 半角：满月 / 半月（白 + alpha 蒙版，运行时 tint）──────────────────
 # 全角 = 满月（实心圆），半角 = 半月（月牙）。这是中文输入法通行的隐喻
 # （搜狗、微软拼音都一样），比「全/半」两个字更省地方、也更容易一眼分辨。
-# 月牙用「画满圆 → 用 SourceCopy 擦掉一个右移的圆」得到，与齿轮中心镂空同一手法。
-function Make-Moon([string]$name, [bool]$full, [double]$diaPx = 15.0) {
+# 月牙用「画满圆 → 用 SourceCopy 擦掉一个偏移的圆」得到，与齿轮中心镂空同一手法。
+# $notchDir：擦除圆的偏移方向，-1 = 缺口朝左，+1 = 缺口朝右。
+function Make-Moon([string]$name, [bool]$full, [double]$diaPx = 15.0, [int]$notchDir = -1) {
     # 先画到大画布，再按**墨迹包围盒**居中贴进方格：月牙的墨迹天生偏左，
     # 直接按几何中心摆放，格子里会明显偏左（与按墨迹居中的中/英图标对不齐）。
     $tmpSize = 120
@@ -217,12 +218,12 @@ function Make-Moon([string]$name, [bool]$full, [double]$diaPx = 15.0) {
     $white = New-Object System.Drawing.SolidBrush([System.Drawing.Color]::White)
     $g.FillEllipse($white, [float]($cx - $d / 2), [float]($cy - $d / 2), [float]$d, [float]$d)
     if (-not $full) {
-        # 擦除圆比满月略大并右移 40% 直径：左侧留下约 0.39d 厚的月牙，
-        # 上下两只角自然收细，开口朝右。
+        # 擦除圆比满月略大并向缺口方向偏移 40% 直径：反方向留下约 0.39d 厚的
+        # 月牙主体，上下两只角自然收细。
         $g.CompositingMode = [System.Drawing.Drawing2D.CompositingMode]::SourceCopy
         $er = New-Object System.Drawing.SolidBrush([System.Drawing.Color]::FromArgb(0, 0, 0, 0))
         $ed = $d * 1.02
-        $ex = $cx + $d * 0.40
+        $ex = $cx + $d * 0.40 * $notchDir
         $g.FillEllipse($er, [float]($ex - $ed / 2), [float]($cy - $ed / 2), [float]$ed, [float]$ed)
         $er.Dispose()
         $g.CompositingMode = [System.Drawing.Drawing2D.CompositingMode]::SourceOver
@@ -252,8 +253,8 @@ function Make-Moon([string]$name, [bool]$full, [double]$diaPx = 15.0) {
     Save-Bgra $ctx $name
 }
 
-Make-Moon "glyph_quan" $true   # 全角：满月
-Make-Moon "glyph_ban" $false   # 半角：半月
+Make-Moon "glyph_quan" $true                    # 全角：满月
+Make-Moon "glyph_ban" $false 15.0 -1            # 半角：半月（缺口朝左）
 
 # 把单个字符画到临时画布并按墨迹裁成紧致位图（返回位图与尺寸）。
 function Render-Ink([string]$text, [double]$fontPx) {
