@@ -256,7 +256,12 @@ impl Logic {
             let commit = custom_commit
                 .unwrap_or_else(|| e.get_commit_text())
                 .clone();
-            let snap = e.get_context();
+            // 二分定位用：XUNYIN_SVC_NO_CTX=1 时跳过 get_context，看崩溃是否随之消失
+            let snap = if std::env::var("XUNYIN_SVC_NO_CTX").is_ok() {
+                None
+            } else {
+                e.get_context()
+            };
             (commit, snap)
         };
         crate::log("step7: 快照取完，进入 after_key");
