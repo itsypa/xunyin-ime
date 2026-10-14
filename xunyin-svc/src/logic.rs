@@ -10,7 +10,8 @@
 use xunyin_rime::keycode::{char_keycode, is_dunhao_key, vk_to_punct};
 use xunyin_rime::preedit::{build as build_preedit, format as format_preedit, move_caret};
 use xunyin_rime::RimeEngine;
-use xunyin_rime::{assoc, blocklist, quick_input};
+use xunyin_rime::{assoc, blocklist, phrases, quick_input};
+use std::collections::HashMap;
 
 /// 一次按键的处理结果。类型定义在共享 crate 里（xunyin-rime::svc_proto::Reply），
 /// DLL 反序列化用的是同一份，不会写歪。
@@ -22,6 +23,13 @@ pub struct Logic {
     /// 正在后台重建索引（分钟级）。这期间按键直接让宿主退回自己的逻辑，
     /// 不能让宿主在管道上等超时。
     redeploying: bool,
+    /// 按应用记的中英状态：client(pid) → (ascii_mode, 最近一次使用时间 ms)。
+    ///
+    /// 输入逻辑搬进服务后，所有应用共用同一个会话，于是"在 A 应用切到英文"会连累 B 应用。
+    /// 原来每个宿主进程各有自己的引擎，天然是各记各的；这里把那份行为补回来。
+    app_modes: HashMap<u32, (bool, u64)>,
+    /// 上一次发按键的客户端（切换客户端时保存/恢复它的中英状态）
+    last_client: Option<u32>,
     /// 叠加候选文本（快捷输入 / 联想 / v 模式）
     overlay: Vec<String>,
     /// 叠加候选的注释
@@ -41,6 +49,8 @@ impl Logic {
         Logic {
             engine: None,
             redeploying: false,
+            app_modes: load_app_modes(),
+            last_client: None,
             overlay: Vec::new(),
             overlay_comments: Vec::new(),
             cand_map: Vec::new(),
@@ -99,7 +109,8 @@ impl Logic {
     }
 
     /// 处理一次按键。`mask` 是 kRimeModifier* 位掩码，`shift` 是 Shift 是否按下。
-    pub fn key(&mut self, vk: u32, mask: i32, shift: bool) -> Reply {
+    /// `client` 是宿主进程 pid：用来按应用记忆中英状态。
+    pub fn key(&mut self, client: u32, vk: u32, mask: i32, shift: bool) -> Reply {
         if self.redeploying {
             // 索引在后台重建：不接按键，让宿主立刻退回它自己的逻辑（打字不卡）
             return Reply {
@@ -109,6 +120,7 @@ impl Logic {
             };
         }
         let cfg = xunyin_rime::config::load_config();
+        self.switch_client(client, &cfg);
         let ctrl = mask & xunyin_rime::kRimeModifierControl != 0;
         let alt = mask & xunyin_rime::kRimeModifierAlt != 0;
         let mut out = Reply {
@@ -288,12 +300,14 @@ impl Logic {
             (commit, e.get_context())
         };
         self.after_key(commit, snapshot, &cfg, &mut out);
+        self.remember_current_mode(&cfg);
         out
     }
 
     /// 候选窗点击：`display_index` 是**显示列表**里的下标（服务负责换算）。
-    pub fn select(&mut self, display_index: usize) -> Reply {
+    pub fn select(&mut self, client: u32, display_index: usize) -> Reply {
         let cfg = xunyin_rime::config::load_config();
+        self.switch_client(client, &cfg);
         let mut out = Reply {
             consume: true,
             page_size: cfg.input.page_size as usize,
@@ -361,8 +375,9 @@ impl Logic {
     }
 
     /// 状态查询（状态栏 / 新会话初始状态用）。
-    pub fn status(&mut self) -> Reply {
+    pub fn status(&mut self, client: u32) -> Reply {
         let cfg = xunyin_rime::config::load_config();
+        self.switch_client(client, &cfg);
         let mut out = Reply {
             page_size: cfg.input.page_size as usize,
             ascii: cfg.input.ascii_mode,
@@ -377,8 +392,9 @@ impl Logic {
 
     /// 命令（状态栏菜单等）：`toggle_mode` / `toggle_width` / `toggle_punct` /
     /// `reload` / `redeploy` / `select_schema:<id>`
-    pub fn command(&mut self, name: &str) -> Reply {
+    pub fn command(&mut self, client: u32, name: &str) -> Reply {
         let mut cfg = xunyin_rime::config::load_config();
+        self.switch_client(client, &cfg);
         let mut commit = String::new();
         match name {
             // 裸 Shift 松开（对应设置里"中英切换键 = Shift"）：
@@ -434,7 +450,7 @@ impl Logic {
                 }
             }
         }
-        let mut out = self.status();
+        let mut out = self.status(client);
         out.commit = commit;
         out.consume = true;
         out
@@ -489,6 +505,58 @@ impl Logic {
     }
 
     // ---------------- 内部 ----------------
+
+    /// 换到某个宿主进程：把上一个进程的中英状态存下来，恢复这个进程自己的。
+    /// 只在「按应用记忆」打开时做（设置中心可切换成全局统一）。
+    fn switch_client(&mut self, client: u32, cfg: &xunyin_rime::XunyinConfig) {
+        if !cfg.input.per_app_mode || client == 0 {
+            self.last_client = Some(client);
+            return;
+        }
+        if self.last_client == Some(client) {
+            return;
+        }
+        // 先记下上一个进程现在的状态
+        if let Some(prev) = self.last_client {
+            if let Some(e) = self.engine.as_mut() {
+                let mode = e.get_option("ascii_mode");
+                if self.app_modes.get(&prev).map(|(m, _)| *m) != Some(mode) {
+                    self.app_modes.insert(prev, (mode, now_ms()));
+                    save_app_modes(&self.app_modes);
+                }
+            }
+        }
+        // 再恢复这个进程自己的状态；没见过这个进程就用配置里的默认中英模式
+        // （否则新开的应用会继承上一个应用的模式）
+        let want = match self.app_modes.get(&client) {
+            Some((m, _)) => Some(*m),
+            None => Some(cfg.input.ascii_mode),
+        };
+        if let Some(want) = want {
+            if let Some(e) = self.engine.as_mut() {
+                if e.get_option("ascii_mode") != want {
+                    e.set_option("ascii_mode", want);
+                    crate::log(format!("按应用记忆：pid={client} -> ascii={want}"));
+                }
+            }
+        }
+        self.last_client = Some(client);
+    }
+
+    /// 记下当前进程的状态（每次按键后调用，保证 Shift 切换也被记住）。
+    fn remember_current_mode(&mut self, cfg: &xunyin_rime::XunyinConfig) {
+        if !cfg.input.per_app_mode {
+            return;
+        }
+        let Some(client) = self.last_client else { return };
+        if let Some(e) = self.engine.as_mut() {
+            let mode = e.get_option("ascii_mode");
+            if self.app_modes.get(&client).map(|(m, _)| *m) != Some(mode) {
+                self.app_modes.insert(client, (mode, now_ms()));
+                save_app_modes(&self.app_modes);
+            }
+        }
+    }
 
     fn cancel_overlay(&mut self) {
         self.overlay.clear();
@@ -552,6 +620,20 @@ impl Logic {
         // 叠加候选：快捷输入（rq/sj/xq）→ 联想 → Rime 候选
         let mut overlay: Vec<String> = Vec::new();
         let mut overlay_comments: Vec<String> = Vec::new();
+        // 自定义短语优先：编码与原始输入完全一致时，短语排在最前（空格直接上屏）
+        if cfg.input.enable_custom_phrase {
+            if let Some(snap) = snapshot.as_ref() {
+                let code: String = snap
+                    .preedit
+                    .chars()
+                    .filter(|c| !c.is_whitespace())
+                    .collect();
+                for text in phrases::matching(&code) {
+                    overlay.push(text.clone());
+                    overlay_comments.push("短语".into());
+                }
+            }
+        }
         if cfg.input.enable_quick_input {
             if let Some(t) = snapshot
                 .as_ref()
@@ -584,6 +666,10 @@ impl Logic {
         let mut f_c: Vec<String> = Vec::new();
         let mut f_m: Vec<String> = Vec::new();
         for (i, (t, m)) in cands.into_iter().zip(comments.into_iter()).enumerate() {
+            // 短语已经作为叠加候选排在最前了，Rime 自己也认这些短语时别再重复显示
+            if overlay.iter().any(|o| o == &t) {
+                continue;
+            }
             if blocklist::is_blocked(&t) {
                 continue;
             }
@@ -720,7 +806,8 @@ impl Logic {
         } else {
             (vk - 0x31) as usize
         };
-        let r = self.select(idx);
+        // 客户端在 key() 开头已经切好，这里沿用当前那个
+        let r = self.select(self.last_client.unwrap_or(0), idx);
         if !r.consume || r.commit.is_empty() {
             return None;
         }
@@ -752,6 +839,57 @@ fn v_mode_char(vk: u32, shift: bool) -> Option<char> {
         0x6F => Some('/'),
         _ => None,
     }
+}
+
+// ---------------- 按应用记的中英状态（落盘） ----------------
+
+/// 存放文件：用户数据目录下的 `app_modes.json`（内容很小，改了直接整份重写）。
+fn app_modes_path() -> std::path::PathBuf {
+    xunyin_rime::user_data_dir().join("app_modes.json")
+}
+
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+/// 超过一周没见过的进程记录就丢掉（pid 会被系统复用，留着会串味）。
+const APP_MODE_TTL_MS: u64 = 7 * 24 * 3600 * 1000;
+
+fn load_app_modes() -> HashMap<u32, (bool, u64)> {
+    let Ok(text) = std::fs::read_to_string(app_modes_path()) else {
+        return HashMap::new();
+    };
+    // 形如 {"12345": [true, 1760000000000]}；解析失败就当空的（不值得为它报错）
+    match serde_json::from_str::<HashMap<String, (bool, u64)>>(&text) {
+        Ok(m) => m
+            .into_iter()
+            .filter(|(_, (_, t))| now_ms().saturating_sub(*t) < APP_MODE_TTL_MS)
+            .filter_map(|(k, v)| k.parse::<u32>().ok().map(|pid| (pid, v)))
+            .collect(),
+        Err(e) => {
+            crate::log(format!("app_modes.json 解析失败（忽略）：{e}"));
+            HashMap::new()
+        }
+    }
+}
+
+fn save_app_modes(modes: &HashMap<u32, (bool, u64)>) {
+    let m: HashMap<String, (bool, u64)> = modes
+        .iter()
+        .filter(|(_, (_, t))| now_ms().saturating_sub(*t) < APP_MODE_TTL_MS)
+        .map(|(k, v)| (k.to_string(), *v))
+        .collect();
+    let Ok(text) = serde_json::to_string(&m) else {
+        return;
+    };
+    let p = app_modes_path();
+    if let Some(dir) = p.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let _ = std::fs::write(&p, text);
 }
 
 /// 把（新装的）方案补进 scheme 清单；重载/重建索引前都先跑一遍。

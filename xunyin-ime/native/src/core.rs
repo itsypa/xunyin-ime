@@ -325,7 +325,8 @@ impl Core {
         let mut skipped = 0usize;
         let mut new_lines: Vec<String> = Vec::new();
         for raw in content.lines() {
-            let line = raw.trim();
+            // 去掉 BOM：外部编辑器/表格导出的文件常带，留着会被当成"词条+编码"
+            let line = raw.trim_start_matches('\u{FEFF}').trim();
             if line.is_empty() || line.starts_with('#') {
                 continue;
             }

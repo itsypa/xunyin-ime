@@ -319,6 +319,13 @@ enum Id {
     PunctRow(usize),
     DictImport,
     DictExport,
+    PhraseQuery,
+    PhraseCode,
+    PhraseText,
+    PhraseWeight,
+    PhraseAdd,
+    PhraseDel,
+    PhraseRow(usize),
     BackupNow,
     Restore,
     BackupRow(usize),
@@ -356,6 +363,7 @@ enum Id {
     SwitchComment,
     SwitchAssoc,
     SwitchQuick,
+    SwitchPerApp,
     SwitchEmoji,
     SwitchEnglish,
     SwitchPhrase,
@@ -374,6 +382,10 @@ enum Focus {
     None,
     PunctKey,
     PunctOut,
+    PhraseQuery,
+    PhraseCode,
+    PhraseText,
+    PhraseWeight,
 }
 
 // ---------------- 应用状态 ----------------
@@ -420,6 +432,16 @@ struct App {
     punct_out: String,
     punct_sel: Option<usize>,
     backup_sel: usize,
+    /// 自定义短语表（原样保留注释行，编辑后整份写回）
+    phrase_rows: Vec<xunyin_rime::phrases::Row>,
+    /// 查询框内容：按编码或词条过滤
+    phrase_query: String,
+    /// 新增用的三个输入框
+    phrase_code: String,
+    phrase_text: String,
+    phrase_weight: String,
+    /// 当前选中的短语（在 phrase_rows 里的下标）
+    phrase_sel: Option<usize>,
     combo_open: Option<Id>,
     dpi: u32,
     theme: Theme,
@@ -647,6 +669,12 @@ impl App {
             punct_out: String::new(),
             punct_sel: None,
             backup_sel: 0,
+            phrase_rows: xunyin_rime::phrases::read_rows(),
+            phrase_query: String::new(),
+            phrase_code: String::new(),
+            phrase_text: String::new(),
+            phrase_weight: String::new(),
+            phrase_sel: None,
             skins,
             cells,
             cell_dirty: false,
@@ -699,6 +727,52 @@ impl App {
 
     fn push_hit(&mut self, id: Id, r: RECT) {
         self.hits.push(Hit { id, rect: r });
+    }
+
+    /// 短语表当前要显示的行（按查询词过滤；空查询显示全部）。
+    /// 返回的是 `phrase_rows` 里的下标，点击/删除都靠它定位。
+    fn phrase_view(&self) -> Vec<usize> {
+        let q = self.phrase_query.trim().to_lowercase();
+        self.phrase_rows
+            .iter()
+            .enumerate()
+            .filter_map(|(i, r)| match r {
+                xunyin_rime::phrases::Row::Entry(e) => {
+                    if q.is_empty()
+                        || e.codes.to_lowercase().contains(&q)
+                        || e.text.to_lowercase().contains(&q)
+                    {
+                        Some(i)
+                    } else {
+                        None
+                    }
+                }
+                xunyin_rime::phrases::Row::Comment(_) => None,
+            })
+            .collect()
+    }
+
+    /// 短语条数（写进概况统计）。
+    fn phrase_count(&self) -> usize {
+        self.phrase_rows
+            .iter()
+            .filter(|r| matches!(r, xunyin_rime::phrases::Row::Entry(_)))
+            .count()
+    }
+
+    /// 整表写回文件（服务侧 2 秒内自动读到，不用重新部署）。
+    fn save_phrases(&mut self) {
+        match xunyin_rime::phrases::write_rows(&self.phrase_rows) {
+            Ok(()) => {
+                self.stats.custom_phrase_count = self.phrase_count();
+                let n = self.phrase_count();
+                // 服务侧的叠加候选是**立刻**生效的；这里再写一条重载请求，让
+                // librime 自己的 custom_phrase 表也跟上（引擎重建约 1 秒，不是重建索引）
+                xunyin_rime::reload::mark(xunyin_rime::reload::REQUEST_RELOAD);
+                self.toast(&format!("短语已保存（共 {n} 条），输入时立刻生效"));
+            }
+            Err(e) => self.toast(&format!("短语保存失败：{e}")),
+        }
     }
 
     fn hit_test(&self, x: i32, y: i32) -> Option<Id> {
@@ -991,8 +1065,15 @@ impl App {
 
     fn text_field(&mut self, dc: HDC, id: Id, r: RECT, value: &str, placeholder: &str) {
         let t = self.theme.clone();
-        let focused = (id == Id::PunctKey && self.focus == Focus::PunctKey)
-            || (id == Id::PunctOut && self.focus == Focus::PunctOut);
+        let focused = matches!(
+            (id, self.focus),
+            (Id::PunctKey, Focus::PunctKey)
+                | (Id::PunctOut, Focus::PunctOut)
+                | (Id::PhraseQuery, Focus::PhraseQuery)
+                | (Id::PhraseCode, Focus::PhraseCode)
+                | (Id::PhraseText, Focus::PhraseText)
+                | (Id::PhraseWeight, Focus::PhraseWeight)
+        );
         unsafe {
             if let Some(g) = Gfx::new(dc) {
                 g.fill_round(r, R_CTRL, t.field);
@@ -1634,6 +1715,16 @@ impl App {
                 self.cfg.input.enable_quick_input = !self.cfg.input.enable_quick_input;
                 self.mark_dirty();
             }
+            Id::SwitchPerApp => {
+                self.cfg.input.per_app_mode = !self.cfg.input.per_app_mode;
+                let on = self.cfg.input.per_app_mode;
+                self.mark_dirty();
+                self.toast(if on {
+                    "中英状态按应用分别记忆（每个应用各记各的）"
+                } else {
+                    "中英状态所有应用统一"
+                });
+            }
             Id::SwitchEmoji => {
                 self.cfg.input.enable_emoji = !self.cfg.input.enable_emoji;
                 self.mark_dirty();
@@ -1659,6 +1750,63 @@ impl App {
             Id::PunctKey => self.focus = Focus::PunctKey,
             Id::PunctOut => self.focus = Focus::PunctOut,
             Id::PunctRow(i) => self.punct_sel = Some(i),
+            Id::PhraseQuery => self.focus = Focus::PhraseQuery,
+            Id::PhraseCode => self.focus = Focus::PhraseCode,
+            Id::PhraseText => self.focus = Focus::PhraseText,
+            Id::PhraseWeight => self.focus = Focus::PhraseWeight,
+            Id::PhraseRow(vi) => {
+                // vi 是"当前显示表"里的下标，换算回 phrase_rows 的下标
+                if let Some(&ri) = self.phrase_view().get(vi) {
+                    self.phrase_sel = Some(ri);
+                    // 方便"改一条"：点中就把内容回填到下面三个框里
+                    if let Some(xunyin_rime::phrases::Row::Entry(e)) = self.phrase_rows.get(ri) {
+                        self.phrase_code = e.codes.clone();
+                        self.phrase_text = e.text.clone();
+                        self.phrase_weight = e.weight.map(|w| w.to_string()).unwrap_or_default();
+                    }
+                }
+            }
+            Id::PhraseAdd => {
+                let code = self.phrase_code.trim().to_string();
+                let text_v = self.phrase_text.trim().to_string();
+                let weight = self.phrase_weight.trim().parse::<i32>().ok();
+                if code.is_empty() || text_v.is_empty() {
+                    self.toast("请先填写「编码」与「词条」");
+                } else {
+                    let entry = xunyin_rime::phrases::Entry {
+                        text: text_v,
+                        codes: code,
+                        weight,
+                    };
+                    // 同编码同词条就更新，否则追加
+                    let existing = self.phrase_rows.iter_mut().find(|r| match r {
+                        xunyin_rime::phrases::Row::Entry(e) => {
+                            e.text == entry.text && e.codes == entry.codes
+                        }
+                        _ => false,
+                    });
+                    match existing {
+                        Some(xunyin_rime::phrases::Row::Entry(e)) => {
+                            e.weight = entry.weight;
+                        }
+                        _ => self
+                            .phrase_rows
+                            .push(xunyin_rime::phrases::Row::Entry(entry)),
+                    }
+                    self.phrase_code.clear();
+                    self.phrase_text.clear();
+                    self.phrase_weight.clear();
+                    self.save_phrases();
+                }
+            }
+            Id::PhraseDel => match self.phrase_sel {
+                Some(i) if i < self.phrase_rows.len() => {
+                    self.phrase_rows.remove(i);
+                    self.phrase_sel = None;
+                    self.save_phrases();
+                }
+                _ => self.toast("先在列表里选中一条短语"),
+            },
             Id::PunctAdd => {
                 let k = self.punct_key.trim().to_string();
                 let o = self.punct_out.trim().to_string();
@@ -2185,6 +2333,22 @@ extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM
                             app.punct_out.pop();
                             let _ = InvalidateRect(Some(hwnd), None, false);
                         }
+                        (0x08, Focus::PhraseQuery) => {
+                            app.phrase_query.pop();
+                            let _ = InvalidateRect(Some(hwnd), None, false);
+                        }
+                        (0x08, Focus::PhraseCode) => {
+                            app.phrase_code.pop();
+                            let _ = InvalidateRect(Some(hwnd), None, false);
+                        }
+                        (0x08, Focus::PhraseText) => {
+                            app.phrase_text.pop();
+                            let _ = InvalidateRect(Some(hwnd), None, false);
+                        }
+                        (0x08, Focus::PhraseWeight) => {
+                            app.phrase_weight.pop();
+                            let _ = InvalidateRect(Some(hwnd), None, false);
+                        }
                         (0x1B, _) => {
                             app.combo_open = None;
                             app.focus = Focus::None;
@@ -2202,6 +2366,10 @@ extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM
                             match app.focus {
                                 Focus::PunctKey => app.punct_key.push(ch),
                                 Focus::PunctOut => app.punct_out.push(ch),
+                                Focus::PhraseQuery => app.phrase_query.push(ch),
+                                Focus::PhraseCode => app.phrase_code.push(ch),
+                                Focus::PhraseText => app.phrase_text.push(ch),
+                                Focus::PhraseWeight => app.phrase_weight.push(ch),
                                 Focus::None => {}
                             }
                             let _ = InvalidateRect(Some(hwnd), None, false);
@@ -2649,7 +2817,7 @@ fn draw_input(app: &mut App, dc: HDC, x0: i32, y0: i32, w: i32) -> i32 {
     let y0 = page_header(app, dc, x0, y0, w, "输入设置", "输入方案、按键行为、模糊音；改动即时生效");
     let hs = [
         app.s(92),          // 默认输入方案
-        app.s(190),         // 输入模式
+        app.s(242),         // 输入模式（3 个分段 + 1 个开关）
         app.s(96),          // 候选窗（每页候选数）
         app.s(196 + 52 + 46 * 2), // 按键行为
         app.s(212),         // 模糊音 + 自学习
@@ -2669,7 +2837,7 @@ fn draw_input(app: &mut App, dc: HDC, x0: i32, y0: i32, w: i32) -> i32 {
     app.combo(dc, Id::SchemaCombo, combo, &schema_name);
 
     let (x, cy0, col_w) = slots[1];
-    let mode_h = app.s(190);
+    let mode_h = app.s(242);
     let cy = app.card(dc, x, cy0, col_w, mode_h, "输入模式", "");
     let mut ry = cy;
     for (label, desc, id, names, sel) in [
@@ -2682,6 +2850,18 @@ fn draw_input(app: &mut App, dc: HDC, x0: i32, y0: i32, w: i32) -> i32 {
         let seg = RECT { left: r.right - app.s(160), top: r.top + app.s(6), right: r.right, bottom: r.top + app.s(36) };
         app.segmented(dc, id, seg, &names, sel);
         ry += app.s(52);
+    }
+    // 中英状态按应用记（输入逻辑搬进服务后，所有应用原本会共用同一个中英状态）
+    {
+        let r = app.row(
+            dc,
+            x + app.s(18),
+            ry,
+            col_w - app.s(36),
+            "中英状态按应用记忆",
+            "关掉后所有应用统一",
+        );
+        app.toggle_switch(dc, Id::SwitchPerApp, r, app.cfg.input.per_app_mode);
     }
 
     let (x, cy0, col_w) = slots[2];
@@ -2883,7 +3063,7 @@ fn draw_dict(app: &mut App, dc: HDC, x0: i32, y0: i32, w: i32) -> i32 {
     let hs = [
         app.s(152),                                  // 词库统计
         app.s(146),                                  // 上游词库更新（状态一行 + 两颗按钮）
-        app.s(124),                                  // 自定义短语
+        app.s(372),                                  // 自定义短语（查询 + 表格 + 新增/删除/导入导出）
         app.s(46 * 3 + 46),                          // 候选来源
         app.s(320),                                  // 用户词库备份/恢复（含导出/清空两行）
         app.s(70) + cell_rows * app.s(28) + app.s(52), // 细胞词库
@@ -2933,17 +3113,73 @@ fn draw_dict(app: &mut App, dc: HDC, x0: i32, y0: i32, w: i32) -> i32 {
     }
 
     let (x, cy0, col_w) = slots[2];
-    let ih = app.s(124);
+    // 自定义短语：查询 + 表格 + 新增/删除（文件就是 Rime 的 custom_phrase.txt，
+    // 服务侧命中即作为候选插到最前，所以**加完立刻能用**，不用重新部署）
+    let ih = app.s(372);
     let cy = app.card(dc, x, cy0, col_w, ih, "自定义短语", "");
     let inner = col_w - app.s(36);
-    let bw = (inner - app.s(8)) / 2;
-    app.button(dc, Id::DictImport, RECT { left: x + app.s(18), top: cy, right: x + app.s(18) + bw, bottom: cy + app.s(34) }, "导入短语文件…", true);
-    app.button(dc, Id::DictExport, RECT { left: x + app.s(18) + bw + app.s(8), top: cy, right: x + col_w - app.s(18), bottom: cy + app.s(34) }, "导出当前短语", false);
-    if !app.stats.last_import.is_empty() {
-        let hr = RECT { left: x + app.s(18), top: cy + app.s(46), right: x + col_w - app.s(18), bottom: cy + app.s(74) };
-        let msg = app.stats.last_import.clone();
+    let lx = x + app.s(18);
+    let lw = inner;
+    let view = app.phrase_view();
+    let total = app.phrase_count();
+    {
+        // 查询框（按编码或词条过滤）
+        let qr = RECT { left: lx, top: cy, right: lx + lw - app.s(96), bottom: cy + app.s(32) };
+        app.text_field(dc, Id::PhraseQuery, qr, &app.phrase_query.clone(), "按编码或词条筛选，如 nh");
+        let hint = format!("{} / {total} 条", view.len());
+        let hr = RECT { left: qr.right + app.s(8), top: cy, right: lx + lw, bottom: cy + app.s(32) };
         unsafe {
-            text(dc, hr, &msg, app.font_small, t.accent, DT_LEFT, true);
+            text(dc, hr, &hint, app.font_small, t.text3, DT_RIGHT, true);
+        }
+    }
+    // 表格：编码 → 词条（权重）
+    let rows_text: Vec<String> = view
+        .iter()
+        .map(|&i| match &app.phrase_rows[i] {
+            xunyin_rime::phrases::Row::Entry(e) => {
+                let w = e.weight.map(|w| format!("   [{w}]")).unwrap_or_default();
+                format!("{}   →   {}{w}", e.codes, e.text)
+            }
+            xunyin_rime::phrases::Row::Comment(c) => c.clone(),
+        })
+        .collect();
+    let list_rect = RECT { left: lx, top: cy + app.s(42), right: lx + lw, bottom: cy + app.s(202) };
+    let sel_row = app
+        .phrase_sel
+        .and_then(|i| view.iter().position(|&v| v == i));
+    app.list(
+        dc,
+        Id::PhraseRow,
+        list_rect,
+        &rows_text,
+        sel_row,
+        "还没有短语：下面填「编码 + 词条」点添加，输入编码就能出这个词",
+    );
+    // 新增：编码 / 词条 / 权重
+    let fw = (lw - app.s(16)) / 3;
+    let fy = cy + app.s(214);
+    let cr = RECT { left: lx, top: fy, right: lx + fw, bottom: fy + app.s(32) };
+    let tr2 = RECT { left: cr.right + app.s(8), top: fy, right: cr.right + app.s(8) + fw, bottom: fy + app.s(32) };
+    let wr = RECT { left: tr2.right + app.s(8), top: fy, right: lx + lw, bottom: fy + app.s(32) };
+    app.text_field(dc, Id::PhraseCode, cr, &app.phrase_code.clone(), "编码");
+    app.text_field(dc, Id::PhraseText, tr2, &app.phrase_text.clone(), "词条");
+    app.text_field(dc, Id::PhraseWeight, wr, &app.phrase_weight.clone(), "权重(可空)");
+    let by = fy + app.s(42);
+    let bw = (lw - app.s(8)) / 2;
+    app.button(dc, Id::PhraseAdd, RECT { left: lx, top: by, right: lx + bw, bottom: by + app.s(34) }, "添加 / 更新", true);
+    app.button_danger(dc, Id::PhraseDel, RECT { left: lx + bw + app.s(8), top: by, right: lx + lw, bottom: by + app.s(34) }, "删除所选");
+    let by2 = by + app.s(42);
+    app.button(dc, Id::DictImport, RECT { left: lx, top: by2, right: lx + bw, bottom: by2 + app.s(34) }, "导入短语文件…", false);
+    app.button(dc, Id::DictExport, RECT { left: lx + bw + app.s(8), top: by2, right: lx + lw, bottom: by2 + app.s(34) }, "导出短语文件", false);
+    {
+        let hr = RECT { left: lx, top: by2 + app.s(40), right: lx + lw, bottom: by2 + app.s(64) };
+        let msg = if app.stats.last_import.is_empty() {
+            "同一编码可以写多个（空格分隔）；权重越大越靠前".to_string()
+        } else {
+            app.stats.last_import.clone()
+        };
+        unsafe {
+            text(dc, hr, &msg, app.font_small, t.text3, DT_LEFT, true);
         }
     }
 

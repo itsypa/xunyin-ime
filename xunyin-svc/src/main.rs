@@ -202,11 +202,14 @@ fn write_msg(h: HANDLE, v: &Value) -> bool {
 fn serve(h: HANDLE) {
     CLIENTS.fetch_add(1, Ordering::SeqCst);
     log(&format!("客户端接入，当前连接数 {}", CLIENTS.load(Ordering::SeqCst)));
+    // 这条连接属于哪个宿主进程（hello 里带 pid）：按应用记忆中英状态要用它
+    let mut client: u32 = 0;
     while let Some(msg) = read_msg(h) {
         let t = msg.get("t").and_then(|v| v.as_str()).unwrap_or("");
         let reply = match t {
             "hello" => {
                 let pid = msg.get("pid").and_then(|v| v.as_u64()).unwrap_or(0);
+                client = pid as u32;
                 log(&format!(
                     "hello: 客户端 pid={pid} proto={:?} dll_tag={:?}",
                     msg.get("proto"),
@@ -228,20 +231,20 @@ fn serve(h: HANDLE) {
                 let vk = msg.get("vk").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
                 let mask = msg.get("mask").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
                 let shift = msg.get("shift").and_then(|v| v.as_bool()).unwrap_or(false);
-                match guard(|| with_logic(|l| l.key(vk, mask, shift))) {
+                match guard(|| with_logic(|l| l.key(client, vk, mask, shift))) {
                     Ok(r) => json!({ "t": "reply", "reply": r }),
                     Err(why) => json!({ "t": "reply", "reply": { "consume": false, "error": why } }),
                 }
             }
             "select" if input_enabled() => {
                 let index = msg.get("index").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
-                match guard(|| with_logic(|l| l.select(index))) {
+                match guard(|| with_logic(|l| l.select(client, index))) {
                     Ok(r) => json!({ "t": "reply", "reply": r }),
                     Err(why) => json!({ "t": "reply", "reply": { "consume": false, "error": why } }),
                 }
             }
             "status" => {
-                match guard(|| with_logic(|l| l.status())) {
+                match guard(|| with_logic(|l| l.status(client))) {
                     Ok(r) => json!({ "t": "reply", "reply": r }),
                     Err(why) => json!({ "t": "reply", "reply": { "consume": false, "error": why } }),
                 }
@@ -267,7 +270,7 @@ fn serve(h: HANDLE) {
                         }
                     }
                 } else {
-                    match guard(|| with_logic(|l| l.command(name))) {
+                    match guard(|| with_logic(|l| l.command(client, name))) {
                         Ok(r) => json!({ "t": "reply", "reply": r }),
                         Err(why) => {
                             json!({ "t": "reply", "reply": { "consume": false, "error": why } })

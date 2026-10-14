@@ -53,6 +53,11 @@ pub struct InputConfig {
     pub enable_english: bool,
     /// 候选来源：自定义短语（`custom_phrase` 翻译器）。
     pub enable_custom_phrase: bool,
+    /// 中英状态按应用分别记忆：true=每个应用各记各的（默认）｜false=所有应用统一。
+    ///
+    /// 输入逻辑搬进常驻服务后，所有应用共用同一个 librime 会话；打开这个开关
+    /// 就等于把"每个应用一份中英状态"的旧行为补回来（服务按宿主进程 pid 记账）。
+    pub per_app_mode: bool,
 }
 
 /// 一条自定义标点映射。
@@ -86,6 +91,7 @@ impl Default for InputConfig {
             enable_emoji: true,
             enable_english: true,
             enable_custom_phrase: true,
+            per_app_mode: true,
         }
     }
 }

@@ -1028,6 +1028,16 @@ impl TextService_Impl {
         let cfg = cached_cfg();
         let mut overlay: Vec<String> = Vec::new();
         let mut overlay_comments: Vec<String> = Vec::new();
+        // 自定义短语优先（与服务侧同一套规则：编码与原始输入完全一致就插到最前）
+        if cfg.input.enable_custom_phrase {
+            if let Some(snap) = snapshot.as_ref() {
+                let code: String = snap.preedit.chars().filter(|c| !c.is_whitespace()).collect();
+                for text in xunyin_rime::phrases::matching(&code) {
+                    overlay.push(text);
+                    overlay_comments.push("短语".into());
+                }
+            }
+        }
         if cfg.input.enable_quick_input {
             if let Some(t) = snapshot
                 .as_ref()
@@ -1062,6 +1072,10 @@ impl TextService_Impl {
             let mut c = overlay.clone();
             let mut m = overlay_comments;
             for (i, (t, cm)) in candidates.into_iter().zip(comments.into_iter()).enumerate() {
+                // 短语已经是叠加候选了，Rime 自己也认出它时别重复显示
+                if overlay.iter().any(|o| o == &t) {
+                    continue;
+                }
                 if xunyin_rime::blocklist::is_blocked(&t) {
                     crate::tsf_log!("keydown: 1 个候选已被删词过滤");
                     continue;
