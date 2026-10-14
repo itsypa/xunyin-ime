@@ -13,7 +13,7 @@
 
 use std::os::windows::process::CommandExt;
 use crate::core::{CellDict, Core, DictStats, SkinAsset};
-use xunyin_rime::config::{AppearanceConfig, XunyinConfig};
+use xunyin_rime::config::XunyinConfig;
 use std::mem::size_of;
 use windows::core::PCWSTR;
 use windows::Win32::Foundation::{
@@ -37,7 +37,7 @@ use windows::Win32::UI::Controls::Dialogs::{
 use windows::Win32::UI::HiDpi::GetDpiForWindow;
 use windows::Win32::UI::Shell::ShellExecuteW;
 use windows::Win32::UI::WindowsAndMessaging::*;
-use windows_core::w;
+
 
 // ---------------- 设计令牌（看这里就能改整套观感）----------------
 
@@ -587,7 +587,22 @@ impl Drop for Gfx {
     }
 }
 
-/// GDI 文字（ClearType，比 GDI+ 的中文渲染更清晰）。
+// 直接用自己声明的 `DrawTextW`，不走 windows crate 那个包装：那个包装把
+// **含结尾 NUL 的缓冲区长度**当作 `cchTextLength` 传下去，于是结尾的 NUL 被当成
+// 一个字符，画成 .notdef 方框——界面上就是每段文字后面跟一个小方块
+// （图标旁边那一格看起来最像一个多余的 `[`）。
+#[link(name = "user32")]
+extern "system" {
+    #[link_name = "DrawTextW"]
+    fn draw_text_w(hdc: HDC, text: *const u16, cch: i32, rect: *mut RECT, format: u32) -> i32;
+}
+
+/// 按"不含结尾 NUL 的字符数"调用 GDI 的 DrawTextW。
+unsafe fn draw_text_len(dc: HDC, rect: &mut RECT, buf: &[u16], flags: DRAW_TEXT_FORMAT) {
+    let cch = buf.len().saturating_sub(1) as i32; // 去掉 wide() 补的那个 0
+    let _ = draw_text_w(dc, buf.as_ptr(), cch, rect, flags.0);
+}
+
 unsafe fn text(
     dc: HDC,
     r: RECT,
@@ -600,7 +615,7 @@ unsafe fn text(
     let old = SelectObject(dc, HGDIOBJ(font.0));
     let _ = SetBkMode(dc, TRANSPARENT);
     let _ = SetTextColor(dc, COLORREF(color));
-    let mut buf = wide(s);
+    let buf = wide(s);
     let mut rect = r;
     let mut flags = DRAW_TEXT_FORMAT(align.0 | DT_NOPREFIX.0);
     if vcenter {
@@ -608,7 +623,7 @@ unsafe fn text(
     } else {
         flags = DRAW_TEXT_FORMAT(flags.0 | DT_WORDBREAK.0);
     }
-    DrawTextW(dc, &mut buf, &mut rect, flags);
+    draw_text_len(dc, &mut rect, &buf, flags);
     SelectObject(dc, old);
 }
 
@@ -625,11 +640,11 @@ unsafe fn text_ellipsis(
     let old = SelectObject(dc, HGDIOBJ(font.0));
     let _ = SetBkMode(dc, TRANSPARENT);
     let _ = SetTextColor(dc, COLORREF(color));
-    let mut buf = wide(s);
+    let buf = wide(s);
     let mut rect = r;
     let flags =
         DRAW_TEXT_FORMAT(align.0 | DT_NOPREFIX.0 | DT_VCENTER.0 | DT_SINGLELINE.0 | DT_END_ELLIPSIS.0);
-    DrawTextW(dc, &mut buf, &mut rect, flags);
+    draw_text_len(dc, &mut rect, &buf, flags);
     SelectObject(dc, old);
 }
 
@@ -1140,7 +1155,7 @@ impl App {
 
 unsafe fn text_width_of(dc: HDC, s: &str, font: HFONT) -> i32 {
     let old = SelectObject(dc, HGDIOBJ(font.0));
-    let mut buf = wide(s);
+    let buf = wide(s);
     let mut sz = SIZE::default();
     let _ = GetTextExtentPoint32W(dc, &buf[..buf.len() - 1], &mut sz);
     SelectObject(dc, old);
@@ -1231,7 +1246,7 @@ unsafe fn font_face_name(font: &HFONT) -> String {
                 let _ = DeleteObject(HGDIOBJ(f.0));
             }
             self.icon_font_ok = icon_ok;
-            // 临时调试：确认侧栏图标到底用了哪个字体（连 PostMessage 测试用）
+            // 诊断：XUNYIN_UI_DUMP 时把侧栏图标实际用的字体记下来（排查图标显示问题用）
             if let Ok(dir) = std::env::var("XUNYIN_UI_DUMP") {
                 let face = if icon_ok {
                     Self::font_face_name(&self.font_icon)
