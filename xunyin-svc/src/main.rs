@@ -67,6 +67,8 @@ fn wide(s: &str) -> Vec<u16> {
 
 /// 输入逻辑开关（第 2 阶段调试用；默认关，避免服务被未定位的崩溃带走）。
 fn input_enabled() -> bool {
+    // 默认关：服务侧输入路径还卡在 RimeApi 结构体尺寸不符（792 vs librime 的 788），
+    // 调用结构体后半段的 API（get_status/get_option）会崩。等 ABI 对齐后再打开。
     std::env::var("XUNYIN_SVC_INPUT").map(|v| v == "1").unwrap_or(false)
 }
 

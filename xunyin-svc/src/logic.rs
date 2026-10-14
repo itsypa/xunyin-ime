@@ -85,6 +85,17 @@ impl Logic {
                     }
                     apply_config(&mut e);
                     crate::log(format!("引擎就绪（shared={}）", shared.display()));
+                    // 诊断：FFI 结构体尺寸与 rime.dll 是否一致。
+                    // 不一致会导致 librime 越界写我们的结构体 → 堆损坏 → 下次分配时
+                    // 0xC0000005（本轮崩溃的表现正是这样）。
+                    crate::log(format!(
+                        "ABI 自检：api_version={:?} api_data_size={:?} sizeof(RimeApi)={} sizeof(RimeContext)={} sizeof(RimeStatus)={}",
+                        e.api_version(),
+                        e.api_data_size(),
+                        std::mem::size_of::<xunyin_rime::rime_ffi::RimeApi>(),
+                        std::mem::size_of::<xunyin_rime::rime_ffi::RimeContext>(),
+                        std::mem::size_of::<xunyin_rime::rime_ffi::RimeStatus>(),
+                    ));
                     self.engine = Some(e);
                 }
                 Err(e) => {
@@ -113,6 +124,9 @@ impl Logic {
             ..Default::default()
         };
         crate::log("step4: 引擎可用，开始判定");
+        // 状态在**开头**读（此时还没调用过任何会改动会话的 API，实测稳定）；
+        // 放在 process_key 之后读会让服务崩（见 after_key 的说明）。
+        self.read_options(&mut out);
         // ── Ctrl 组合 ────────────────────────────────────────────────
         if ctrl && !alt {
             // Ctrl+.：中英标点
@@ -518,15 +532,15 @@ impl Logic {
         }
         self.overlay = overlay;
         self.cand_map = cand_map;
-        // 注意：这里**不能**调 get_status()——实测紧跟在 process_key 之后调用它会让
-        // 服务进程 0xC0000005（同样代码在 DLL 里没事）。改用 get_option 读开关，
-        // 语义等价且不崩。
-        self.read_options(out);
+        // 注意：这里不读引擎状态——实测"紧跟 process_key / 首次 process_key 之后"
+        // 调用 get_status/get_option 会让服务进程 0xC0000005（DLL 里同样顺序没事）。
+        // 状态改在**每次按键的最开头**读（那时还没碰过引擎），等价且稳定。
         crate::log("step7e: 状态取完");
         out.engine_ok = self.engine.is_some();
     }
 
     /// 从引擎读三个开关（中英 / 全半角 / 中英标点）。
+    /// **只在按键开头调用**（见 after_key 里的说明：紧跟 process_key 之后调用会崩）。
     fn read_options(&mut self, out: &mut Reply) {
         if let Some(e) = self.engine() {
             out.ascii = e.get_option("ascii_mode");
