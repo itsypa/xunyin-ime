@@ -205,7 +205,9 @@ Make-Glyph "※" "glyph_symbol"
 # （搜狗、微软拼音都一样），比「全/半」两个字更省地方、也更容易一眼分辨。
 # 月牙用「画满圆 → 用 SourceCopy 擦掉一个偏移的圆」得到，与齿轮中心镂空同一手法。
 # 擦除圆的偏移方向 = 缺口朝向：dxFrac/dyFrac 是相对直径的比例。
-#   缺口朝左 = dxFrac -0.40；缺口朝上（躺倒的半月）= dyFrac -0.40。
+#   缺口朝左   = (-0.40,  0.00)
+#   缺口朝上   = ( 0.00, -0.40)
+#   缺口朝左上 = (-0.283, -0.283)（45° 斜躺，半角用的就是这个）
 function Make-Moon([string]$name, [bool]$full, [double]$diaPx = 15.0, [double]$dxFrac = -0.40, [double]$dyFrac = 0.0) {
     # 先画到大画布，再按**墨迹包围盒**居中贴进方格：月牙的墨迹天生偏左，
     # 直接按几何中心摆放，格子里会明显偏左（与按墨迹居中的中/英图标对不齐）。
@@ -256,7 +258,7 @@ function Make-Moon([string]$name, [bool]$full, [double]$diaPx = 15.0, [double]$d
 }
 
 Make-Moon "glyph_quan" $true                        # 全角：满月（实心圆）
-Make-Moon "glyph_ban" $false 16.0 0.0 -0.40         # 半角：躺倒的半月（缺口朝上）
+Make-Moon "glyph_ban" $false 16.5 -0.283 -0.283     # 半角：躺倒的半月（缺口朝左上 45°）
 
 # 把单个字符画到临时画布并按墨迹裁成紧致位图（返回位图与尺寸）。
 function Render-Ink([string]$text, [double]$fontPx) {
