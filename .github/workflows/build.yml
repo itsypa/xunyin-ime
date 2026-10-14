@@ -44,6 +44,15 @@ jobs:
         working-directory: xunyin-tsf
         run: cargo build --release --target i686-pc-windows-msvc
 
+      # 常驻服务（DLL 会从旁边拉起它；改服务代码不用重开宿主应用）
+      - name: 构建 xunyin-svc（x64）
+        working-directory: xunyin-svc
+        run: cargo build --release
+
+      - name: 构建 xunyin-svc（x86）
+        working-directory: xunyin-svc
+        run: cargo build --release --target i686-pc-windows-msvc
+
       # 设置中心是原生 Win32 应用（无 WebView2 依赖），直接 cargo build
       - name: 构建设置中心（原生）
         working-directory: xunyin-ime/native
