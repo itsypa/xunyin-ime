@@ -98,17 +98,21 @@ impl Logic {
 
     /// 处理一次按键。`mask` 是 kRimeModifier* 位掩码，`shift` 是 Shift 是否按下。
     pub fn key(&mut self, vk: u32, mask: i32, shift: bool) -> Reply {
+        crate::log(format!("step1: 收到按键 vk=0x{vk:02X}"));
         let cfg = xunyin_rime::config::load_config();
+        crate::log("step2: 配置读取完成");
         let ctrl = mask & xunyin_rime::kRimeModifierControl != 0;
         let alt = mask & xunyin_rime::kRimeModifierAlt != 0;
+        crate::log("step3: 交给引擎（可能触发初始化）");
         let mut out = Reply {
-            engine_ok: self.engine.is_some() || self.engine().is_some(),
+            engine_ok: self.engine().is_some(),
             page_size: cfg.input.page_size as usize,
             ascii: cfg.input.ascii_mode,
             full: cfg.input.full_shape,
             punct: cfg.input.ascii_punct,
             ..Default::default()
         };
+        crate::log("step4: 引擎可用，开始判定");
         // ── Ctrl 组合 ────────────────────────────────────────────────
         if ctrl && !alt {
             // Ctrl+.：中英标点
@@ -162,10 +166,10 @@ impl Logic {
         // ── 顿号键（中文标点、不带 Shift）→ 直接上屏「、」─────────────
         let composing = self.engine().map(|e| e.is_composing()).unwrap_or(false);
         if is_dunhao_key(vk, shift) && !composing {
+            // 不用 get_status（见文件内说明），改读开关
             let ascii_now = self
                 .engine()
-                .and_then(|e| e.get_status())
-                .map(|s| s.is_ascii_mode)
+                .map(|e| e.get_option("ascii_mode"))
                 .unwrap_or(false);
             if !ascii_now && !cfg.input.ascii_punct {
                 out.consume = true;
@@ -174,6 +178,7 @@ impl Logic {
             }
         }
         // ── 走 Rime ────────────────────────────────────────────────
+        crate::log("step5: 走 Rime process_key");
         let keycode = rime_keycode(vk, shift);
         let enter_behavior = cfg.input.enter_behavior.clone();
         let mut custom_commit: Option<String> = None;
@@ -192,8 +197,7 @@ impl Logic {
             // 自定义标点优先（中文标点模式下）
             let ascii_now = self
                 .engine()
-                .and_then(|e| e.get_status())
-                .map(|s| s.is_ascii_mode)
+                .map(|e| e.get_option("ascii_mode"))
                 .unwrap_or(false);
             let hit = if cfg.input.ascii_punct || ascii_now {
                 None
@@ -223,6 +227,7 @@ impl Logic {
                 .map(|e| e.process_key(keycode, mask))
                 .unwrap_or(false)
         };
+        crate::log(format!("step6: process_key 返回 consumed={consumed}"));
         out.consume = consumed;
         if !consumed {
             self.cancel_overlay();
@@ -240,7 +245,9 @@ impl Logic {
             let snap = e.get_context();
             (commit, snap)
         };
+        crate::log("step7: 快照取完，进入 after_key");
         self.after_key(commit, snapshot, &cfg, &mut out);
+        crate::log("step8: 处理完成");
         out
     }
 
@@ -324,12 +331,7 @@ impl Logic {
             engine_ok: self.engine().is_some(),
             ..Default::default()
         };
-        if let Some(e) = self.engine() {
-            if let Some(s) = e.get_status() {
-                out.ascii = s.is_ascii_mode;
-                out.full = s.is_full_shape;
-            }
-        }
+        self.read_options(&mut out);
         out
     }
 
@@ -453,10 +455,12 @@ impl Logic {
         }
         // 组合串（按设置插音节分隔符）
         let sep = cfg.input.separator();
+        crate::log("step7a: separator 取到");
         let (preedit, caret) = snapshot
             .as_ref()
             .map(|s| format_preedit(&s.preedit, s.cursor_pos.min(s.preedit.len()), sep))
             .unwrap_or_default();
+        crate::log(format!("step7b: 组合串={preedit:?} caret={caret}"));
         // 叠加候选：快捷输入（rq/sj/xq）→ 联想 → Rime 候选
         let mut overlay: Vec<String> = Vec::new();
         let mut overlay_comments: Vec<String> = Vec::new();
@@ -477,6 +481,7 @@ impl Logic {
                 overlay.push(w);
             }
         }
+        crate::log(format!("step7c: 叠加候选 {} 个", overlay.len()));
         // Rime 候选 + 黑名单过滤 + 显示下标 → Rime 下标映射
         let (cands, comments, selected, page, page_size) = match snapshot.as_ref() {
             Some(s) => (
@@ -499,6 +504,7 @@ impl Logic {
             f_c.push(t);
             f_m.push(m);
         }
+        crate::log(format!("step7d: 候选过滤后 {} 个", f_c.len()));
         out.preedit = preedit;
         out.caret = caret;
         out.commit = commit;
@@ -512,11 +518,21 @@ impl Logic {
         }
         self.overlay = overlay;
         self.cand_map = cand_map;
-        if let Some(s) = self.engine().and_then(|e| e.get_status()) {
-            out.ascii = s.is_ascii_mode;
-            out.full = s.is_full_shape;
-        }
+        // 注意：这里**不能**调 get_status()——实测紧跟在 process_key 之后调用它会让
+        // 服务进程 0xC0000005（同样代码在 DLL 里没事）。改用 get_option 读开关，
+        // 语义等价且不崩。
+        self.read_options(out);
+        crate::log("step7e: 状态取完");
         out.engine_ok = self.engine.is_some();
+    }
+
+    /// 从引擎读三个开关（中英 / 全半角 / 中英标点）。
+    fn read_options(&mut self, out: &mut Reply) {
+        if let Some(e) = self.engine() {
+            out.ascii = e.get_option("ascii_mode");
+            out.full = e.get_option("full_shape");
+            out.punct = e.get_option("ascii_punct");
+        }
     }
 
     /// v 模式（`v123` / `v1+2*3`）：Rime 的 speller 不收数字，这里自己维护组合串。
