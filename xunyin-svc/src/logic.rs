@@ -79,9 +79,12 @@ impl Logic {
                 "xunyin-svc",
             ) {
                 Ok(mut e) => {
-                    if e.is_maintenance_mode() {
+                    let maint = e.is_maintenance_mode();
+                    crate::log(format!("引擎 init 完成：维护模式={maint}"));
+                    if maint {
                         let _ = e.deploy_full();
-                        let _ = e.wait_deploy(20_000);
+                        let done = e.wait_deploy(20_000);
+                        crate::log(format!("首次部署结束={done}"));
                     }
                     apply_config(&mut e);
                     crate::log(format!("引擎就绪（shared={}）", shared.display()));
