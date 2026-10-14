@@ -204,8 +204,9 @@ Make-Glyph "※" "glyph_symbol"
 # 全角 = 满月（实心圆），半角 = 半月（月牙）。这是中文输入法通行的隐喻
 # （搜狗、微软拼音都一样），比「全/半」两个字更省地方、也更容易一眼分辨。
 # 月牙用「画满圆 → 用 SourceCopy 擦掉一个偏移的圆」得到，与齿轮中心镂空同一手法。
-# $notchDir：擦除圆的偏移方向，-1 = 缺口朝左，+1 = 缺口朝右。
-function Make-Moon([string]$name, [bool]$full, [double]$diaPx = 15.0, [int]$notchDir = -1) {
+# 擦除圆的偏移方向 = 缺口朝向：dxFrac/dyFrac 是相对直径的比例。
+#   缺口朝左 = dxFrac -0.40；缺口朝上（躺倒的半月）= dyFrac -0.40。
+function Make-Moon([string]$name, [bool]$full, [double]$diaPx = 15.0, [double]$dxFrac = -0.40, [double]$dyFrac = 0.0) {
     # 先画到大画布，再按**墨迹包围盒**居中贴进方格：月牙的墨迹天生偏左，
     # 直接按几何中心摆放，格子里会明显偏左（与按墨迹居中的中/英图标对不齐）。
     $tmpSize = 120
@@ -223,8 +224,9 @@ function Make-Moon([string]$name, [bool]$full, [double]$diaPx = 15.0, [int]$notc
         $g.CompositingMode = [System.Drawing.Drawing2D.CompositingMode]::SourceCopy
         $er = New-Object System.Drawing.SolidBrush([System.Drawing.Color]::FromArgb(0, 0, 0, 0))
         $ed = $d * 1.02
-        $ex = $cx + $d * 0.40 * $notchDir
-        $g.FillEllipse($er, [float]($ex - $ed / 2), [float]($cy - $ed / 2), [float]$ed, [float]$ed)
+        $ex = $cx + $d * $dxFrac
+        $ey = $cy + $d * $dyFrac
+        $g.FillEllipse($er, [float]($ex - $ed / 2), [float]($ey - $ed / 2), [float]$ed, [float]$ed)
         $er.Dispose()
         $g.CompositingMode = [System.Drawing.Drawing2D.CompositingMode]::SourceOver
     }
@@ -253,8 +255,8 @@ function Make-Moon([string]$name, [bool]$full, [double]$diaPx = 15.0, [int]$notc
     Save-Bgra $ctx $name
 }
 
-Make-Moon "glyph_quan" $true                    # 全角：满月
-Make-Moon "glyph_ban" $false 15.0 -1            # 半角：半月（缺口朝左）
+Make-Moon "glyph_quan" $true                        # 全角：满月（实心圆）
+Make-Moon "glyph_ban" $false 16.0 0.0 -0.40         # 半角：躺倒的半月（缺口朝上）
 
 # 把单个字符画到临时画布并按墨迹裁成紧致位图（返回位图与尺寸）。
 function Render-Ink([string]$text, [double]$fontPx) {
