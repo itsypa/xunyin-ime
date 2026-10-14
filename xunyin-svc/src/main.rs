@@ -108,6 +108,19 @@ fn input_enabled() -> bool {
     std::env::var("XUNYIN_SVC_INPUT").map(|v| v != "0").unwrap_or(true)
 }
 
+/// 跑一段输入逻辑：panic 不许把服务/连接线程带走，转成一条"服务侧出错"的回复，
+/// 宿主 DLL 看到 error 就退回它自己的逻辑，用户照样能打字。
+fn guard<R>(f: impl FnOnce() -> R) -> Result<R, String> {
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)) {
+        Ok(r) => Ok(r),
+        Err(p) => {
+            let why = panic_text(&*p);
+            log(format!("❌ 逻辑 panic：{why}"));
+            Err(why)
+        }
+    }
+}
+
 /// 服务自己的日志（宿主进程的日志里看不到服务的事，分开写）。
 fn log(msg: impl AsRef<str>) {
     let msg = msg.as_ref();
@@ -215,33 +228,30 @@ fn serve(h: HANDLE) {
                 let vk = msg.get("vk").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
                 let mask = msg.get("mask").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
                 let shift = msg.get("shift").and_then(|v| v.as_bool()).unwrap_or(false);
-                // 把 panic 抓成日志：服务是隐藏窗口启动的，stderr 看不到，
-                // 一旦 after_key 里 panic（实测会连带展开崩溃），至少要留下原因。
-                match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    with_logic(|l| l.key(vk, mask, shift))
-                })) {
+                match guard(|| with_logic(|l| l.key(vk, mask, shift))) {
                     Ok(r) => json!({ "t": "reply", "reply": r }),
-                    Err(p) => {
-                        let why = panic_text(&*p);
-                        log(format!("❌ key 处理 panic：{why}"));
-                        // 带 error 字段：宿主 DLL 看到它就退回本进程逻辑，用户照常能打字
-                        json!({ "t": "reply", "reply": { "consume": false, "error": why } })
-                    }
+                    Err(why) => json!({ "t": "reply", "reply": { "consume": false, "error": why } }),
                 }
             }
             "select" if input_enabled() => {
                 let index = msg.get("index").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
-                let r = with_logic(|l| l.select(index));
-                json!({ "t": "reply", "reply": r })
+                match guard(|| with_logic(|l| l.select(index))) {
+                    Ok(r) => json!({ "t": "reply", "reply": r }),
+                    Err(why) => json!({ "t": "reply", "reply": { "consume": false, "error": why } }),
+                }
             }
             "status" => {
-                let r = with_logic(|l| l.status());
-                json!({ "t": "reply", "reply": r })
+                match guard(|| with_logic(|l| l.status())) {
+                    Ok(r) => json!({ "t": "reply", "reply": r }),
+                    Err(why) => json!({ "t": "reply", "reply": { "consume": false, "error": why } }),
+                }
             }
             "command" if input_enabled() => {
                 let name = msg.get("name").and_then(|v| v.as_str()).unwrap_or("");
-                let r = with_logic(|l| l.command(name));
-                json!({ "t": "reply", "reply": r })
+                match guard(|| with_logic(|l| l.command(name))) {
+                    Ok(r) => json!({ "t": "reply", "reply": r }),
+                    Err(why) => json!({ "t": "reply", "reply": { "consume": false, "error": why } }),
+                }
             }
             "shutdown" => {
                 log("收到 shutdown，退出");
