@@ -294,8 +294,14 @@ CLSID/GUID、快捷方式、启动行为、文案等）。安装器支持 `--sil
 ## 维护
 
 - **日志与隐私**：默认日志**不记用户输入**（原始按键、预编辑、候选词、上屏文本一律只记长度/数量），
-  因为"导出诊断包"会把日志打包，可能被贴到公开 issue 里。排查输入问题时设
-  `XUNYIN_LOG_INPUT=1`（所有进程都要设）再复现，日志里就会带上原文。
+  因为"导出诊断包"会把日志打包，可能被贴到公开 issue 里。排查输入问题时打开输入日志：
+
+  ```powershell
+  New-Item "$env:APPDATA\com.xunyin.ime\log-input" -Force   # 开（每 5 秒生效一次）
+  Remove-Item "$env:APPDATA\com.xunyin.ime\log-input"        # 关
+  ```
+
+  也可以设环境变量 `XUNYIN_LOG_INPUT=1`（但 Edge/ChatGPT 这类现成进程不方便单独设）。
   日志位置：`%APPDATA%\com.xunyin.ime\logs\`（`tsf.log` = 宿主 DLL，`svc.log` = 常驻服务）。
 
 - **按键失败策略（对齐水杉输入法的结论）**：通道失败时**丢这颗键 + 取消组合**，

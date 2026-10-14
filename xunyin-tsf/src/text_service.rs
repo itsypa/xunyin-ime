@@ -74,10 +74,28 @@ fn cached_cfg() -> xunyin_rime::config::XunyinConfig {
 /// 默认关：日志会被打进"导出诊断包"，可能被贴到公开 issue 里，所以生产日志只记
 /// 长度、数量、状态与错误码（水杉输入法在 windows/AGENTS.md 里也是这条规矩：
 /// 生产日志不得记录用户原始按键、预编辑、候选词或提交文本）。
-/// 排查输入问题时设 `XUNYIN_LOG_INPUT=1` 再复现，就能看到原文。
+///
+/// 排查输入问题时开这个开关（两种方式，任选）：
+///   * 在数据目录建一个空文件 `%APPDATA%\com.xunyin.ime\log-input`（**推荐**：
+///     宿主应用是 Edge/ChatGPT 这类现成进程，没法给它单独设环境变量）；
+///   * 或者设环境变量 `XUNYIN_LOG_INPUT=1`。
+/// 文件方式每 5 秒复查一次，删掉文件即恢复"只记长度"。
 fn log_input() -> bool {
-    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| std::env::var("XUNYIN_LOG_INPUT").is_ok())
+    use std::sync::Mutex;
+    use std::time::{Duration, Instant};
+    static CACHE: Mutex<Option<(Instant, bool)>> = Mutex::new(None);
+    let mut g = CACHE.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some((at, v)) = *g {
+        if at.elapsed() < Duration::from_secs(5) {
+            return v;
+        }
+    }
+    let on = std::env::var("XUNYIN_LOG_INPUT").is_ok()
+        || xunyin_rime::config::user_data_dir()
+            .join("log-input")
+            .exists();
+    *g = Some((Instant::now(), on));
+    on
 }
 
 /// 文本服务共享状态。
