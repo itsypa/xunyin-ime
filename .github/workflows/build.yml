@@ -103,9 +103,19 @@ jobs:
       - name: 生成安装包（wind-installer）
         shell: powershell
         run: |
-          $params = @("-SkipBuild", "-Arch", "both", "-Version", "0.1.$env:GITHUB_RUN_NUMBER", "-Compression", "lzma")
+          # 具名参数必须用**哈希表** splat：数组 splat 只按位置传值，不会把 "-Arch"
+          # 当参数名——数组里的 "-SkipBuild" 会被当成 -Arch 的值，ValidateSet 直接拒绝
+          # （CI 之前就死在这一步，报"参数 -SkipBuild 不属于 ValidateSet"）。
+          $params = @{
+            SkipBuild   = $true
+            Arch        = "both"
+            Version     = "0.1.$env:GITHUB_RUN_NUMBER"
+            Compression = "lzma"
+          }
           if ($env:SIGN_PFX) {
-            $params += @("-Sign", "-PfxPath", $env:SIGN_PFX, "-PfxPassword", $env:SIGN_PFX_PASSWORD)
+            $params.Sign = $true
+            $params.PfxPath = $env:SIGN_PFX
+            $params.PfxPassword = $env:SIGN_PFX_PASSWORD
             Write-Host "已启用代码签名"
           } else {
             Write-Host "未配置签名证书（secrets.SIGN_PFX_BASE64），跳过签名"
