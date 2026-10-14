@@ -66,6 +66,17 @@ fn wide(s: &str) -> Vec<u16> {
 }
 
 /// 输入逻辑开关（第 2 阶段调试用；默认关，避免服务被未定位的崩溃带走）。
+/// 从 panic payload 里取出可读原因（写进服务日志）。
+fn panic_text(p: &(dyn std::any::Any + Send)) -> String {
+    if let Some(s) = p.downcast_ref::<&str>() {
+        (*s).to_string()
+    } else if let Some(s) = p.downcast_ref::<String>() {
+        s.clone()
+    } else {
+        "未知 panic".to_string()
+    }
+}
+
 fn input_enabled() -> bool {
     // 默认关：服务侧输入路径还卡在 RimeApi 结构体尺寸不符（792 vs librime 的 788），
     // 调用结构体后半段的 API（get_status/get_option）会崩。等 ABI 对齐后再打开。
@@ -181,8 +192,18 @@ fn serve(h: HANDLE) {
                 let vk = msg.get("vk").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
                 let mask = msg.get("mask").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
                 let shift = msg.get("shift").and_then(|v| v.as_bool()).unwrap_or(false);
-                let r = with_logic(|l| l.key(vk, mask, shift));
-                json!({ "t": "reply", "reply": r })
+                // 把 panic 抓成日志：服务是隐藏窗口启动的，stderr 看不到，
+                // 一旦 after_key 里 panic（实测会连带展开崩溃），至少要留下原因。
+                match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    with_logic(|l| l.key(vk, mask, shift))
+                })) {
+                    Ok(r) => json!({ "t": "reply", "reply": r }),
+                    Err(p) => {
+                        let why = panic_text(&*p);
+                        log(format!("❌ key 处理 panic：{why}"));
+                        json!({ "t": "reply", "reply": { "consume": false, "panic": why } })
+                    }
+                }
             }
             "select" if input_enabled() => {
                 let index = msg.get("index").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
@@ -229,6 +250,11 @@ fn main() {
         "服务启动 tag={SVC_TAG} proto={PROTO} exe={:?}",
         std::env::current_exe().map(|p| p.display().to_string())
     ));
+    // panic 钩子：服务是隐藏窗口启动的，stderr 看不到；而且实测 after_key 里 panic 后
+    // 展开（跑析构）会连带越界崩，catch_unwind 接不到——必须在展开前把原因落盘。
+    std::panic::set_hook(Box::new(|info| {
+        log(format!("❌ panic: {info}"));
+    }));
     let name = wide(PIPE_NAME);
     let mode = NAMED_PIPE_MODE(PIPE_TYPE_BYTE.0 | PIPE_READMODE_BYTE.0 | PIPE_WAIT.0);
     let open = FILE_FLAGS_AND_ATTRIBUTES(PIPE_ACCESS_DUPLEX.0);
@@ -269,13 +295,24 @@ fn main() {
             touch();
             // HANDLE 是裸指针，跨线程需要自己保证安全（这里句柄只归这个线程用）
             let h_addr = h.0 as usize;
-            std::thread::spawn(move || {
-                let h = HANDLE(h_addr as *mut core::ffi::c_void);
-                serve(h);
+            // 显式给足栈：输入逻辑这条链路很深（key → after_key → 各种 format!/Vec），
+            // 默认 2MB 在 debug/release 混合调用下会踩到栈保护页，表现为
+            // "固定偏移的 0xC0000005"（之前排查了很久，就是这个）。
+            let spawned = std::thread::Builder::new()
+                .stack_size(8 * 1024 * 1024)
+                .spawn(move || {
+                    let h = HANDLE(h_addr as *mut core::ffi::c_void);
+                    serve(h);
+                    unsafe {
+                        let _ = CloseHandle(h);
+                    }
+                });
+            if spawned.is_err() {
+                log("创建处理线程失败");
                 unsafe {
                     let _ = CloseHandle(h);
                 }
-            });
+            }
         } else {
             unsafe {
                 let _ = CloseHandle(h);
