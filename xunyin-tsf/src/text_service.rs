@@ -1084,6 +1084,8 @@ fn test_key(shared: &Arc<Mutex<SharedState>>, vk: u32, lparam: usize) -> bool {
         return false;
     }
     let mask = key::modifier_mask();
+    // 提前把服务客户端线程拉起来：这样"刚打开的应用里的第一次按键"也能尽快走服务
+    crate::svc::poll();
     let service = crate::svc::ready();
     let composing = || {
         if service {
@@ -1116,8 +1118,10 @@ fn test_key(shared: &Arc<Mutex<SharedState>>, vk: u32, lparam: usize) -> bool {
     }
     let shift = key::key_state_down(0x10);
     // 裸 Shift：交给 Rime 处理（中英切换），松开时按需切换
+    // 这里一律吞下：真正的处理在 OnKeyUp（服务或本进程），若两边都没准备好，
+    // handle_key_down 会返回 false，按键照样透传给应用。
     if key::is_shift_key(vk) {
-        return backend();
+        return true;
     }
     // Shift+方向键/编辑键：也送达 Rime，让它知道“不是裸 Shift”，
     // 避免松开 Shift 时误切中英模式（文本选择等场景）。
