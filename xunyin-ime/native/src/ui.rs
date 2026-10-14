@@ -578,6 +578,27 @@ unsafe fn text(
     SelectObject(dc, old);
 }
 
+/// 单行文字，超宽时用省略号收尾（GDI 的 DT_END_ELLIPSIS）。
+/// 说明文字放在卡片左半栏，写长一点就会被硬切；用省略号至少看得出"还有下文"。
+unsafe fn text_ellipsis(
+    dc: HDC,
+    r: RECT,
+    s: &str,
+    font: HFONT,
+    color: u32,
+    align: DRAW_TEXT_FORMAT,
+) {
+    let old = SelectObject(dc, HGDIOBJ(font.0));
+    let _ = SetBkMode(dc, TRANSPARENT);
+    let _ = SetTextColor(dc, COLORREF(color));
+    let mut buf = wide(s);
+    let mut rect = r;
+    let flags =
+        DRAW_TEXT_FORMAT(align.0 | DT_NOPREFIX.0 | DT_VCENTER.0 | DT_SINGLELINE.0 | DT_END_ELLIPSIS.0);
+    DrawTextW(dc, &mut buf, &mut rect, flags);
+    SelectObject(dc, old);
+}
+
 /// ARGB → COLORREF（GDI 文字用）。
 fn argb_to_colorref(c: u32) -> u32 {
     let r = c & 0xFF;
@@ -710,7 +731,7 @@ impl App {
             // 说明文字画在标签下方（以前这里被丢弃，界面显得只剩一堆控件）
             if !desc.is_empty() {
                 let dr = RECT { left: x, top: y + 22, right: x + w / 2, bottom: y + 40 };
-                text(dc, dr, desc, self.font_small, t.text3, DT_LEFT, true);
+                text_ellipsis(dc, dr, desc, self.font_small, t.text3, DT_LEFT);
             }
         }
         RECT { left: x + w / 2, top: y + 4, right: x + w, bottom: y + 40 }
@@ -2641,8 +2662,8 @@ fn draw_input(app: &mut App, dc: HDC, x0: i32, y0: i32, w: i32) -> i32 {
     let mut ry = cy;
     for (label, desc, id, names, sel) in [
         ("全角 / 半角", "标点与空格的字宽", Id::SegFull, ["半角", "全角"], if app.cfg.input.full_shape { 1 } else { 0 }),
-        ("中英标点", "中文标点（，。）或英文标点（, .）", Id::SegPunct, ["中文", "英文"], if app.cfg.input.ascii_punct { 1 } else { 0 }),
-        ("默认中英模式", "新会话直接输入英文", Id::SegAscii, ["中文", "英文"], if app.cfg.input.ascii_mode { 1 } else { 0 }),
+        ("中英标点", "中文/英文标点", Id::SegPunct, ["中文", "英文"], if app.cfg.input.ascii_punct { 1 } else { 0 }),
+        ("默认中英模式", "新会话默认英文", Id::SegAscii, ["中文", "英文"], if app.cfg.input.ascii_mode { 1 } else { 0 }),
     ] {
         let r = app.row(dc, x + app.s(18), ry, col_w - app.s(36), label, desc);
         // 控件宽度与下拉统一（160），这样各卡片右侧控件左边缘对齐
@@ -2653,7 +2674,7 @@ fn draw_input(app: &mut App, dc: HDC, x0: i32, y0: i32, w: i32) -> i32 {
 
     let (x, cy0, col_w) = slots[2];
     let cy = app.card(dc, x, cy0, col_w, app.s(96), "候选窗", "");
-    let r = app.row(dc, x + app.s(18), cy, col_w - app.s(36), "每页候选数", "改动后自动重建词库索引");
+    let r = app.row(dc, x + app.s(18), cy, col_w - app.s(36), "每页候选数", "改动后重建索引");
     let sl = RECT { left: r.left, top: r.top + app.s(4), right: r.right - app.s(78), bottom: r.top + app.s(32) };
     app.slider(dc, Id::PageSize, sl, app.cfg.input.page_size as i32, 3, 10, " 个");
 
@@ -2674,10 +2695,10 @@ fn draw_input(app: &mut App, dc: HDC, x0: i32, y0: i32, w: i32) -> i32 {
         app.combo(dc, id, cb, &shown);
         ry += app.s(52);
     }
-    let r = app.row(dc, x + app.s(18), ry, col_w - app.s(36), "词语联想", "上屏后接着给出常跟的词");
+    let r = app.row(dc, x + app.s(18), ry, col_w - app.s(36), "词语联想", "上屏后给出联想词");
     app.toggle_switch(dc, Id::SwitchAssoc, r, app.cfg.input.enable_assoc);
     ry += app.s(46);
-    let r = app.row(dc, x + app.s(18), ry, col_w - app.s(36), "快捷输入", "rq 日期 / sj 时间 / xq 星期 / v 模式");
+    let r = app.row(dc, x + app.s(18), ry, col_w - app.s(36), "快捷输入", "rq/sj/xq 快捷码");
     app.toggle_switch(dc, Id::SwitchQuick, r, app.cfg.input.enable_quick_input);
     ry += app.s(46);
 
@@ -2703,7 +2724,7 @@ fn draw_input(app: &mut App, dc: HDC, x0: i32, y0: i32, w: i32) -> i32 {
         }
     }
     let mut fy = cy + 4 * app.s(28) + app.s(4);
-    let r = app.row(dc, rx + app.s(18), fy, col_w - app.s(36), "用户词典自学习", "记住你常选的词并调整词频");
+    let r = app.row(dc, rx + app.s(18), fy, col_w - app.s(36), "用户词典自学习", "记住常选的词");
     app.toggle_switch(dc, Id::SwitchLearn, r, app.cfg.input.enable_user_dict);
     let _ = fy;
 
@@ -2793,7 +2814,7 @@ fn draw_appearance(app: &mut App, dc: HDC, x0: i32, y0: i32, w: i32) -> i32 {
     let cb = RECT { left: r.right - app.s(160), top: r.top + app.s(4), right: r.right, bottom: r.top + app.s(36) };
     app.combo(dc, Id::FontCombo, cb, &shown);
     fy += app.s(52);
-    let r = app.row(dc, x + app.s(18), fy, col_w - app.s(36), "显示候选注释", "拼音/来源等附加说明");
+    let r = app.row(dc, x + app.s(18), fy, col_w - app.s(36), "显示候选注释", "拼音/来源附加说明");
     app.toggle_switch(dc, Id::SwitchComment, r, app.cfg.appearance.show_comment);
 
     let (rx, cy0, col_w) = slots[3];
@@ -2920,9 +2941,9 @@ fn draw_dict(app: &mut App, dc: HDC, x0: i32, y0: i32, w: i32) -> i32 {
     let cy = app.card(dc, x, cy0, col_w, srch, "候选来源", "");
     let mut fy = cy;
     for (label, desc, id, on) in [
-        ("Emoji", "拼音候选里带上 emoji", Id::SwitchEmoji, app.cfg.input.enable_emoji),
-        ("英文单词", "中英混输与英文补全", Id::SwitchEnglish, app.cfg.input.enable_english),
-        ("自定义短语", "你自己导入的短语表", Id::SwitchPhrase, app.cfg.input.enable_custom_phrase),
+        ("Emoji", "候选里带上 emoji", Id::SwitchEmoji, app.cfg.input.enable_emoji),
+        ("英文单词", "中英混输与补全", Id::SwitchEnglish, app.cfg.input.enable_english),
+        ("自定义短语", "自己导入的短语", Id::SwitchPhrase, app.cfg.input.enable_custom_phrase),
     ] {
         let r = app.row(dc, x + app.s(18), fy, col_w - app.s(36), label, desc);
         app.toggle_switch(dc, id, r, on);
@@ -3071,15 +3092,15 @@ fn draw_about(app: &mut App, dc: HDC, x0: i32, y0: i32, w: i32) -> i32 {
     let kh = app.s(396 + 34 * 4);
     let cy = app.card(dc, rx, ry, col_w, kh, "快捷键", "");
     let lines = [
-        ("Shift", "组合中上屏拼音；未组合切换中/英"),
+        ("Shift", "组合中出拼音"),
         ("回车", "默认原样上屏（行为可改）"),
         ("空格", "确认高亮候选词"),
         ("1-9", "选择对应候选"),
         ("Ctrl+.", "切换中英标点"),
-        ("Ctrl+数字", "删掉这个错词（不再出现）"),
+        ("Ctrl+数字", "删词后不再出现"),
         ("Tab / [ ] / - =", "候选翻页"),
         ("rq / sj / xq", "日期 / 时间 / 星期"),
-        ("v 数字或算式", "中文大写、进制转换、算结果"),
+        ("v 数字或算式", "大写/进制/算式"),
         ("← / →", "拼音内逐字移动"),
         ("状态栏「符号」", "打开/收起符号面板"),
         ("右键状态栏", "开关菜单"),
