@@ -25,7 +25,11 @@ window_title    = "迅音输入法 安装向导"
 url_protocol    = "xunyinime"
 agreement_url   = ""
 portable_marker = "portable_mode"
-process_names   = ["xunyin-ime"]
+    # 安装/卸载前要先结束的进程：
+    #   xunyin-ime  = 设置中心
+    #   xunyin-svc  = 常驻服务（它随 DLL 被拉起，会在安装目录里一直被占用，
+    #                 不停掉就换不掉 tsf\xunyin-svc.exe，卸载也删不干净）
+process_names   = ["xunyin-ime", "xunyin-svc"]
     # 需要 ALL APPLICATION PACKAGES 读取权限的 DLL（沉浸式/UWP 应用加载输入法所需）
     # 路径一律用反斜杠：32 位 regsvr32（SysWOW64）无法处理混用正斜杠的路径（会把 / 当开关），
     # 实测 "tsf-x86/xunyin_tsf_x86.dll" 注册失败、换成反斜杠即成功。
