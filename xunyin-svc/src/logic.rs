@@ -113,6 +113,27 @@ impl Logic {
     /// 处理一次按键。`mask` 是 kRimeModifier* 位掩码，`shift` 是 Shift 是否按下。
     pub fn key(&mut self, vk: u32, mask: i32, shift: bool) -> Reply {
         crate::log(format!("step1: 收到按键 vk=0x{vk:02X}"));
+        // 二分实验：XUNYIN_SVC_RAW_KEY=1 时只做最小序列（init → process_key → get_context），
+        // 绕开自己写的全部逻辑。若这样也崩 ⇒ 问题在引擎/环境；不崩 ⇒ 问题在我的逻辑代码。
+        if std::env::var("XUNYIN_SVC_RAW_KEY").is_ok() {
+            let mut out = Reply::default();
+            if let Some(e) = self.engine() {
+                crate::log("raw: 调 process_key");
+                out.consume = e.process_key(rime_keycode(vk, shift), mask);
+                crate::log("raw: process_key 返回，接着 get_context");
+                let snap = e.get_context();
+                let cs: Vec<String> = snap
+                    .map(|c| c.candidates.iter().map(|x| x.text.clone()).collect())
+                    .unwrap_or_default();
+                crate::log(format!("raw: get_context 返回 {} 个候选", cs.len()));
+                out.candidates = cs;
+            }
+            crate::log("raw: 返回前分配一下内存（触发堆损坏暴露）");
+            let junk: Vec<String> = (0..500).map(|i| format!("raw-{i}")).collect();
+            out.preedit = format!("raw{}", junk.len());
+            crate::log("raw: 完成");
+            return out;
+        }
         let cfg = xunyin_rime::config::load_config();
         crate::log("step2: 配置读取完成");
         let ctrl = mask & xunyin_rime::kRimeModifierControl != 0;
@@ -482,6 +503,17 @@ impl Logic {
             .as_ref()
             .map(|s| format_preedit(&s.preedit, s.cursor_pos.min(s.preedit.len()), sep))
             .unwrap_or_default();
+        // 分段二分：L=1 只到"组合串算完"；L=2 再加"叠加候选"；L=3 再加"黑名单过滤"
+        let level = std::env::var("XUNYIN_SVC_LEVEL")
+            .ok()
+            .and_then(|v| v.parse::<u32>().ok());
+        if level == Some(1) {
+            out.preedit = preedit.clone();
+            out.caret = caret;
+            out.commit = commit.clone();
+            crate::log("L1: 组合串算完就返回");
+            return;
+        }
         crate::log(format!("step7b: 组合串={preedit:?} caret={caret}"));
         // 叠加候选：快捷输入（rq/sj/xq）→ 联想 → Rime 候选
         let mut overlay: Vec<String> = Vec::new();
@@ -504,6 +536,13 @@ impl Logic {
             }
         }
         crate::log(format!("step7c: 叠加候选 {} 个", overlay.len()));
+        if level == Some(2) {
+            out.preedit = preedit.clone();
+            out.caret = caret;
+            out.commit = commit.clone();
+            crate::log("L2: 叠加候选算完就返回");
+            return;
+        }
         // Rime 候选 + 黑名单过滤 + 显示下标 → Rime 下标映射
         let (cands, comments, selected, page, page_size) = match snapshot.as_ref() {
             Some(s) => (
@@ -527,6 +566,35 @@ impl Logic {
             f_m.push(m);
         }
         crate::log(format!("step7d: 候选过滤后 {} 个", f_c.len()));
+        if level == Some(4) {
+            // 只装填基础字段，不碰 overlay/cand_map/候选注释
+            out.preedit = preedit;
+            out.caret = caret;
+            out.commit = commit;
+            out.overlay_len = overlay.len();
+            crate::log("L4: 基础字段装填完就返回");
+            return;
+        }
+        if level == Some(5) {
+            // 装填全部字段，但不写 self.overlay / self.cand_map
+            out.preedit = preedit;
+            out.caret = caret;
+            out.commit = commit;
+            out.overlay_len = overlay.len();
+            out.comments = overlay_comments.into_iter().chain(f_m).collect();
+            out.candidates = overlay.iter().cloned().chain(f_c).collect();
+            out.selected = 0;
+            crate::log("L5: 全部字段装填完（不写 self）就返回");
+            return;
+        }
+        if level == Some(3) {
+            out.preedit = preedit;
+            out.caret = caret;
+            out.commit = commit;
+            out.candidates = f_c;
+            crate::log("L3: 候选过滤完就返回");
+            return;
+        }
         out.preedit = preedit;
         out.caret = caret;
         out.commit = commit;
