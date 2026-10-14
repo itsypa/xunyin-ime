@@ -2846,7 +2846,7 @@ fn draw_input(app: &mut App, dc: HDC, x0: i32, y0: i32, w: i32) -> i32 {
     let y0 = page_header(app, dc, x0, y0, w, "输入设置", "输入方案、按键行为、模糊音；改动即时生效");
     let hs = [
         app.s(92),          // 默认输入方案
-        app.s(242),         // 输入模式（3 个分段 + 1 个开关）
+        app.s(226),         // 输入模式（3 个分段 + 1 个开关，行内不再有小字注释）
         app.s(96),          // 候选窗（每页候选数）
         app.s(196 + 52 + 46 * 2), // 按键行为
         app.s(212),         // 模糊音 + 自学习
@@ -2866,19 +2866,20 @@ fn draw_input(app: &mut App, dc: HDC, x0: i32, y0: i32, w: i32) -> i32 {
     app.combo(dc, Id::SchemaCombo, combo, &schema_name);
 
     let (x, cy0, col_w) = slots[1];
-    let mode_h = app.s(242);
+    let mode_h = app.s(226);
     let cy = app.card(dc, x, cy0, col_w, mode_h, "输入模式", "");
     let mut ry = cy;
-    for (label, desc, id, names, sel) in [
-        ("全角 / 半角", "标点与空格的字宽", Id::SegFull, ["半角", "全角"], if app.cfg.input.full_shape { 1 } else { 0 }),
-        ("中英标点", "中文/英文标点", Id::SegPunct, ["中文", "英文"], if app.cfg.input.ascii_punct { 1 } else { 0 }),
-        ("默认中英模式", "新会话默认英文", Id::SegAscii, ["中文", "英文"], if app.cfg.input.ascii_mode { 1 } else { 0 }),
+    // 这几行不给小字注释：标签 + 右边的分段值已经说明了一切，注释是多余的
+    for (label, id, names, sel) in [
+        ("全角 / 半角", Id::SegFull, ["半角", "全角"], if app.cfg.input.full_shape { 1 } else { 0 }),
+        ("中英标点", Id::SegPunct, ["中文", "英文"], if app.cfg.input.ascii_punct { 1 } else { 0 }),
+        ("默认中英模式", Id::SegAscii, ["中文", "英文"], if app.cfg.input.ascii_mode { 1 } else { 0 }),
     ] {
-        let r = app.row(dc, x + app.s(18), ry, col_w - app.s(36), label, desc);
+        let r = app.row(dc, x + app.s(18), ry, col_w - app.s(36), label, "");
         // 控件宽度与下拉统一（160），这样各卡片右侧控件左边缘对齐
         let seg = RECT { left: r.right - app.s(160), top: r.top + app.s(6), right: r.right, bottom: r.top + app.s(36) };
         app.segmented(dc, id, seg, &names, sel);
-        ry += app.s(52);
+        ry += app.s(46);
     }
     // 中英状态按应用记（输入逻辑搬进服务后，所有应用原本会共用同一个中英状态）
     {
@@ -2888,7 +2889,7 @@ fn draw_input(app: &mut App, dc: HDC, x0: i32, y0: i32, w: i32) -> i32 {
             ry,
             col_w - app.s(36),
             "中英状态按应用记忆",
-            "关掉后所有应用统一",
+            "",
         );
         app.toggle_switch(dc, Id::SwitchPerApp, r, app.cfg.input.per_app_mode);
     }
