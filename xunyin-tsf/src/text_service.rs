@@ -617,6 +617,7 @@ impl TextService_Impl {
                 // 不重启应用也能生效（对标小狼毫的重新部署）。本进程内是
                 // 立刻重建引擎，因此本按键会落到新引擎上。
                 crate::engine::poll_reload();
+                crate::svc::poll();
                 let cfg = xunyin_rime::config::load_config();
                 // ascii_mode 不在此处应用：它由 Shift 键在 Rime 内切换，
                 // 配置里的 ascii_mode 只是新会话的默认值（set_default_options）。
@@ -1134,6 +1135,8 @@ impl ITfTextInputProcessor_Impl for TextService_Impl {
                 crate::status_bar::hide_status_bar();
             }
         }
+        // 激活时就拉起服务客户端：服务先起来，用户开始打字时它已经在跑了
+        crate::svc::poll();
         crate::tsf_log!("TSF Activate: done");
         Ok(())
     }

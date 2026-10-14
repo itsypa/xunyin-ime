@@ -23,6 +23,7 @@ mod key;
 mod log;
 mod quick_input;
 mod register;
+mod svc;
 mod symbol_panel;
 mod status_bar;
 mod text_service;

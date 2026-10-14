@@ -117,6 +117,38 @@ Publish-StagedFile -Source $built -Dest $dst
 $rimeSrc = Join-Path $outDir "rime.dll"
 if (-not (Test-Path -LiteralPath $rimeSrc)) { throw "rime.dll not found: $rimeSrc" }
 Publish-StagedFile -Source $rimeSrc -Dest (Join-Path $stageDir "rime.dll")
+
+# 服务进程（xunyin-svc.exe）放在 DLL 旁边：
+#   DLL 启动时连不上就拉它起来；磁盘上的服务被重编替换后（指纹变化），
+#   运行中的 DLL 会自动杀掉旧服务、拉起新的 —— 于是"改服务代码不用重开宿主应用"。
+$svcDir = Join-Path $root "xunyin-svc"
+$svcOut = if ($Arch -eq "x64") {
+    Join-Path $svcDir "target\release\xunyin-svc.exe"
+} else {
+    Join-Path $svcDir "target\$target\release\xunyin-svc.exe"
+}
+if (-not $SkipBuild) {
+    Push-Location $svcDir
+    try {
+        $ErrorActionPreference = "Continue"
+        if ($Arch -eq "x64") {
+            cargo build --release 2>&1 | Out-Host
+        } else {
+            cargo build --release --target $target 2>&1 | Out-Host
+        }
+        $code = $LASTEXITCODE
+        $ErrorActionPreference = "Stop"
+        if ($code -ne 0) { throw "cargo build failed (xunyin-svc, $Arch)" }
+    } finally {
+        Pop-Location
+    }
+}
+if (Test-Path -LiteralPath $svcOut) {
+    Publish-StagedFile -Source $svcOut -Dest (Join-Path $stageDir "xunyin-svc.exe")
+    Write-Host "[$Arch] staged service: $(Join-Path $stageDir 'xunyin-svc.exe')"
+} else {
+    Write-Host "[$Arch] 警告：没找到服务产物 $svcOut（输入法仍可用，只是服务不参与）"
+}
 Write-Host "[$Arch] staged: $dst"
 
 # 词库自检：DLL 依次找 <dll>\rime\data → <dll>\..\rime\data → 上溯 3 级的 xunyin-ime\rime\data

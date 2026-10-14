@@ -1085,6 +1085,11 @@ fn write_schema_patch(cfg: &xunyin_rime::config::XunyinConfig) {
 /// 定位设置中心可执行文件，兼容两种布局：
 /// - 安装布局：<安装目录>\xunyin-ime.exe（TSF DLL 在 tsf\ 或 tsf-x86\ 子目录）；
 /// - 开发布局：xunyin-ime\native\target\{debug,release}\xunyin-ime.exe。
+/// 供服务客户端定位 DLL 所在目录（服务 exe 可能就放在它旁边）。
+pub fn module_dir_for_svc() -> Option<std::path::PathBuf> {
+    module_dir()
+}
+
 fn module_dir() -> Option<std::path::PathBuf> {
     unsafe {
         let mut hmod: HMODULE = core::mem::zeroed();
@@ -1259,6 +1264,7 @@ extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM
                 // 重新部署即可生效（不用重启记事本 / 浏览器 / ChatGPT）。
                 if wparam.0 == POLL_TIMER_ID {
                     engine::poll_reload();
+                    crate::svc::poll();
                 }
                 // 前台性核对：本进程已不是前台进程 → 隐藏（见 POLL_TIMER_ID 注释）
                 if wparam.0 == POLL_TIMER_ID && this.shown.get() {

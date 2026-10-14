@@ -242,6 +242,7 @@ dependencies = [
 name = "xunyin-tsf"
 version = "0.1.0"
 dependencies = [
+ "serde_json",
  "windows",
  "windows-core",
  "xunyin-rime",

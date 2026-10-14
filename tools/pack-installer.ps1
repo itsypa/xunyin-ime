@@ -77,6 +77,11 @@ Copy-Item $tsfX64 (Join-Path $payloadDir "tsf\xunyin_tsf_x64.dll") -Force
 Copy-Item $rimeX64 (Join-Path $payloadDir "tsf\rime.dll") -Force
 Copy-Item $tsfX86 (Join-Path $payloadDir "tsf-x86\xunyin_tsf_x86.dll") -Force
 Copy-Item $rimeX86 (Join-Path $payloadDir "tsf-x86\rime.dll") -Force
+# 常驻服务（DLL 会从这里拉起；改服务代码不用重开宿主应用）
+$svcX64 = Join-Path $root "xunyin-svc\target\release\xunyin-svc.exe"
+$svcX86 = Join-Path $root "xunyin-svc\target\i686-pc-windows-msvc\release\xunyin-svc.exe"
+if (Test-Path $svcX64) { Copy-Item $svcX64 (Join-Path $payloadDir "tsf\xunyin-svc.exe") -Force }
+if (Test-Path $svcX86) { Copy-Item $svcX86 (Join-Path $payloadDir "tsf-x86\xunyin-svc.exe") -Force }
 
 # 语言栏图标：分别放进 tsf/ 与 tsf-x86/（DllRegisterServer 会按 DLL 同目录找 xunyin.ico）
 $icoSrc = Join-Path $root "xunyin-ime\icons\xunyin.ico"
@@ -93,8 +98,8 @@ Write-Host "payload 组装完成: $payloadDir ($size MB)"
 $required = @(
     "xunyin-ime.exe", "rime.dll", "uninstall.exe",
     "rime\data\default.yaml",
-    "tsf\xunyin_tsf_x64.dll", "tsf\rime.dll",
-    "tsf-x86\xunyin_tsf_x86.dll", "tsf-x86\rime.dll"
+    "tsf\xunyin_tsf_x64.dll", "tsf\rime.dll", "tsf\xunyin-svc.exe",
+    "tsf-x86\xunyin_tsf_x86.dll", "tsf-x86\rime.dll", "tsf-x86\xunyin-svc.exe"
 )
 $missing = $required | Where-Object { -not (Test-Path (Join-Path $payloadDir $_)) }
 if ($missing) { throw "payload 缺少必要文件: $($missing -join ', ')" }
