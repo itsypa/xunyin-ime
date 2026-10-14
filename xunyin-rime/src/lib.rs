@@ -10,7 +10,9 @@
 pub mod assoc;
 pub mod blocklist;
 pub mod config;
+pub mod keycode;
 pub mod quick_input;
+pub mod preedit;
 pub mod reload;
 pub mod rime_engine;
 pub mod rime_ffi;

@@ -808,6 +808,20 @@ impl CandidateWindow {
             Err(_) => return,
         };
         let Some(shared) = shared else { return };
+        // 服务接管输入时，候选与组合状态都在服务里：把**显示下标**交给它，
+        // 它自己换算 Rime 下标并返回要上屏的文本。
+        if crate::svc::ready() {
+            if let Some(r) = crate::svc::select(index) {
+                crate::tsf_log!("candidate click: 服务返回 commit={:?}", r.commit);
+                if let Ok(mut st) = shared.lock() {
+                    st.overlay.clear();
+                    st.v_mode = None;
+                }
+                schedule_commit(&shared, r.commit);
+                return;
+            }
+            crate::tsf_log!("candidate click: 服务不可用，落到本进程逻辑");
+        }
         // 叠加候选（快捷输入 / 联想 / v 模式）：点它就上屏，不走 Rime
         let overlay = match shared.lock() {
             Ok(st) => st.overlay.clone(),

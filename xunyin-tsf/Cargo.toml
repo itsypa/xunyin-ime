@@ -12,6 +12,7 @@ crate-type = ["cdylib"]
 xunyin-rime = { path = "../xunyin-rime" }
 serde_json = "1"
 windows = { version = "0.61", features = [
+    "Win32_Devices_Communication",
     "Win32_Foundation",
     "Win32_Graphics_Gdi",
     "Win32_System_Com",

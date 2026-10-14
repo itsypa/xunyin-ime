@@ -12,6 +12,19 @@ use std::ffi::{c_char, c_int, c_void, CStr, CString};
 pub type RimeSessionId = usize;
 pub type Bool = i32;
 
+/// 说明：librime 往调用方给的结构体里写数据时，**按它自己的 sizeof 写**，
+/// 不会按我们声明的结构体大小裁剪。这个 rime.dll（RimeGetVersion = 1.17.0）实测：
+///   * sizeof(RimeContext) = 92 字节（本文件按 rime_api.h 定义出来只有 88）
+///   * sizeof(RimeStatus)  = 60 字节（本文件是 56）
+/// 也就是说，头文件定义比 DLL 少 4 字节 —— 每次 RimeGetContext 都会往调用方栈上多写
+/// 4 字节，症状是"随机 0xC0000005、指针低 32 位被清零"（排查了很久的真凶）。
+///
+/// 因此下面这些"由 librime 填充"的结构体统一在尾部加 `_reserved` 余量：
+///   * 字段偏移与本文件一致（前面的字段位置是对的，实测校验过）；
+///   * 尾部余量保证 librime 多写几字节也只是写进余量里，不会写坏调用方的栈；
+///   * 传给 librime 的 data_size 用 `offset_of!(T, _reserved)`，即"最后一个真实字段
+///     的结束位置"，与 rime_api.h 里 RIME_STRUCT_INIT 的口径一致（sizeof - 4）。
+
 /// librime 引擎是全局单例，其 API 函数指针表是线程安全的（内部有锁）。
 /// 这里显式声明 Send/Sync，使 RimeApi 可放入共享状态。
 unsafe impl Send for RimeApi {}
@@ -32,6 +45,9 @@ pub struct RimeTraits {
     pub log_dir: *const c_char,
     pub prebuilt_data_dir: *const c_char,
     pub staging_dir: *const c_char,
+    /// 尾部余量（见文件头说明）：librime 只读这个结构体，多留空间是为了
+    /// 万一上游给 RimeTraits 加了字段，读到的也是我们这块内存而不是越界读。
+    pub _reserved: [u8; 64],
 }
 
 impl Default for RimeTraits {
@@ -74,6 +90,8 @@ pub struct RimeContext {
     pub menu: RimeMenu,
     pub commit_text_preview: *mut c_char,
     pub select_labels: *mut *mut c_char,
+    /// 尾部余量（见文件头说明）：librime 1.17 在这里还有 4 字节字段。
+    pub _reserved: [u8; 40],
 }
 
 #[repr(C)]
@@ -88,12 +106,16 @@ pub struct RimeStatus {
     pub is_simplified: Bool,
     pub is_traditional: Bool,
     pub is_ascii_punct: Bool,
+    /// 尾部余量（见文件头说明）：librime 1.17 在这里还有 8 字节字段。
+    pub _reserved: [u8; 16],
 }
 
 #[repr(C)]
 pub struct RimeCommit {
     pub data_size: c_int,
     pub text: *mut c_char,
+    /// 尾部余量（见文件头说明）。
+    pub _reserved: [u8; 16],
 }
 
 /// 与 rime_api.h 中 `typedef struct rime_config_t { void* ptr; }` 保持一致。
@@ -267,6 +289,22 @@ pub struct RimeApi {
 /// librime 的通知回调：`(context, session_id, message_type, message_value)`。
 pub type RimeNotificationHandler =
     unsafe extern "C" fn(*mut c_void, RimeSessionId, *const c_char, *const c_char);
+
+/// librime 口径的 data_size：**到最后一个真实字段结束为止的长度**
+/// （等价于 rime_api.h 里的 `RIME_STRUCT_INIT`，即 sizeof - sizeof(data_size)）。
+/// 直接用 sizeof 会把尾部 `_reserved` 余量也当成"有字段"，所以这里取 _reserved 的偏移。
+pub const fn traits_data_size() -> c_int {
+    std::mem::offset_of!(RimeTraits, _reserved) as c_int
+}
+pub const fn context_data_size() -> c_int {
+    std::mem::offset_of!(RimeContext, _reserved) as c_int
+}
+pub const fn status_data_size() -> c_int {
+    std::mem::offset_of!(RimeStatus, _reserved) as c_int
+}
+pub const fn commit_data_size() -> c_int {
+    std::mem::offset_of!(RimeCommit, _reserved) as c_int
+}
 
 /// 从 C 字符串指针转为 Rust String（空指针返回空串）
 pub unsafe fn cstr_to_string(ptr: *const c_char) -> String {

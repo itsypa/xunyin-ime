@@ -20,6 +20,30 @@ pub struct RimeEngine {
 // librime 是全局单例引擎；同一时刻只允许一个引擎实例存在。
 static ENGINE_LOCK: Mutex<()> = Mutex::new(());
 
+/// librime 结构体尺寸自检结果：正常情况下是 None。
+/// 如果将来换了更新的 librime，它的结构体比 we 声明的余量还大，这里会留下提示
+/// （宿主把 `abi_note()` 写进日志），提示我们去 rime_ffi.rs 补 `_reserved`。
+static ABI_NOTE: Mutex<Option<String>> = Mutex::new(None);
+
+/// 取一次 ABI 自检提示（没有就返回 None）。
+pub fn abi_note() -> Option<String> {
+    ABI_NOTE.lock().ok().and_then(|g| g.clone())
+}
+
+fn check_abi<'a>(what: &str, reported_data_size: c_int, declared: usize) -> bool {
+    let reported = reported_data_size.max(0) as usize + 4;
+    if reported > declared {
+        if let Ok(mut g) = ABI_NOTE.lock() {
+            *g = Some(format!(
+                "librime 的 {what} 实际是 {reported} 字节，超过我们声明的 {declared} 字节，\
+                 请增大 rime_ffi.rs 里对应结构体的 _reserved 余量"
+            ));
+        }
+        return false;
+    }
+    true
+}
+
 // RimeEngine 内部含裸指针（FFI），但所有访问都经过调用方的 Mutex 串行化，
 // 且 librime 自身是线程安全的全局单例，因此声明 Send + Sync。
 unsafe impl Send for RimeEngine {}
@@ -81,6 +105,115 @@ impl RimeEngine {
         unsafe { (*self.api).data_size }
     }
 
+    /// 诊断：量出 librime **实际**往 RimeContext 里写了多少字节。
+    /// 做法：拿一块 0xA5 填满的缓冲区当 RimeContext 传进去，调用后看它写到第几字节，
+    /// 并读回它自己写进 data_size 的值（+4 就是 librime 的 sizeof(RimeContext)）。
+    /// 若写入字节数 > 我方 sizeof，说明我方结构体比 librime 小 —— librime 会越界写调用方
+    /// 的栈，正是"指针低 32 位被清零"这类栈损坏的来源。
+    pub fn probe_context_size(&self) -> String {
+        let Some(id) = self.session else {
+            return "无会话".into();
+        };
+        let api = unsafe { &*self.api };
+        let Some(get) = api.get_context else {
+            return "无 get_context".into();
+        };
+        let mut buf = vec![0xA5u8; 512];
+        unsafe {
+            let ctx = buf.as_mut_ptr() as *mut RimeContext;
+            (*ctx).data_size = context_data_size();
+            let ok = get(id, ctx);
+            let wrote = buf.iter().rposition(|b| *b != 0xA5).map(|i| i + 1).unwrap_or(0);
+            let data_size = (*ctx).data_size;
+            let menu = &(*ctx).menu;
+            // 头文件里 commit_text_preview 在 72、select_labels 在 80；librime 多出的 4 字节
+            // 到底加在"结构体尾部"还是"菜单内部"，用这两个位置上的指针值判断：
+            // 位置对了才能读成合法字符串，位置错了会读到字节拼接出来的假指针。
+            let bytes = std::slice::from_raw_parts(buf.as_ptr(), 96);
+            let q = |o: usize| u64::from_le_bytes(bytes[o..o + 8].try_into().unwrap());
+            let s_at = |o: usize| -> String {
+                let p = q(o) as *const c_char;
+                if p.is_null() {
+                    return "null".into();
+                }
+                let t = crate::rime_ffi::cstr_to_string(p);
+                if t.is_empty() {
+                    "空串".into()
+                } else {
+                    format!("{t:?}")
+                }
+            };
+            let layout = format!(
+                "偏移@72={:#x}({:?}) @76={:#x} @80={:#x}({:?}) @84={:#x} @88={:#x}",
+                q(72),
+                s_at(72),
+                q(76),
+                q(80),
+                s_at(80),
+                q(84),
+                q(88),
+            );
+            // 候选数组（librime 分配）按我们的 RimeCandidate 步长读，验证元素布局
+            let mut cands = String::new();
+            if !menu.candidates.is_null() {
+                for i in 0..menu.num_candidates.min(3).max(0) as usize {
+                    let c = &*menu.candidates.add(i);
+                    cands.push_str(&format!(
+                        "[{}={:?}/{:?}]",
+                        i,
+                        crate::rime_ffi::cstr_to_string_owned(c.text),
+                        crate::rime_ffi::cstr_to_string_owned(c.comment)
+                    ));
+                }
+            }
+            let s = format!(
+                "ok={ok} 写入={wrote}B librime 回写 data_size={data_size}(=> 它的 sizeof={}) 我方 sizeof={} \
+                 menu{{page_size={} page_no={} last={} hl={} num={} cands={:?} keys={:?}}} {layout} 前几个候选={cands}",
+                data_size + 4,
+                std::mem::size_of::<RimeContext>(),
+                menu.page_size,
+                menu.page_no,
+                menu.is_last_page,
+                menu.highlighted_candidate_index,
+                menu.num_candidates,
+                menu.candidates,
+                menu.select_keys,
+            );
+            if let Some(free) = api.free_context {
+                free(ctx);
+            }
+            s
+        }
+    }
+
+    /// 诊断：同 `probe_context_size`，针对 RimeStatus。
+    pub fn probe_status_size(&self) -> String {
+        let Some(id) = self.session else {
+            return "无会话".into();
+        };
+        let api = unsafe { &*self.api };
+        let Some(get) = api.get_status else {
+            return "无 get_status".into();
+        };
+        let mut buf = vec![0xA5u8; 512];
+        unsafe {
+            let st = buf.as_mut_ptr() as *mut RimeStatus;
+            (*st).data_size = status_data_size();
+            let ok = get(id, st);
+            let wrote = buf.iter().rposition(|b| *b != 0xA5).map(|i| i + 1).unwrap_or(0);
+            let data_size = (*st).data_size;
+            let s = format!(
+                "ok={ok} 写入={wrote}B librime 回写 data_size={data_size}(=> 它的 sizeof={}) 我方 sizeof={}",
+                data_size + 4,
+                std::mem::size_of::<RimeStatus>(),
+            );
+            if let Some(free) = api.free_status {
+                free(st);
+            }
+            s
+        }
+    }
+
     /// 当前会话已应用的方案 id（无会话返回 None）。
     pub fn current_schema(&mut self) -> Option<String> {
         let id = self.session?;
@@ -127,9 +260,10 @@ impl RimeEngine {
             .initialize
             .ok_or("api.initialize missing")?;
 
-        // 构建 RimeTraits：librime 要求 data_size 为 sizeof(RimeTraits)
+        // 构建 RimeTraits：data_size 用 librime 的口径（到最后一个真实字段为止），
+        // 不能直接用 sizeof —— 尾部 _reserved 余量不算字段。
         let mut traits = Box::new(RimeTraits::default());
-        traits.data_size = std::mem::size_of::<RimeTraits>() as c_int;
+        traits.data_size = traits_data_size();
         traits.shared_data_dir = to_cstring(shared_data_dir).into_raw();
         traits.user_data_dir = to_cstring(user_data_dir).into_raw();
         traits.distribution_name = to_cstring("迅音输入法").into_raw();
@@ -350,8 +484,9 @@ impl RimeEngine {
         let api = unsafe { &*self.api };
         if let (Some(get), Some(free)) = (api.get_commit, api.free_commit) {
             let mut commit = RimeCommit {
-                data_size: std::mem::size_of::<RimeCommit>() as c_int,
+                data_size: commit_data_size(),
                 text: std::ptr::null_mut(),
+                _reserved: [0; 16],
             };
             let ok = unsafe { get(id, &mut commit) } != 0;
             let text = if ok {
@@ -398,7 +533,7 @@ impl RimeEngine {
         let api = unsafe { &*self.api };
         let (get, free) = (api.get_context?, api.free_context?);
         let mut ctx = RimeContext {
-            data_size: std::mem::size_of::<RimeContext>() as c_int,
+            data_size: context_data_size(),
             composition: RimeComposition {
                 length: 0,
                 cursor_pos: 0,
@@ -417,12 +552,14 @@ impl RimeEngine {
             },
             commit_text_preview: std::ptr::null_mut(),
             select_labels: std::ptr::null_mut(),
+            _reserved: [0; 40],
         };
         let ok = unsafe { get(id, &mut ctx) } != 0;
         if !ok {
             unsafe { free(&mut ctx) };
             return None;
         }
+        check_abi("RimeContext", ctx.data_size, std::mem::size_of::<RimeContext>());
         let preedit = unsafe { cstr_to_string(ctx.composition.preedit) };
         let commit_preview = unsafe { cstr_to_string_owned(ctx.commit_text_preview) };
         let mut candidates = Vec::new();
@@ -460,7 +597,7 @@ impl RimeEngine {
         let api = unsafe { &*self.api };
         let (get, free) = (api.get_status?, api.free_status?);
         let mut st = RimeStatus {
-            data_size: std::mem::size_of::<RimeStatus>() as c_int,
+            data_size: status_data_size(),
             schema_id: std::ptr::null_mut(),
             schema_name: std::ptr::null_mut(),
             is_disabled: 0,
@@ -470,12 +607,14 @@ impl RimeEngine {
             is_simplified: 0,
             is_traditional: 0,
             is_ascii_punct: 0,
+            _reserved: [0; 16],
         };
         let ok = unsafe { get(id, &mut st) } != 0;
         if !ok {
             unsafe { free(&mut st) };
             return None;
         }
+        check_abi("RimeStatus", st.data_size, std::mem::size_of::<RimeStatus>());
         let snapshot = RimeStatusSnapshot {
             schema_id: unsafe { cstr_to_string_owned(st.schema_id) },
             schema_name: unsafe { cstr_to_string_owned(st.schema_name) },

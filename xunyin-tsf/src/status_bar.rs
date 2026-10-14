@@ -671,6 +671,30 @@ impl StatusBar {
             crate::symbol_panel::toggle();
             return;
         }
+        // 服务接管输入时，中英/全半角/中英标点三个开关的状态在服务里：
+        // 必须让服务去切，否则这里改的是本进程引擎，用户按下去"没反应"。
+        if crate::svc::ready() {
+            let cmd = match cell {
+                CELL_MODE => "toggle_mode",
+                CELL_WIDTH => "toggle_width",
+                CELL_PUNCT => "toggle_punct",
+                _ => "",
+            };
+            if !cmd.is_empty() {
+                if let Some(r) = crate::svc::command(cmd) {
+                    if let Some(sh) = latest_shared() {
+                        if let Ok(mut st) = sh.lock() {
+                            st.ascii_mode = r.ascii;
+                            st.full_shape = r.full;
+                            st.ascii_punct = r.punct;
+                        }
+                    }
+                    self.update(r.ascii, r.full, r.punct);
+                    return;
+                }
+                crate::tsf_log!("status bar: 服务不可用，落到本进程引擎");
+            }
+        }
         let Some(eng) = engine::engine() else { return };
         let Ok(mut e) = eng.lock() else { return };
         match cell {
@@ -744,7 +768,10 @@ impl StatusBar {
     fn show_menu(&self) {
         unsafe {
             let Ok(menu) = CreatePopupMenu() else { return };
-            crate::tsf_log!("status bar: 打开主菜单");
+            crate::tsf_log!(
+                "status bar: 打开主菜单（{}）",
+                crate::svc::status_line()
+            );
             let check = |on: bool| if on { MF_CHECKED } else { MF_UNCHECKED };
             let cfg = xunyin_rime::config::load_config();
             let add = |m: HMENU, flags: MENU_ITEM_FLAGS, id: usize, text: &str| {
@@ -919,6 +946,21 @@ impl StatusBar {
     }
 
     fn menu_select_schema(&self, i: usize) {
+        // 服务接管输入时，方案要切在服务里（它的会话才有意义）
+        if crate::svc::ready() {
+            let sid = engine::engine()
+                .and_then(|e| e.lock().ok().and_then(|e| e.get_schema_list().get(i).cloned()))
+                .map(|(sid, _)| sid);
+            if let Some(sid) = sid {
+                let cmd = format!("select_schema:{sid}");
+                let _ = crate::svc::command(&cmd);
+                let mut cfg = xunyin_rime::config::load_config();
+                cfg.input.schema = sid.clone();
+                self.menu_save(&cfg);
+                crate::tsf_log!("status bar menu: 切换方案（服务） -> {sid}");
+                return;
+            }
+        }
         let Some(eng) = engine::engine() else { return };
         let Ok(mut e) = eng.lock() else { return };
         let Some((sid, _)) = e.get_schema_list().get(i).cloned() else {
@@ -1000,6 +1042,10 @@ impl StatusBar {
 
     fn menu_redeploy(&self, why: &str) {
         crate::tsf_log!("status bar menu: {why} 变化 -> 后台重建索引 + 重载");
+        // 服务里的引擎也要重建索引，否则它的候选还是旧词库
+        if crate::svc::ready() {
+            let _ = crate::svc::command("redeploy");
+        }
         engine::deploy_here_then_notify_others();
     }
 }

@@ -59,57 +59,9 @@ fn v_mode_char(vk: u32, mask: i32) -> Option<char> {
     }
 }
 
-/// 分隔符可配置后，"拼音串（Rime 用空格分音节）"与"显示串"之间需要双向换算：
-/// - TSF 组合串要用显示串、显示光标（`to_display`：原始位置 → 显示位置）
-/// - 方向键移动后要回写 Rime 的 `set_caret_pos`（`to_raw`：显示位置 → 原始位置）
-///
-/// 分隔符可以是空串或多个字节，长度不再等于空格，所以必须老老实实建映射表。
-struct Preedit {
-    display: String,
-    /// 下标 = 显示字节位置，值 = 对应原始字节位置（长度 = display.len() + 1）
-    to_raw: Vec<usize>,
-    /// 下标 = 原始字节位置，值 = 对应显示字节位置（长度 = text.len() + 1）
-    to_display: Vec<usize>,
-}
-
-fn build_preedit(text: &str, sep: &str) -> Preedit {
-    let mut display = String::with_capacity(text.len() + 8);
-    let mut to_raw: Vec<usize> = Vec::with_capacity(text.len() + 1);
-    let mut to_display: Vec<usize> = vec![0usize; text.len() + 1];
-    for (i, ch) in text.char_indices() {
-        to_display[i] = display.len();
-        if ch == ' ' {
-            for _ in 0..sep.len() {
-                to_raw.push(i);
-            }
-            display.push_str(sep);
-        } else {
-            for b in 0..ch.len_utf8() {
-                to_display[i + b] = display.len();
-                to_raw.push(i + b);
-            }
-            display.push(ch);
-        }
-    }
-    to_display[text.len()] = display.len();
-    to_raw.push(text.len());
-    Preedit {
-        display,
-        to_raw,
-        to_display,
-    }
-}
-
-/// 显示串（含分隔符）与显示光标位置。
-fn format_preedit(text: &str, caret_byte: usize, sep: &str) -> (String, usize) {
-    let p = build_preedit(text, sep);
-    let caret = p
-        .to_display
-        .get(caret_byte.min(text.len()))
-        .copied()
-        .unwrap_or(p.display.len());
-    (p.display, caret)
-}
+// 组合串换算（原始串 ↔ 显示串）与常驻服务共用一份实现：xunyin_rime::preedit。
+// 服务接管按键后，两边必须用**同一套映射**，否则显示光标和 Rime 的光标会错位。
+use xunyin_rime::preedit::{build as build_preedit, format as format_preedit};
 
 /// 进程内缓存的配置（每秒至多读一次文件），供按键热路径查询自定义标点等。
 fn cached_cfg() -> xunyin_rime::config::XunyinConfig {
@@ -198,6 +150,111 @@ impl TextService {
 }
 
 impl TextService_Impl {
+    /// 服务中途不可用时，把宿主里正在显示的组合串喂给本进程引擎，
+    /// 让"落到本进程逻辑"的那次按键能接着打，而不是把已输入的拼音丢掉。
+    fn resync_local_engine(&self) {
+        let Some(arc) = engine::ensure_engine() else {
+            return;
+        };
+        let Ok(mut e) = arc.lock() else { return };
+        if e.is_composing() {
+            return;
+        }
+        let shown = self
+            .shared
+            .lock()
+            .map(|st| st.last_preedit.clone())
+            .unwrap_or_default();
+        if shown.is_empty() {
+            return;
+        }
+        let sep = cached_cfg().input.separator();
+        // 显示串里音节之间是分隔符，Rime 的原始输入串用空格（分隔符为空串时
+        // 直接整串喂进去，Rime 自己会重新分音节）
+        let raw = if sep.is_empty() {
+            shown
+        } else {
+            shown.replace(sep, " ")
+        };
+        crate::tsf_log!("svc: 服务不可用，把组合串 {raw:?} 交给本进程引擎接着打");
+        e.process_input(&raw);
+    }
+
+    /// 把服务返回的结果写回宿主：组合串 / 上屏文本 / 候选窗。
+    /// 叠加候选与黑名单过滤服务已经算好，这里只负责显示与提交。
+    fn apply_service_reply(
+        &self,
+        context: &ITfContext,
+        r: &xunyin_rime::svc_proto::Reply,
+    ) -> bool {
+        // 模式状态（状态栏的中英/全半角/标点图标靠它）
+        if let Ok(mut st) = self.shared.lock() {
+            st.ascii_mode = r.ascii;
+            st.full_shape = r.full;
+            st.ascii_punct = r.punct;
+        }
+        crate::status_bar::refresh_status_bar(&self.shared);
+        // 服务不消费这次按键：把本进程残留的组合串收干净，再把按键让给应用
+        // （例如回车设为"交给宿主换行"时，服务那边已经丢掉组合串了）
+        if !r.consume && r.preedit.is_empty() && r.commit.is_empty() {
+            let showing = self
+                .shared
+                .lock()
+                .map(|st| st.composition.is_some())
+                .unwrap_or(false);
+            if showing {
+                let _ = self.schedule_edit(context, "", "", 0);
+            }
+            crate::candidate_window::hide_candidates();
+            return false;
+        }
+        // 记录输入上下文与焦点文档（点击选字 / 候选窗定位依赖）
+        {
+            let mut st = match self.shared.lock() {
+                Ok(s) => s,
+                Err(_) => return r.consume,
+            };
+            st.last_context = Some(context.clone());
+            if let Some(tim) = st.thread_mgr.clone() {
+                if let Ok(doc) = unsafe { tim.GetFocus() } {
+                    st.focused_doc = Some(doc);
+                }
+            }
+        }
+        let preedit = r.preedit.clone();
+        let commit = r.commit.clone();
+        let caret = r.caret;
+        if let Ok(mut st) = self.shared.lock() {
+            st.pending_caret = caret;
+        }
+        // 组合串与光标都没变（翻页/高亮切换等）→ 不重跑编辑会话，减少浏览器里的跳动
+        let unchanged = if !commit.is_empty() {
+            false
+        } else {
+            match self.shared.lock() {
+                Ok(st) => st.composition.is_some() && st.last_preedit == preedit && st.caret == caret,
+                Err(_) => false,
+            }
+        };
+        if !unchanged {
+            let _ = self.schedule_edit(context, &preedit, &commit, caret);
+        }
+        // 候选：前 overlay_len 个是叠加候选（快捷输入/联想/v 模式），其余是 Rime 候选
+        let n_overlay = r.overlay_len.min(r.candidates.len());
+        if let Ok(mut st) = self.shared.lock() {
+            st.overlay = r.candidates[..n_overlay].to_vec();
+            st.cand_map = (n_overlay..r.candidates.len()).collect();
+        }
+        self.update_candidates(
+            r.candidates.clone(),
+            r.comments.clone(),
+            r.selected,
+            r.page,
+            r.page_size.max(1),
+        );
+        r.consume
+    }
+
     /// 调度一次编辑会话（组合更新/提交/清除），优先同步执行。
     fn schedule_edit(
         &self,
@@ -523,6 +580,18 @@ impl TextService_Impl {
             crate::tsf_log!("keydown: vk=0x{vk:02X} -> 敏感输入（应用已禁用输入法），不接管");
             crate::candidate_window::hide_candidates();
             return false;
+        }
+        // ── 服务优先：输入逻辑在 xunyin-svc.exe 里 ─────────────────────────
+        // 改输入逻辑只要换掉服务 exe，正在用的 Edge / ChatGPT 不用重启。
+        // 服务没连上 / 超时 / 报错 → 落到下面的本进程逻辑，输入不中断。
+        crate::svc::poll();
+        if crate::svc::ready() {
+            let shift_now = key::key_state_down(0x10);
+            if let Some(reply) = crate::svc::key(vk, mask, shift_now) {
+                return self.apply_service_reply(context, &reply);
+            }
+            crate::tsf_log!("svc: 按键落回本进程逻辑（服务暂不可用）");
+            self.resync_local_engine();
         }
         // v 模式（v123 / v1+2*3）由我们自己维护组合串；命中即消费按键
         if let Some(consumed) = self.v_mode_key(context, vk, mask) {
@@ -1007,11 +1076,28 @@ impl TextService_Impl {
 }
 
 /// 预判按键是否可能被消费（无副作用，供 OnTestKeyDown）。
-fn test_key(vk: u32, lparam: usize) -> bool {
+///
+/// "是否组合中"这类判断在服务接管输入时要看**宿主里的组合串**（服务每次按键都会
+/// 把组合串同步回来），否则本进程里可能根本没有引擎。
+fn test_key(shared: &Arc<Mutex<SharedState>>, vk: u32, lparam: usize) -> bool {
     if (lparam & 0x8000_0000) != 0 {
         return false;
     }
     let mask = key::modifier_mask();
+    let service = crate::svc::ready();
+    let composing = || {
+        if service {
+            shared
+                .lock()
+                .map(|st| st.composition.is_some())
+                .unwrap_or(false)
+        } else {
+            engine::engine()
+                .map(|e| e.lock().map(|mut e| e.is_composing()).unwrap_or(false))
+                .unwrap_or(false)
+        }
+    };
+    let backend = || service || engine::engine().is_some();
     // Ctrl+.：中英标点切换（本输入法消费）
     if mask & kRimeModifierControl != 0 && mask & kRimeModifierAlt == 0 && vk == 0xBE {
         return true;
@@ -1023,9 +1109,7 @@ fn test_key(vk: u32, lparam: usize) -> bool {
         && (0x31..=0x39).contains(&vk)
         && cached_cfg().input.delete_key == "ctrl_digit"
     {
-        return engine::engine()
-            .map(|e| e.lock().map(|mut e| e.is_composing()).unwrap_or(false))
-            .unwrap_or(false);
+        return composing();
     }
     if mask & (kRimeModifierControl | kRimeModifierAlt) != 0 {
         return false;
@@ -1033,20 +1117,18 @@ fn test_key(vk: u32, lparam: usize) -> bool {
     let shift = key::key_state_down(0x10);
     // 裸 Shift：交给 Rime 处理（中英切换），松开时按需切换
     if key::is_shift_key(vk) {
-        return engine::engine().is_some();
+        return backend();
     }
     // Shift+方向键/编辑键：也送达 Rime，让它知道“不是裸 Shift”，
     // 避免松开 Shift 时误切中英模式（文本选择等场景）。
     if shift && key::is_function_key(vk) {
-        return engine::engine().is_some();
+        return backend();
     }
     if key::vk_to_char(vk, shift).is_some() || key::vk_to_punct(vk, shift).is_some() {
         return true;
     }
     if key::is_function_key(vk) {
-        return engine::engine()
-            .map(|e| e.lock().map(|mut e| e.is_composing()).unwrap_or(false))
-            .unwrap_or(false);
+        return composing();
     }
     false
 }
@@ -1259,7 +1341,7 @@ impl ITfKeyEventSink_Impl for TextService_Impl {
         wparam: WPARAM,
         lparam: LPARAM,
     ) -> Result<BOOL> {
-        let r = test_key(wparam.0 as u32, lparam.0 as usize);
+        let r = test_key(&self.shared, wparam.0 as u32, lparam.0 as usize);
         crate::tsf_log!(
             "OnTestKeyDown: vk=0x{:02X} lparam=0x{:X} -> {}",
             wparam.0 as u32,
@@ -1277,7 +1359,7 @@ impl ITfKeyEventSink_Impl for TextService_Impl {
     ) -> Result<BOOL> {
         // Shift 松开需要交给 Rime（ascii_composer 在松开时切换中英）
         let r = key::is_shift_key(wparam.0 as u32)
-            && engine::engine().is_some();
+            && (crate::svc::ready() || engine::engine().is_some());
         crate::tsf_log!(
             "OnTestKeyUp: vk=0x{:02X} -> {}",
             wparam.0 as u32,
@@ -1338,7 +1420,22 @@ impl ITfKeyEventSink_Impl for TextService_Impl {
             // 中英切换键设为 Ctrl+空格/关闭时，裸 Shift 不再承担切换职责
             if bare && cached_cfg().input.toggle_key == "shift" {
                 crate::tsf_log!("OnKeyUp: bare Shift");
-                if let Some(eng) = engine::engine() {
+                // 服务接管输入时，组合状态与中英开关都在服务里，必须让它来处理
+                if crate::svc::ready() {
+                    if let Some(r) = crate::svc::command("shift_up") {
+                        if !r.commit.is_empty() {
+                            if let Some(ctx) = pic.cloned() {
+                                let _ = self.schedule_edit(&ctx, "", &r.commit, 0);
+                            }
+                            crate::candidate_window::hide_candidates();
+                            crate::tsf_log!("OnKeyUp: Shift -> commit pinyin {:?}", r.commit);
+                        } else if let Ok(mut st) = self.shared.lock() {
+                            st.ascii_mode = r.ascii;
+                            st.full_shape = r.full;
+                            crate::status_bar::refresh_status_bar(&self.shared);
+                        }
+                    }
+                } else if let Some(eng) = engine::engine() {
                     if let Ok(mut e) = eng.lock() {
                         if e.is_composing() {
                             // 组合中：直接把拼音上屏，不切换中英模式

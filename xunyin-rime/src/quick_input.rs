@@ -260,7 +260,7 @@ fn number_to_cn(n: i64, digits: &[&str; 10], upper: bool) -> String {
         return digits[0].to_string();
     }
     let neg = n < 0;
-    let mut n = n.unsigned_abs();
+    let n = n.unsigned_abs();
     let ten = if upper { "拾" } else { "十" };
     let hundred = if upper { "佰" } else { "百" };
     let thousand = if upper { "仟" } else { "千" };
@@ -286,7 +286,6 @@ fn number_to_cn(n: i64, digits: &[&str; 10], upper: bool) -> String {
     for (g, name) in &groups {
         out.push_str(&four_to_cn(*g, digits, ten, hundred, thousand));
         out.push_str(name);
-        n %= 10_000u64.pow(4);
     }
     if rest > 0 || out.is_empty() {
         if !out.is_empty() && rest < 1000 {

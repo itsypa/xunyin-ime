@@ -7,34 +7,14 @@
 //! 留在 DLL 的只有 TSF 适配（把这里返回的组合串/上屏文本写进宿主应用）——所以改这里的
 //! 逻辑**不用重开 Edge/ChatGPT**：DLL 只转发按键，逻辑在服务里随时可重启。
 
+use xunyin_rime::keycode::{char_keycode, is_dunhao_key, vk_to_punct};
+use xunyin_rime::preedit::{build as build_preedit, format as format_preedit, move_caret};
 use xunyin_rime::RimeEngine;
 use xunyin_rime::{assoc, blocklist, quick_input};
 
-/// 一次按键的处理结果（DLL 照着做就行）。
-#[derive(Debug, Clone, Default, serde::Serialize)]
-pub struct Reply {
-    /// 是否消费了这次按键（false = 交给应用自己处理）
-    pub consume: bool,
-    /// 组合串（显示用，已按下发配置插入音节分隔符）；空 = 结束组合
-    pub preedit: String,
-    /// 组合内光标（preedit 的 UTF-16 位置）
-    pub caret: usize,
-    /// 需要上屏的文本
-    pub commit: String,
-    pub candidates: Vec<String>,
-    pub comments: Vec<String>,
-    pub selected: usize,
-    pub page: usize,
-    pub page_size: usize,
-    /// 叠加候选（快捷输入/联想/v 模式）个数：点击下标 < 它表示点的不是 Rime 候选
-    pub overlay_len: usize,
-    /// 状态栏用：中英 / 全半角 / 中英标点
-    pub ascii: bool,
-    pub full: bool,
-    pub punct: bool,
-    /// 引擎是否可用
-    pub engine_ok: bool,
-}
+/// 一次按键的处理结果。类型定义在共享 crate 里（xunyin-rime::svc_proto::Reply），
+/// DLL 反序列化用的是同一份，不会写歪。
+pub use xunyin_rime::svc_proto::Reply;
 
 /// 服务内的输入状态（对应 DLL 里那份 SharedState 的"逻辑部分"）。
 pub struct Logic {
@@ -88,6 +68,10 @@ impl Logic {
                     }
                     apply_config(&mut e);
                     crate::log(format!("引擎就绪（shared={}）", shared.display()));
+                    let (rb, rs) = crate::crashlog::module_base("rime.dll");
+                    crate::log(format!(
+                        "模块基址：rime.dll base=0x{rb:X} size=0x{rs:X}（崩溃日志里 rva= 开头的是本进程自身）"
+                    ));
                     // 诊断：FFI 结构体尺寸与 rime.dll 是否一致。
                     // 不一致会导致 librime 越界写我们的结构体 → 堆损坏 → 下次分配时
                     // 0xC0000005（本轮崩溃的表现正是这样）。
@@ -112,33 +96,9 @@ impl Logic {
 
     /// 处理一次按键。`mask` 是 kRimeModifier* 位掩码，`shift` 是 Shift 是否按下。
     pub fn key(&mut self, vk: u32, mask: i32, shift: bool) -> Reply {
-        crate::log(format!("step1: 收到按键 vk=0x{vk:02X}"));
-        // 二分实验：XUNYIN_SVC_RAW_KEY=1 时只做最小序列（init → process_key → get_context），
-        // 绕开自己写的全部逻辑。若这样也崩 ⇒ 问题在引擎/环境；不崩 ⇒ 问题在我的逻辑代码。
-        if std::env::var("XUNYIN_SVC_RAW_KEY").is_ok() {
-            let mut out = Reply::default();
-            if let Some(e) = self.engine() {
-                crate::log("raw: 调 process_key");
-                out.consume = e.process_key(rime_keycode(vk, shift), mask);
-                crate::log("raw: process_key 返回，接着 get_context");
-                let snap = e.get_context();
-                let cs: Vec<String> = snap
-                    .map(|c| c.candidates.iter().map(|x| x.text.clone()).collect())
-                    .unwrap_or_default();
-                crate::log(format!("raw: get_context 返回 {} 个候选", cs.len()));
-                out.candidates = cs;
-            }
-            crate::log("raw: 返回前分配一下内存（触发堆损坏暴露）");
-            let junk: Vec<String> = (0..500).map(|i| format!("raw-{i}")).collect();
-            out.preedit = format!("raw{}", junk.len());
-            crate::log("raw: 完成");
-            return out;
-        }
         let cfg = xunyin_rime::config::load_config();
-        crate::log("step2: 配置读取完成");
         let ctrl = mask & xunyin_rime::kRimeModifierControl != 0;
         let alt = mask & xunyin_rime::kRimeModifierAlt != 0;
-        crate::log("step3: 交给引擎（可能触发初始化）");
         let mut out = Reply {
             engine_ok: self.engine().is_some(),
             page_size: cfg.input.page_size as usize,
@@ -147,10 +107,11 @@ impl Logic {
             punct: cfg.input.ascii_punct,
             ..Default::default()
         };
-        crate::log("step4: 引擎可用，开始判定");
-        // 状态在**开头**读（此时还没调用过任何会改动会话的 API，实测稳定）；
-        // 放在 process_key 之后读会让服务崩（见 after_key 的说明）。
+        // 状态在按键开头读一次就够（中英/全半角/中英标点三个开关）。
         self.read_options(&mut out);
+        if let Some(note) = xunyin_rime::rime_engine::abi_note() {
+            crate::log(format!("⚠️ ABI：{note}"));
+        }
         // ── Ctrl 组合 ────────────────────────────────────────────────
         if ctrl && !alt {
             // Ctrl+.：中英标点
@@ -201,6 +162,40 @@ impl Logic {
             out.consume = done;
             return out;
         }
+        // ── 组合中方向键：逐个字母移动光标（跳过音节分隔符），两端停住 ──
+        // 光标状态在引擎里（set_caret_pos），所以这一步必须在服务侧做，
+        // 否则宿主 DLL 移动的光标与服务引擎里的组合状态会错位。
+        if (vk == 0x25 || vk == 0x27)
+            && self
+                .engine()
+                .map(|e| e.is_composing())
+                .unwrap_or(false)
+        {
+            let sep = cfg.input.separator();
+            let moved = {
+                let Some(e) = self.engine() else { return out };
+                let Some(s) = e.get_context() else {
+                    return out;
+                };
+                let p = build_preedit(&s.preedit, sep);
+                let caret = p
+                    .to_display
+                    .get(s.cursor_pos.min(s.preedit.len()))
+                    .copied()
+                    .unwrap_or(p.display.len());
+                let new_caret = move_caret(&p.display, sep, caret, vk == 0x25);
+                let raw = p.to_raw.get(new_caret).copied().unwrap_or(s.preedit.len());
+                e.set_caret_pos(raw);
+                new_caret
+            };
+            // 移动后重新取一次上下文：组合串与候选都照旧，只有光标变了
+            let commit = String::new();
+            let snapshot = self.engine().and_then(|e| e.get_context());
+            self.after_key(commit, snapshot, &cfg, &mut out);
+            out.consume = true;
+            out.caret = moved;
+            return out;
+        }
         // ── 顿号键（中文标点、不带 Shift）→ 直接上屏「、」─────────────
         let composing = self.engine().map(|e| e.is_composing()).unwrap_or(false);
         if is_dunhao_key(vk, shift) && !composing {
@@ -216,8 +211,7 @@ impl Logic {
             }
         }
         // ── 走 Rime ────────────────────────────────────────────────
-        crate::log("step5: 走 Rime process_key");
-        let keycode = rime_keycode(vk, shift);
+        let keycode = char_keycode(vk, shift);
         let enter_behavior = cfg.input.enter_behavior.clone();
         let mut custom_commit: Option<String> = None;
         let consumed = if vk == 0x0D && enter_behavior != "commit" {
@@ -231,7 +225,7 @@ impl Logic {
                 "clear" => true,
                 _ => false, // newline：交给宿主换行
             }
-        } else if let Some(ch) = punct_char(vk, shift) {
+        } else if let Some(ch) = vk_to_punct(vk, shift) {
             // 自定义标点优先（中文标点模式下）
             let ascii_now = self
                 .engine()
@@ -265,7 +259,6 @@ impl Logic {
                 .map(|e| e.process_key(keycode, mask))
                 .unwrap_or(false)
         };
-        crate::log(format!("step6: process_key 返回 consumed={consumed}"));
         out.consume = consumed;
         if !consumed {
             self.cancel_overlay();
@@ -280,17 +273,9 @@ impl Logic {
             let commit = custom_commit
                 .unwrap_or_else(|| e.get_commit_text())
                 .clone();
-            // 二分定位用：XUNYIN_SVC_NO_CTX=1 时跳过 get_context，看崩溃是否随之消失
-            let snap = if std::env::var("XUNYIN_SVC_NO_CTX").is_ok() {
-                None
-            } else {
-                e.get_context()
-            };
-            (commit, snap)
+            (commit, e.get_context())
         };
-        crate::log("step7: 快照取完，进入 after_key");
         self.after_key(commit, snapshot, &cfg, &mut out);
-        crate::log("step8: 处理完成");
         out
     }
 
@@ -382,7 +367,26 @@ impl Logic {
     /// `reload` / `redeploy` / `select_schema:<id>`
     pub fn command(&mut self, name: &str) -> Reply {
         let mut cfg = xunyin_rime::config::load_config();
+        let mut commit = String::new();
         match name {
+            // 裸 Shift 松开（对应设置里"中英切换键 = Shift"）：
+            //   组合中 → 把拼音原样上屏，**不**切中英（用户：输入中按 Shift 直接出拼音）
+            //   未组合 → 切换中英
+            "shift_up" => {
+                if let Some(e) = self.engine() {
+                    if e.is_composing() {
+                        let raw = e.get_input();
+                        if !raw.is_empty() {
+                            e.clear_composition();
+                            self.cancel_overlay();
+                            commit = raw;
+                        }
+                    } else {
+                        let mode = e.get_option("ascii_mode");
+                        e.set_option("ascii_mode", !mode);
+                    }
+                }
+            }
             "toggle_mode" => {
                 if let Some(e) = self.engine() {
                     let m = e.get_option("ascii_mode");
@@ -417,13 +421,19 @@ impl Logic {
                 }
             }
         }
-        self.status()
+        let mut out = self.status();
+        out.commit = commit;
+        out.consume = true;
+        out
     }
 
     /// 引擎热重载（配置/词库/方案变了时由 reload 标记触发，或状态栏菜单点）。
     pub fn reload(&mut self, with_deploy: bool) {
-        let agent = |m: &str| crate::log(m.to_string());
-        let _ = agent;
+        if self.engine.is_none() {
+            // 还没建过引擎（服务只是握手/心跳）→ 什么都不用做：
+            // 下次真正建引擎时会读到最新的词库与配置。
+            return;
+        }
         let (shared, user) = data_dirs();
         let page_size = xunyin_rime::config::load_config().input.page_size;
         match xunyin_rime::schema_list::sync_default_patch(&shared, &user, page_size) {
@@ -484,7 +494,7 @@ impl Logic {
     ) {
         // 联想：学习「上一词 → 本词」，并取出本词之后的联想候选
         if !commit.is_empty() {
-            if cfg.input.enable_assoc && std::env::var("XUNYIN_SVC_NO_ASSOC").is_err() {
+            if cfg.input.enable_assoc {
                 if let Some((p, t)) = self.last_commit.take() {
                     if t.elapsed() < std::time::Duration::from_secs(5) {
                         assoc::learn_and_maybe_save(&p, &commit);
@@ -498,27 +508,14 @@ impl Logic {
         }
         // 组合串（按设置插音节分隔符）
         let sep = cfg.input.separator();
-        crate::log("step7a: separator 取到");
         let (preedit, caret) = snapshot
             .as_ref()
             .map(|s| format_preedit(&s.preedit, s.cursor_pos.min(s.preedit.len()), sep))
             .unwrap_or_default();
-        // 分段二分：L=1 只到"组合串算完"；L=2 再加"叠加候选"；L=3 再加"黑名单过滤"
-        let level = std::env::var("XUNYIN_SVC_LEVEL")
-            .ok()
-            .and_then(|v| v.parse::<u32>().ok());
-        if level == Some(1) {
-            out.preedit = preedit.clone();
-            out.caret = caret;
-            out.commit = commit.clone();
-            crate::log("L1: 组合串算完就返回");
-            return;
-        }
-        crate::log(format!("step7b: 组合串={preedit:?} caret={caret}"));
         // 叠加候选：快捷输入（rq/sj/xq）→ 联想 → Rime 候选
         let mut overlay: Vec<String> = Vec::new();
         let mut overlay_comments: Vec<String> = Vec::new();
-        if cfg.input.enable_quick_input && std::env::var("XUNYIN_SVC_NO_QUICK").is_err() {
+        if cfg.input.enable_quick_input {
             if let Some(t) = snapshot
                 .as_ref()
                 .and_then(|s| quick_input::trigger(&s.preedit))
@@ -535,14 +532,6 @@ impl Logic {
                 overlay.push(w);
             }
         }
-        crate::log(format!("step7c: 叠加候选 {} 个", overlay.len()));
-        if level == Some(2) {
-            out.preedit = preedit.clone();
-            out.caret = caret;
-            out.commit = commit.clone();
-            crate::log("L2: 叠加候选算完就返回");
-            return;
-        }
         // Rime 候选 + 黑名单过滤 + 显示下标 → Rime 下标映射
         let (cands, comments, selected, page, page_size) = match snapshot.as_ref() {
             Some(s) => (
@@ -557,73 +546,28 @@ impl Logic {
         let mut cand_map: Vec<usize> = Vec::new();
         let mut f_c: Vec<String> = Vec::new();
         let mut f_m: Vec<String> = Vec::new();
-        let no_blocklist = std::env::var("XUNYIN_SVC_NO_BLOCKLIST").is_ok();
         for (i, (t, m)) in cands.into_iter().zip(comments.into_iter()).enumerate() {
-            if !no_blocklist && blocklist::is_blocked(&t) {
+            if blocklist::is_blocked(&t) {
                 continue;
             }
             cand_map.push(i);
             f_c.push(t);
             f_m.push(m);
         }
-        crate::log(format!("step7d: 候选过滤后 {} 个", f_c.len()));
-        if level == Some(4) {
-            // 只装填基础字段，不碰 overlay/cand_map/候选注释
-            out.preedit = preedit;
-            out.caret = caret;
-            out.commit = commit;
-            out.overlay_len = overlay.len();
-            crate::log("L4: 基础字段装填完就返回");
-            return;
-        }
-        if level == Some(5) {
-            // 装填全部字段，但不写 self.overlay / self.cand_map
-            out.preedit = preedit;
-            out.caret = caret;
-            out.commit = commit;
-            out.overlay_len = overlay.len();
-            out.comments = overlay_comments.into_iter().chain(f_m).collect();
-            out.candidates = overlay.iter().cloned().chain(f_c).collect();
-            out.selected = 0;
-            crate::log("L5: 全部字段装填完（不写 self）就返回");
-            return;
-        }
-        if level == Some(3) {
-            out.preedit = preedit;
-            out.caret = caret;
-            out.commit = commit;
-            out.candidates = f_c;
-            crate::log("L3: 候选过滤完就返回");
-            return;
-        }
         out.preedit = preedit;
-        crate::log("T1");
         out.caret = caret;
-        crate::log("T2");
         out.commit = commit;
-        crate::log("T3");
         out.overlay_len = overlay.len();
-        crate::log("T4");
         out.comments = overlay_comments.into_iter().chain(f_m).collect();
-        crate::log("T5");
         out.candidates = overlay.iter().cloned().chain(f_c).collect();
-        crate::log("T6");
         out.selected = if overlay.is_empty() { selected } else { 0 };
         out.page = page;
         if page_size > 0 {
             out.page_size = page_size;
         }
-        crate::log("T7");
-        // 注意：这里**不能整体赋值**（self.overlay = overlay 会让服务 0xC0000005，
-        // 偏移固定 0x8df8）。改成"清空 + 追加"，行为等价且稳定。
-        self.overlay.clear();
-        self.overlay.extend(overlay);
-        self.cand_map.clone_from(&cand_map);
-        crate::log("T8");
-        // 注意：这里不读引擎状态——实测"紧跟 process_key / 首次 process_key 之后"
-        // 调用 get_status/get_option 会让服务进程 0xC0000005（DLL 里同样顺序没事）。
-        // 状态改在**每次按键的最开头**读（那时还没碰过引擎），等价且稳定。
-        crate::log("step7e: 状态取完");
+        // 记下这一屏候选：候选窗点击/删词要用它把"显示下标"换算回 Rime 下标。
+        self.overlay = overlay;
+        self.cand_map = cand_map;
         out.engine_ok = self.engine.is_some();
     }
 
@@ -751,11 +695,6 @@ impl Logic {
     }
 }
 
-/// 顿号键：`/`(VK_OEM_2) 与 `\`(VK_OEM_5)，**不带 Shift** 才算（Shift+/ 是问号）。
-fn is_dunhao_key(vk: u32, shift: bool) -> bool {
-    !shift && matches!(vk, 0xBF | 0xDC)
-}
-
 /// v 模式可接受的字符（数字与四则运算符，含小键盘）。
 fn v_mode_char(vk: u32, shift: bool) -> Option<char> {
     match vk {
@@ -776,85 +715,6 @@ fn v_mode_char(vk: u32, shift: bool) -> Option<char> {
         0x6F => Some('/'),
         _ => None,
     }
-}
-
-/// 标点键 → 字符（用于查自定义标点表）。
-fn punct_char(vk: u32, shift: bool) -> Option<char> {
-    let c = match vk {
-        0xBA => if shift { ':' } else { ';' },
-        0xBB => if shift { '+' } else { '=' },
-        0xBC => if shift { '<' } else { ',' },
-        0xBD => if shift { '_' } else { '-' },
-        0xBE => if shift { '>' } else { '.' },
-        0xBF => if shift { '?' } else { '/' },
-        0xC0 => if shift { '~' } else { '`' },
-        0xDB => if shift { '{' } else { '[' },
-        0xDC => if shift { '|' } else { '\\' },
-        0xDD => if shift { '}' } else { ']' },
-        0xDE => if shift { '"' } else { '\'' },
-        0x32 if shift => '@',
-        0x33 if shift => '#',
-        0x34 if shift => '$',
-        0x35 if shift => '%',
-        0x36 if shift => '^',
-        0x37 if shift => '&',
-        0x38 if shift => '*',
-        0x39 if shift => '(',
-        0x30 if shift => ')',
-        0x31 if shift => '!',
-        _ => return None,
-    };
-    Some(c)
-}
-
-/// Rime 用的 keycode（字母小写/大写、数字、功能键原样）。
-fn rime_keycode(vk: u32, shift: bool) -> i32 {
-    match vk {
-        0x41..=0x5A => {
-            if shift {
-                vk as i32
-            } else {
-                (vk + 32) as i32
-            }
-        }
-        0x30..=0x39 => vk as i32,
-        _ => match vk {
-            0x20 => 0x20,
-            0x0D => 0x0D,
-            0x08 => 0xFF08,
-            0x1B => 0xFF1B,
-            0x25 => 0xFF51,
-            0x26 => 0xFF52,
-            0x27 => 0xFF53,
-            0x28 => 0xFF54,
-            0x21 => 0xFF55,
-            0x22 => 0xFF56,
-            0x24 => 0xFF50,
-            0x23 => 0xFF57,
-            0x09 => 0xFF09,
-            _ => vk as i32,
-        },
-    }
-}
-
-/// 组合串：把 Rime 的音节分隔空格换成配置的分隔符，并给出光标位置（UTF-16）。
-fn format_preedit(text: &str, cursor_byte: usize, sep: &str) -> (String, usize) {
-    let mut out = String::with_capacity(text.len() + 8);
-    let mut caret = 0usize;
-    for (i, ch) in text.char_indices() {
-        if i >= cursor_byte {
-            caret = out.encode_utf16().count();
-        }
-        if ch == ' ' {
-            out.push_str(sep);
-        } else {
-            out.push(ch);
-        }
-    }
-    if cursor_byte >= text.len() {
-        caret = out.encode_utf16().count();
-    }
-    (out, caret)
 }
 
 /// 引擎数据目录（与 DLL、设置中心一致）。

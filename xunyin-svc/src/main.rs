@@ -9,6 +9,7 @@
 //!
 //! 协议：命名管道 `\\.\pipe\xunyin-ime-svc-v1`，消息 = 4 字节小端长度 + JSON 文本。
 
+mod crashlog;
 mod logic;
 
 use logic::Logic;
@@ -27,7 +28,7 @@ use windows::Win32::System::Pipes::{
 /// （DLL 靠 exe 指纹变化触发重启）。协议兼容时"服务比 DLL 新"也能直接用，
 /// 所以改服务代码**不需要重编 DLL、更不需要重开宿主应用**。
 /// 记法：与 xunyin-rime::svc_proto::SVC_TAG 保持同一个值。
-pub const SVC_TAG: &str = "20261014-1";
+pub const SVC_TAG: &str = "20261014-2";
 /// 协议版本：消息格式不兼容时才改。
 pub const PROTO: u32 = 1;
 
@@ -61,11 +62,34 @@ fn touch() {
     LAST_ACTIVITY.store(now_ms(), Ordering::Relaxed);
 }
 
+/// 盯住「重载 / 重新部署」标记：装好新词库、改完配置后，服务里的引擎也要跟着重建，
+/// 否则宿主的按键会继续落在旧索引上（机制与宿主 DLL 里的 poll_reload 一致）。
+fn watch_reload() {
+    std::thread::spawn(|| {
+        let mut seen: Option<String> = None;
+        loop {
+            std::thread::sleep(std::time::Duration::from_secs(2));
+            let raw = xunyin_rime::reload::read().unwrap_or_default();
+            match seen.as_ref() {
+                // 首次只对基线：刚启动时本来就该读最新数据
+                None => seen = Some(raw),
+                Some(prev) if *prev == raw => {}
+                Some(_) => {
+                    seen = Some(raw.clone());
+                    if !raw.trim().is_empty() {
+                        log(format!("收到重载请求 -> {raw}"));
+                        with_logic(|l| l.reload(false));
+                    }
+                }
+            }
+        }
+    });
+}
+
 fn wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(std::iter::once(0)).collect()
 }
 
-/// 输入逻辑开关（第 2 阶段调试用；默认关，避免服务被未定位的崩溃带走）。
 /// 从 panic payload 里取出可读原因（写进服务日志）。
 fn panic_text(p: &(dyn std::any::Any + Send)) -> String {
     if let Some(s) = p.downcast_ref::<&str>() {
@@ -77,10 +101,11 @@ fn panic_text(p: &(dyn std::any::Any + Send)) -> String {
     }
 }
 
+/// 输入逻辑开关：默认开（服务就是"输入法本体"）。
+/// 设 `XUNYIN_SVC_INPUT=0` 可让服务只做握手/心跳、不碰输入逻辑——
+/// 出问题时用它是"退回 DLL 内逻辑"的应急开关。
 fn input_enabled() -> bool {
-    // 默认关：服务侧输入路径还卡在 RimeApi 结构体尺寸不符（792 vs librime 的 788），
-    // 调用结构体后半段的 API（get_status/get_option）会崩。等 ABI 对齐后再打开。
-    std::env::var("XUNYIN_SVC_INPUT").map(|v| v == "1").unwrap_or(false)
+    std::env::var("XUNYIN_SVC_INPUT").map(|v| v != "0").unwrap_or(true)
 }
 
 /// 服务自己的日志（宿主进程的日志里看不到服务的事，分开写）。
@@ -184,10 +209,8 @@ fn serve(h: HANDLE) {
             }
             "ping" => json!({ "t": "pong", "tag": SVC_TAG, "pid": std::process::id() }),
             // ── 输入逻辑（第 2 阶段：从 DLL 搬过来的部分）──────────────
-            // ⚠️ 默认关闭：实测在服务线程里驱动 librime 会 0xC0000005 崩溃
-            //    （引擎在 DLL/独立探针里跑没问题，怀疑与线程/初始化上下文有关，
-            //     待定位）。开着它会让服务进程直接挂掉，所以先只用握手+心跳。
-            //    设 XUNYIN_SVC_INPUT=1 才启用，供后续调试。
+            // 服务持有唯一的 librime 引擎：宿主 DLL 只转发按键（见 xunyin-tsf/src/svc.rs）。
+            // 这样"改输入逻辑"只要换掉这个 exe，宿主应用完全不用重启。
             "key" if input_enabled() => {
                 let vk = msg.get("vk").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
                 let mask = msg.get("mask").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
@@ -201,7 +224,8 @@ fn serve(h: HANDLE) {
                     Err(p) => {
                         let why = panic_text(&*p);
                         log(format!("❌ key 处理 panic：{why}"));
-                        json!({ "t": "reply", "reply": { "consume": false, "panic": why } })
+                        // 带 error 字段：宿主 DLL 看到它就退回本进程逻辑，用户照常能打字
+                        json!({ "t": "reply", "reply": { "consume": false, "error": why } })
                     }
                 }
             }
@@ -247,7 +271,8 @@ fn main() {
         return;
     }
     log(&format!(
-        "服务启动 tag={SVC_TAG} proto={PROTO} exe={:?}",
+        "服务启动 tag={SVC_TAG} proto={PROTO} 输入路径={} exe={:?}",
+        input_enabled(),
         std::env::current_exe().map(|p| p.display().to_string())
     ));
     // panic 钩子：服务是隐藏窗口启动的，stderr 看不到；而且实测 after_key 里 panic 后
@@ -255,6 +280,8 @@ fn main() {
     std::panic::set_hook(Box::new(|info| {
         log(format!("❌ panic: {info}"));
     }));
+    // 访问违例等致命异常也落盘（含指令地址、读写目标、调用链）
+    crashlog::install();
     let name = wide(PIPE_NAME);
     let mode = NAMED_PIPE_MODE(PIPE_TYPE_BYTE.0 | PIPE_READMODE_BYTE.0 | PIPE_WAIT.0);
     let open = FILE_FLAGS_AND_ATTRIBUTES(PIPE_ACCESS_DUPLEX.0);
@@ -269,6 +296,7 @@ fn main() {
             std::process::exit(0);
         }
     });
+    watch_reload();
     loop {
         let h = unsafe {
             CreateNamedPipeW(

@@ -8,11 +8,12 @@
 //!   还没接管输入逻辑，只做握手与心跳）。
 
 use std::io::{Read, Write};
+use std::os::windows::io::AsRawHandle;
 use std::path::PathBuf;
 use std::sync::Mutex;
 use std::sync::OnceLock;
 use std::time::Duration;
-use xunyin_rime::svc_proto::{PIPE_NAME, PROTO, SVC_TAG};
+use xunyin_rime::svc_proto::{Reply, PIPE_NAME, PROTO, SVC_TAG};
 
 /// 服务连接状态（UI 线程只读这个）。
 #[derive(Default, Clone)]
@@ -61,6 +62,129 @@ pub fn poll() {
         crate::tsf_log!("svc: 启动服务客户端线程（期望 tag={SVC_TAG}）");
         std::thread::spawn(worker);
     });
+}
+
+// ─────────────── 按键路径：把按键交给服务，拿回结果 ───────────────
+//
+// 输入逻辑已经全部搬进服务：宿主 DLL 只做"送按键、写结果"。
+// 这样**改输入逻辑只要换掉 xunyin-svc.exe**，正在用的 Edge / ChatGPT 不用重启。
+//
+// 三条硬性约束：
+//   1) 不能阻塞输入：请求连接带读写超时（REPLY_TIMEOUT_MS），服务卡住就退回本进程逻辑；
+//   2) 不能串流：请求用**独立连接**（后台心跳连接自己用一条），两条消息流互不干扰；
+//   3) 不能死等：一旦超时/断开就丢弃这条连接（后台线程会重连），避免读到错位的回复。
+
+/// 请求专用连接（心跳连接在后台线程里单独用一条）。
+static REQ: Mutex<Option<std::fs::File>> = Mutex::new(None);
+/// 同步请求的读写超时（毫秒）。服务正常时一次往返 <1ms；这个值只用于兜底。
+const REPLY_TIMEOUT_MS: u32 = 80;
+
+/// 服务可用吗（读后台线程维护的状态缓存，不阻塞、不发起 IO）。
+pub fn ready() -> bool {
+    STATUS
+        .lock()
+        .map(|g| g.as_ref().map(|s| s.connected).unwrap_or(false))
+        .unwrap_or(false)
+}
+
+/// 建立请求连接并握手（失败返回 None，调用方退回本进程逻辑）。
+fn req_connect() -> Option<std::fs::File> {
+    let mut f = connect().ok()?;
+    unsafe {
+        use windows::Win32::Devices::Communication::{SetCommTimeouts, COMMTIMEOUTS};
+        use windows::Win32::Foundation::HANDLE;
+        let t = COMMTIMEOUTS {
+            ReadIntervalTimeout: 0,
+            ReadTotalTimeoutMultiplier: 0,
+            ReadTotalTimeoutConstant: REPLY_TIMEOUT_MS,
+            WriteTotalTimeoutMultiplier: 0,
+            WriteTotalTimeoutConstant: REPLY_TIMEOUT_MS,
+        };
+        if SetCommTimeouts(HANDLE(f.as_raw_handle()), &t).is_err() {
+            return None;
+        }
+    }
+    let ok = send(
+        &mut f,
+        &serde_json::json!({ "t": "hello", "proto": PROTO, "pid": std::process::id(), "dll_tag": SVC_TAG }),
+    )
+    .and_then(|_| recv(&mut f))
+    .ok()?;
+    let proto = ok.get("proto").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+    if !proto_compatible(proto) {
+        return None;
+    }
+    Some(f)
+}
+
+/// 同步请求：返回服务回复里的 `reply` 字段（失败/超时返回 None）。
+fn request(msg: serde_json::Value) -> Option<serde_json::Value> {
+    if !ready() {
+        return None;
+    }
+    let mut g = REQ.lock().unwrap_or_else(|e| e.into_inner());
+    if g.is_none() {
+        *g = req_connect();
+    }
+    let f = g.as_mut()?;
+    if let Err(e) = send(f, &msg) {
+        crate::tsf_log!("svc: 请求发送失败（{e}）→ 退回本进程逻辑");
+        *g = None;
+        return None;
+    }
+    match recv(f) {
+        Ok(v) => {
+            let reply = v.get("reply").cloned();
+            if reply.is_none() {
+                crate::tsf_log!("svc: 回复里没有 reply 字段 → 退回本进程逻辑");
+                *g = None;
+            }
+            reply
+        }
+        Err(e) => {
+            // 超时/断开：这条连接的消息流已经不可信，丢掉让后台线程重连
+            crate::tsf_log!("svc: 请求无响应（{e}）→ 退回本进程逻辑");
+            *g = None;
+            None
+        }
+    }
+}
+
+/// 把服务的回复转成 [Reply]；服务侧逻辑出错（error 有值）时返回 None 让调用方退回本进程逻辑。
+fn parse_reply(v: serde_json::Value) -> Option<Reply> {
+    match serde_json::from_value::<Reply>(v) {
+        Ok(r) => {
+            if let Some(e) = r.error.as_deref() {
+                crate::tsf_log!("svc: 服务侧逻辑出错（{e}）→ 退回本进程逻辑");
+                None
+            } else {
+                Some(r)
+            }
+        }
+        Err(e) => {
+            crate::tsf_log!("svc: 回复解析失败（{e}）→ 退回本进程逻辑");
+            None
+        }
+    }
+}
+
+/// 把一次按键交给服务处理。
+pub fn key(vk: u32, mask: i32, shift: bool) -> Option<Reply> {
+    request(serde_json::json!({
+        "t": "key", "vk": vk, "mask": mask, "shift": shift
+    }))
+    .and_then(parse_reply)
+}
+
+/// 候选窗点击（下标是**显示列表**里的下标，服务负责换算成 Rime 下标）。
+pub fn select(index: usize) -> Option<Reply> {
+    request(serde_json::json!({ "t": "select", "index": index })).and_then(parse_reply)
+}
+
+/// 状态栏动作 / 引擎命令：toggle_mode / toggle_width / toggle_punct / reload / redeploy /
+/// select_schema:<id>。服务收到后会重读配置并（必要时）重建引擎。
+pub fn command(name: &str) -> Option<Reply> {
+    request(serde_json::json!({ "t": "command", "name": name })).and_then(parse_reply)
 }
 
 /// 服务 exe 的位置：优先 DLL 同目录（安装布局），其次开发布局的 target/{release,debug}。
@@ -202,7 +326,7 @@ fn worker() {
                 Ok(f) => {
                     conn = Some(f);
                 }
-                Err(e) => {
+                Err(_e) => {
                     // 服务没在跑：拉起来再连一次
                     let spawn_err = spawn_service().err();
                     match connect() {
