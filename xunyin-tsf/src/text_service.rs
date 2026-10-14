@@ -179,24 +179,6 @@ impl TextService {
 }
 
 impl TextService_Impl {
-    /// 按键通道失败（写失败/无响应/坏帧）时的统一收尾：**取消组合、隐藏候选**，
-    /// 会话从空开始。
-    ///
-    /// 刻意不做"把组合串喂回本进程引擎"的回放：水杉输入法在同样位置上踩过坑
-    /// （回放带来闪烁、双上屏和重试循环，issue #259/#404/#427），他们的结论是
-    /// 被吃掉的键「要么被处理，要么被有意吞掉，绝不交还宿主，也绝不处理两次」。
-    fn drop_composition(&self, context: &ITfContext) {
-        let showing = self
-            .shared
-            .lock()
-            .map(|st| st.composition.is_some())
-            .unwrap_or(false);
-        if showing {
-            let _ = self.schedule_edit(context, "", "", 0);
-        }
-        crate::candidate_window::hide_candidates();
-    }
-
     /// 把服务返回的结果写回宿主：组合串 / 上屏文本 / 候选窗。
     /// 叠加候选与黑名单过滤服务已经算好，这里只负责显示与提交。
     fn apply_service_reply(
@@ -623,11 +605,11 @@ impl TextService_Impl {
             if let Some(reply) = crate::svc::key(vk, mask, shift_now) {
                 return self.apply_service_reply(context, &reply);
             }
-            // 通道失败：这颗键已被我们在 OnTestKeyDown 声明吃下，不能再交还宿主。
-            // 不确定服务有没有收到它 —— 重发或本地再处理一次都会双上屏，所以丢键。
-            crate::tsf_log!("svc: 按键通道失败 -> 丢键 + 取消组合（后续按键走本进程逻辑）");
-            self.drop_composition(context);
-            return true;
+            // 服务这条路暂时不通（超时/断开/服务侧报错）：**绝不能吞键**。
+            // 吞了就是"切到输入法之后一个字都打不出来"（真实踩过这个坑：请求通道
+            // 建不起来时每颗键都被这里丢掉，连数字都上不去）。
+            // 现在把这一颗键交给下面的本进程逻辑处理，服务恢复后自动接回来。
+            crate::tsf_log!("svc: 服务暂不可用 -> 这颗键交给本进程逻辑（不丢键）");
         }
         // v 模式（v123 / v1+2*3）由我们自己维护组合串；命中即消费按键
         if let Some(consumed) = self.v_mode_key(context, vk, mask) {

@@ -374,6 +374,17 @@ impl Logic {
         self.cand_map.clear();
     }
 
+    /// 预热：把引擎初始化（首次还要编译词库索引）提前到"宿主刚连上"的时候做完。
+    ///
+    /// 不做这一步的话，用户敲的第一颗键要等引擎初始化 + 首次部署（可能几十秒），
+    /// 而宿主 DLL 不会等那么久（它会超时并退回本进程逻辑），体感就是"第一下没反应"。
+    /// 返回值是给日志看的一句话。
+    pub fn warmup(&mut self) -> String {
+        let t0 = std::time::Instant::now();
+        let ok = self.engine().is_some();
+        format!("引擎就绪={ok}（{} ms）", t0.elapsed().as_millis())
+    }
+
     /// 状态查询（状态栏 / 新会话初始状态用）。
     pub fn status(&mut self, client: u32) -> Reply {
         let cfg = xunyin_rime::config::load_config();

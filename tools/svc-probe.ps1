@@ -80,7 +80,8 @@ for ($attempt = 1; $attempt -le 4; $attempt++) {
     }
     $proc = Start-Process -FilePath $Exe -PassThru -WindowStyle Hidden
     Start-Sleep -Milliseconds 600
-    $p = New-Object System.IO.Pipes.NamedPipeClientStream(".", "xunyin-ime-svc-v1", [System.IO.Pipes.PipeDirection]::InOut)
+    $pipeShort = if ($env:XUNYIN_SVC_PIPE) { $env:XUNYIN_SVC_PIPE -replace '^\\\\\.\\pipe\\', '' } else { 'xunyin-ime-svc-v1' }
+    $p = New-Object System.IO.Pipes.NamedPipeClientStream(".", $pipeShort, [System.IO.Pipes.PipeDirection]::InOut)
     try { $p.Connect(3000) } catch { Write-Host "第 $attempt 次：连不上服务，重试"; continue }
     Send-Msg $p ('{"t":"hello","proto":1,"pid":' + $PID + ',"dll_tag":"probe"}')
     $ack = Read-Msg $p
@@ -103,6 +104,13 @@ for ($i = 1; $i -le $Times; $i++) {
     if ($proc.HasExited) { $died = 1; break }
     foreach ($k in $Keys) {
         # 特殊动作：SELECT:<n> 点击第 n 个候选；CMD:<name> 发命令（toggle_mode 等）
+        if ($k -like "WARMUP") {
+            Send-Msg $pipe '{"t":"warmup"}'
+            $reply = Read-Msg $pipe
+            if ($null -eq $reply) { Write-Host "[$i] WARMUP 时连接中断（服务已崩）"; $died = 1; break }
+            Write-Host "[$i] WARMUP -> $reply"
+            continue
+        }
         if ($k -like "SELECT:*") {
             $idx = [int]($k -replace "SELECT:", "")
             Send-Msg $pipe ('{"t":"select","index":' + $idx + '}')

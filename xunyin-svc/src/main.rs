@@ -28,11 +28,18 @@ use windows::Win32::System::Pipes::{
 /// （DLL 靠 exe 指纹变化触发重启）。协议兼容时"服务比 DLL 新"也能直接用，
 /// 所以改服务代码**不需要重编 DLL、更不需要重开宿主应用**。
 /// 记法：与 xunyin-rime::svc_proto::SVC_TAG 保持同一个值。
-pub const SVC_TAG: &str = "20261014-2";
+pub const SVC_TAG: &str = "20261014-3";
 /// 协议版本：消息格式不兼容时才改。
 pub const PROTO: u32 = 1;
 
+/// 默认管道名；设了环境变量 `XUNYIN_SVC_PIPE` 就用它（测试里跑隔离实例用）。
+/// 与 xunyin-rime::svc_proto 里的 PIPE_NAME 保持同一个值。
 const PIPE_NAME: &str = r"\\.\pipe\xunyin-ime-svc-v1";
+
+fn pipe_name() -> String {
+    std::env::var("XUNYIN_SVC_PIPE").unwrap_or_else(|_| PIPE_NAME.to_string())
+}
+
 const MAX_MSG: usize = 1 << 20; // 单条消息上限 1MB
 /// 没有客户端连接多久就自己退出（避免留僵尸进程；DLL 需要时会重新拉起）。
 const IDLE_EXIT_MS: u64 = 60_000;
@@ -224,6 +231,17 @@ fn serve(h: HANDLE) {
                 })
             }
             "ping" => json!({ "t": "pong", "tag": SVC_TAG, "pid": std::process::id() }),
+            // 预热：宿主 DLL 连上后第一件事就是发它，把"引擎首次初始化 + 首次编译索引"
+            // 这几秒到几十秒提前做掉（否则用户敲的第一颗键就是一次漫长等待）。
+            "warmup" => {
+                if input_enabled() {
+                    match guard(|| with_logic(|l| l.warmup())) {
+                        Ok(note) => log(format!("预热完成：{note}")),
+                        Err(why) => log(format!("预热失败：{why}")),
+                    }
+                }
+                json!({ "t": "reply", "reply": { "consume": true } })
+            }
             // ── 输入逻辑（第 2 阶段：从 DLL 搬过来的部分）──────────────
             // 服务持有唯一的 librime 引擎：宿主 DLL 只转发按键（见 xunyin-tsf/src/svc.rs）。
             // 这样"改输入逻辑"只要换掉这个 exe，宿主应用完全不用重启。
@@ -306,8 +324,9 @@ fn main() {
         return;
     }
     log(&format!(
-        "服务启动 tag={SVC_TAG} proto={PROTO} 输入路径={} exe={:?}",
+        "服务启动 tag={SVC_TAG} proto={PROTO} 输入路径={} 管道={} exe={:?}",
         input_enabled(),
+        pipe_name(),
         std::env::current_exe().map(|p| p.display().to_string())
     ));
     // panic 钩子：服务是隐藏窗口启动的，stderr 看不到；而且实测 after_key 里 panic 后
@@ -317,7 +336,8 @@ fn main() {
     }));
     // 访问违例等致命异常也落盘（含指令地址、读写目标、调用链）
     crashlog::install();
-    let name = wide(PIPE_NAME);
+    let pipe = pipe_name();
+    let name = wide(&pipe);
     let mode = NAMED_PIPE_MODE(PIPE_TYPE_BYTE.0 | PIPE_READMODE_BYTE.0 | PIPE_WAIT.0);
     let open = FILE_FLAGS_AND_ATTRIBUTES(PIPE_ACCESS_DUPLEX.0);
     touch();
