@@ -19,6 +19,9 @@ pub use xunyin_rime::svc_proto::Reply;
 /// 服务内的输入状态（对应 DLL 里那份 SharedState 的"逻辑部分"）。
 pub struct Logic {
     engine: Option<RimeEngine>,
+    /// 正在后台重建索引（分钟级）。这期间按键直接让宿主退回自己的逻辑，
+    /// 不能让宿主在管道上等超时。
+    redeploying: bool,
     /// 叠加候选文本（快捷输入 / 联想 / v 模式）
     overlay: Vec<String>,
     /// 叠加候选的注释
@@ -37,6 +40,7 @@ impl Logic {
     pub fn new() -> Self {
         Logic {
             engine: None,
+            redeploying: false,
             overlay: Vec::new(),
             overlay_comments: Vec::new(),
             cand_map: Vec::new(),
@@ -96,6 +100,14 @@ impl Logic {
 
     /// 处理一次按键。`mask` 是 kRimeModifier* 位掩码，`shift` 是 Shift 是否按下。
     pub fn key(&mut self, vk: u32, mask: i32, shift: bool) -> Reply {
+        if self.redeploying {
+            // 索引在后台重建：不接按键，让宿主立刻退回它自己的逻辑（打字不卡）
+            return Reply {
+                consume: false,
+                error: Some("引擎重建中".into()),
+                ..Default::default()
+            };
+        }
         let cfg = xunyin_rime::config::load_config();
         let ctrl = mask & xunyin_rime::kRimeModifierControl != 0;
         let alt = mask & xunyin_rime::kRimeModifierAlt != 0;
@@ -407,8 +419,9 @@ impl Logic {
                     e.refresh_options(vec![("ascii_punct".into(), cfg.input.ascii_punct)]);
                 }
             }
-            "reload" => self.reload(false),
-            "redeploy" => self.reload(true),
+            "reload" => self.reload(),
+            // "redeploy"（重建索引）由 main.rs 特判走后台线程，不会到这里
+            "redeploy" => self.reload(),
             other => {
                 if let Some(id) = other.strip_prefix("select_schema:") {
                     if let Some(e) = self.engine() {
@@ -427,29 +440,52 @@ impl Logic {
         out
     }
 
-    /// 引擎热重载（配置/词库/方案变了时由 reload 标记触发，或状态栏菜单点）。
-    pub fn reload(&mut self, with_deploy: bool) {
+    /// 引擎热重载：收掉引擎再重建（配置/词库/方案变了时由 reload 标记触发）。
+    /// **不重建索引**——那是分钟级操作，走 `begin_redeploy` + 后台线程。
+    pub fn reload(&mut self) {
         if self.engine.is_none() {
             // 还没建过引擎（服务只是握手/心跳）→ 什么都不用做：
             // 下次真正建引擎时会读到最新的词库与配置。
             return;
         }
-        let (shared, user) = data_dirs();
-        let page_size = xunyin_rime::config::load_config().input.page_size;
-        match xunyin_rime::schema_list::sync_default_patch(&shared, &user, page_size) {
-            Ok(true) => crate::log("已把新装的方案补进 scheme 清单"),
-            _ => {}
-        }
+        sync_scheme_list();
         if let Some(e) = self.engine.as_mut() {
-            if with_deploy {
-                let _ = e.deploy_full();
-                let _ = e.wait_deploy(180_000);
-            }
             e.finalize();
             self.engine = None;
         }
         let _ = self.engine(); // 重建
-        crate::log(format!("引擎已重载（with_deploy={with_deploy}）"));
+        crate::log("引擎已重载");
+    }
+
+    /// 重建索引第一步：把现有引擎收掉并打上"重建中"标记，返回部署所需的数据目录。
+    /// **调用方拿到 job 后要在后台线程里跑 `deploy_redeploy`**，别在持锁时跑。
+    pub fn begin_redeploy(&mut self) -> Option<(String, String)> {
+        if self.redeploying {
+            return None;
+        }
+        sync_scheme_list();
+        if let Some(e) = self.engine.as_mut() {
+            e.finalize();
+            self.engine = None;
+        }
+        self.redeploying = true;
+        let (shared, user) = data_dirs();
+        Some((
+            shared.to_string_lossy().into_owned(),
+            user.to_string_lossy().into_owned(),
+        ))
+    }
+
+    /// 重建索引第三步：部署结束后重建引擎、清标记。
+    pub fn finish_redeploy(&mut self) {
+        self.redeploying = false;
+        let _ = self.engine(); // 重建（会读到刚建好的新索引）
+        crate::log("重新部署结束，引擎已用新索引重建");
+    }
+
+    /// 重建索引第二步：在**不持锁**的后台线程里调用。
+    pub fn deploy_redeploy(shared: &str, user: &str) -> bool {
+        xunyin_rime::RimeEngine::deploy_only(shared, user)
     }
 
     // ---------------- 内部 ----------------
@@ -476,7 +512,8 @@ impl Logic {
                 let _ = e.delete_candidate_on_current_page(disp);
             }
             blocklist::block(&w);
-            crate::log(format!("删词：{w}"));
+            // 不记用户词（日志可能被打进诊断包）：只记长度与结果
+            crate::log(format!("删词：命中 1 条（{} 字）", w.chars().count()));
         }
         // 刷新候选
         let cfg = xunyin_rime::config::load_config();
@@ -714,6 +751,15 @@ fn v_mode_char(vk: u32, shift: bool) -> Option<char> {
         0x6E => Some('.'),
         0x6F => Some('/'),
         _ => None,
+    }
+}
+
+/// 把（新装的）方案补进 scheme 清单；重载/重建索引前都先跑一遍。
+fn sync_scheme_list() {
+    let (shared, user) = data_dirs();
+    let page_size = xunyin_rime::config::load_config().input.page_size;
+    if let Ok(true) = xunyin_rime::schema_list::sync_default_patch(&shared, &user, page_size) {
+        crate::log("已把新装的方案补进 scheme 清单");
     }
 }
 

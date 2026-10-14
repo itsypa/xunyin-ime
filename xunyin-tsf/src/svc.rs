@@ -78,6 +78,30 @@ pub fn poll() {
 static REQ: Mutex<Option<std::fs::File>> = Mutex::new(None);
 /// 同步请求的读写超时（毫秒）。服务正常时一次往返 <1ms；这个值只用于兜底。
 const REPLY_TIMEOUT_MS: u32 = 80;
+/// 请求失败后的冷却时间（毫秒）：这段期间不再发请求，宿主直接走本进程逻辑，
+/// 免得每颗键都白等一次超时（服务在重建索引时就是这种状态）。
+const REQ_COOLDOWN_MS: u64 = 5000;
+static REQ_DOWN_UNTIL: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+/// 请求通道是否处于冷却期。
+fn req_in_cooldown() -> bool {
+    now_ms() < REQ_DOWN_UNTIL.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// 请求失败后进入冷却，并丢掉这条连接（消息流已不可信）。
+fn req_fail(g: &mut Option<std::fs::File>, why: &str) {
+    *g = None;
+    let until = now_ms() + REQ_COOLDOWN_MS;
+    REQ_DOWN_UNTIL.store(until, std::sync::atomic::Ordering::Relaxed);
+    crate::tsf_log!("svc: 请求失败（{why}）→ 冷却 {REQ_COOLDOWN_MS}ms，期间走本进程逻辑");
+}
 
 /// 服务可用吗（读后台线程维护的状态缓存，不阻塞、不发起 IO）。
 pub fn ready() -> bool {
@@ -119,7 +143,7 @@ fn req_connect() -> Option<std::fs::File> {
 
 /// 同步请求：返回服务回复里的 `reply` 字段（失败/超时返回 None）。
 fn request(msg: serde_json::Value) -> Option<serde_json::Value> {
-    if !ready() {
+    if !ready() || req_in_cooldown() {
         return None;
     }
     let mut g = REQ.lock().unwrap_or_else(|e| e.into_inner());
@@ -128,23 +152,20 @@ fn request(msg: serde_json::Value) -> Option<serde_json::Value> {
     }
     let f = g.as_mut()?;
     if let Err(e) = send(f, &msg) {
-        crate::tsf_log!("svc: 请求发送失败（{e}）→ 退回本进程逻辑");
-        *g = None;
+        req_fail(&mut g, &format!("发送失败 {e}"));
         return None;
     }
     match recv(f) {
         Ok(v) => {
             let reply = v.get("reply").cloned();
             if reply.is_none() {
-                crate::tsf_log!("svc: 回复里没有 reply 字段 → 退回本进程逻辑");
-                *g = None;
+                req_fail(&mut g, "回复里没有 reply 字段");
             }
             reply
         }
         Err(e) => {
             // 超时/断开：这条连接的消息流已经不可信，丢掉让后台线程重连
-            crate::tsf_log!("svc: 请求无响应（{e}）→ 退回本进程逻辑");
-            *g = None;
+            req_fail(&mut g, &format!("无响应 {e}"));
             None
         }
     }

@@ -78,7 +78,7 @@ fn watch_reload() {
                     seen = Some(raw.clone());
                     if !raw.trim().is_empty() {
                         log(format!("收到重载请求 -> {raw}"));
-                        with_logic(|l| l.reload(false));
+                        with_logic(|l| l.reload());
                     }
                 }
             }
@@ -248,9 +248,31 @@ fn serve(h: HANDLE) {
             }
             "command" if input_enabled() => {
                 let name = msg.get("name").and_then(|v| v.as_str()).unwrap_or("");
-                match guard(|| with_logic(|l| l.command(name))) {
-                    Ok(r) => json!({ "t": "reply", "reply": r }),
-                    Err(why) => json!({ "t": "reply", "reply": { "consume": false, "error": why } }),
+                if name == "redeploy" {
+                    // 重建索引是分钟级的：把引擎收掉 + 打标记（这期间按键直接让宿主
+                    // 退回自己的逻辑，不在这里等），真正的部署放后台线程跑，不持锁。
+                    match with_logic(|l| l.begin_redeploy()) {
+                        Some((shared, user)) => {
+                            log("开始重建索引（后台）");
+                            std::thread::spawn(move || {
+                                let ok = Logic::deploy_redeploy(&shared, &user);
+                                with_logic(|l| l.finish_redeploy());
+                                log(format!("重建索引结束（{ok}）"));
+                            });
+                            json!({ "t": "reply", "reply": { "consume": true } })
+                        }
+                        None => {
+                            log("重建索引：已有一次在进行，忽略");
+                            json!({ "t": "reply", "reply": { "consume": true } })
+                        }
+                    }
+                } else {
+                    match guard(|| with_logic(|l| l.command(name))) {
+                        Ok(r) => json!({ "t": "reply", "reply": r }),
+                        Err(why) => {
+                            json!({ "t": "reply", "reply": { "consume": false, "error": why } })
+                        }
+                    }
                 }
             }
             "shutdown" => {

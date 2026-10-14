@@ -358,6 +358,22 @@ impl RimeEngine {
         }
     }
 
+    /// 单独跑一次"重建索引"：建一个引擎 → 完整部署 → 等结束 → 收掉。
+    ///
+    /// 给常驻服务用：重建索引是分钟级的，必须在**不持有调用方锁**的后台线程里跑，
+    /// 否则那几分钟里所有按键都会被挡住（宿主只能等超时）。
+    pub fn deploy_only(shared_data_dir: &str, user_data_dir: &str) -> bool {
+        match Self::init(shared_data_dir, user_data_dir, "xunyin-svc-deploy") {
+            Ok(mut e) => {
+                let started = e.deploy_full();
+                let done = e.wait_deploy(180_000);
+                e.finalize();
+                started && done
+            }
+            Err(_) => false,
+        }
+    }
+
     /// 只重建单个方案（含该方案主翻译器词典的编译）。
     pub fn deploy_schema(&self, schema_id: &str) -> bool {
         if !self.initialized {

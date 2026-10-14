@@ -812,7 +812,11 @@ impl CandidateWindow {
         // 它自己换算 Rime 下标并返回要上屏的文本。
         if crate::svc::ready() {
             if let Some(r) = crate::svc::select(index) {
-                crate::tsf_log!("candidate click: 服务返回 commit={:?}", r.commit);
+                // 不记上屏文本（日志可能进诊断包）：只记长度
+                crate::tsf_log!(
+                    "candidate click: 服务返回 {} 字",
+                    r.commit.chars().count()
+                );
                 if let Ok(mut st) = shared.lock() {
                     st.overlay.clear();
                     st.v_mode = None;
@@ -829,7 +833,7 @@ impl CandidateWindow {
         };
         if index < overlay.len() {
             let text = overlay[index].clone();
-            crate::tsf_log!("candidate click: 叠加候选 {text:?}");
+            crate::tsf_log!("candidate click: 叠加候选 {} 字", text.chars().count());
             if let Ok(mut st) = shared.lock() {
                 st.overlay.clear();
                 st.v_mode = None;

@@ -69,6 +69,17 @@ fn cached_cfg() -> xunyin_rime::config::XunyinConfig {
     CFG.get_or_init(xunyin_rime::config::CachedConfig::new).get()
 }
 
+/// 是否允许把**用户输入**（原始按键、预编辑、候选词、上屏文本）写进日志。
+///
+/// 默认关：日志会被打进"导出诊断包"，可能被贴到公开 issue 里，所以生产日志只记
+/// 长度、数量、状态与错误码（水杉输入法在 windows/AGENTS.md 里也是这条规矩：
+/// 生产日志不得记录用户原始按键、预编辑、候选词或提交文本）。
+/// 排查输入问题时设 `XUNYIN_LOG_INPUT=1` 再复现，就能看到原文。
+fn log_input() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("XUNYIN_LOG_INPUT").is_ok())
+}
+
 /// 文本服务共享状态。
 ///
 /// 所有字段只允许在 TSF 线程（激活文本服务的线程）访问；
@@ -150,34 +161,22 @@ impl TextService {
 }
 
 impl TextService_Impl {
-    /// 服务中途不可用时，把宿主里正在显示的组合串喂给本进程引擎，
-    /// 让"落到本进程逻辑"的那次按键能接着打，而不是把已输入的拼音丢掉。
-    fn resync_local_engine(&self) {
-        let Some(arc) = engine::ensure_engine() else {
-            return;
-        };
-        let Ok(mut e) = arc.lock() else { return };
-        if e.is_composing() {
-            return;
-        }
-        let shown = self
+    /// 按键通道失败（写失败/无响应/坏帧）时的统一收尾：**取消组合、隐藏候选**，
+    /// 会话从空开始。
+    ///
+    /// 刻意不做"把组合串喂回本进程引擎"的回放：水杉输入法在同样位置上踩过坑
+    /// （回放带来闪烁、双上屏和重试循环，issue #259/#404/#427），他们的结论是
+    /// 被吃掉的键「要么被处理，要么被有意吞掉，绝不交还宿主，也绝不处理两次」。
+    fn drop_composition(&self, context: &ITfContext) {
+        let showing = self
             .shared
             .lock()
-            .map(|st| st.last_preedit.clone())
-            .unwrap_or_default();
-        if shown.is_empty() {
-            return;
+            .map(|st| st.composition.is_some())
+            .unwrap_or(false);
+        if showing {
+            let _ = self.schedule_edit(context, "", "", 0);
         }
-        let sep = cached_cfg().input.separator();
-        // 显示串里音节之间是分隔符，Rime 的原始输入串用空格（分隔符为空串时
-        // 直接整串喂进去，Rime 自己会重新分音节）
-        let raw = if sep.is_empty() {
-            shown
-        } else {
-            shown.replace(sep, " ")
-        };
-        crate::tsf_log!("svc: 服务不可用，把组合串 {raw:?} 交给本进程引擎接着打");
-        e.process_input(&raw);
+        crate::candidate_window::hide_candidates();
     }
 
     /// 把服务返回的结果写回宿主：组合串 / 上屏文本 / 候选窗。
@@ -396,7 +395,11 @@ impl TextService_Impl {
                 .first()
                 .map(|(t, _)| t.clone())
                 .unwrap_or_else(|| buf.clone());
-            crate::tsf_log!("vmode: 上屏 {text:?}（buf={buf:?}）");
+            if log_input() {
+                crate::tsf_log!("vmode: 上屏 {text:?}（buf={buf:?}）");
+            } else {
+                crate::tsf_log!("vmode: 上屏 1 项（{} 字）", text.chars().count());
+            }
             self.v_mode_leave();
             let _ = self.schedule_edit(context, "", &text, 0);
             crate::candidate_window::hide_candidates();
@@ -423,7 +426,15 @@ impl TextService_Impl {
         let _ = self.schedule_edit(context, buf, "", caret);
         let cands = xunyin_rime::quick_input::v_mode_candidates(buf);
         let (items, comments): (Vec<String>, Vec<String>) = cands.into_iter().unzip();
-        crate::tsf_log!("vmode: buf={buf:?} 候选={items:?}");
+        if log_input() {
+            crate::tsf_log!("vmode: buf={buf:?} 候选={items:?}");
+        } else {
+            crate::tsf_log!(
+                "vmode: 算式 {} 个字符，候选 {} 项",
+                buf.chars().count(),
+                items.len()
+            );
+        }
         if let Ok(mut st) = self.shared.lock() {
             st.overlay = items.clone();
         }
@@ -460,7 +471,11 @@ impl TextService_Impl {
         };
         if idx < overlay.len() {
             let text = overlay[idx].clone();
-            crate::tsf_log!("overlay: 上屏 {text:?}（快捷输入/联想）");
+            if log_input() {
+                crate::tsf_log!("overlay: 上屏 {text:?}（快捷输入/联想）");
+            } else {
+                crate::tsf_log!("overlay: 上屏 1 项（{} 字）", text.chars().count());
+            }
             if let Some(arc) = engine::ensure_engine() {
                 if let Ok(mut e) = arc.lock() {
                     e.clear_composition(); // 丢掉 rq 之类的拼音
@@ -590,8 +605,11 @@ impl TextService_Impl {
             if let Some(reply) = crate::svc::key(vk, mask, shift_now) {
                 return self.apply_service_reply(context, &reply);
             }
-            crate::tsf_log!("svc: 按键落回本进程逻辑（服务暂不可用）");
-            self.resync_local_engine();
+            // 通道失败：这颗键已被我们在 OnTestKeyDown 声明吃下，不能再交还宿主。
+            // 不确定服务有没有收到它 —— 重发或本地再处理一次都会双上屏，所以丢键。
+            crate::tsf_log!("svc: 按键通道失败 -> 丢键 + 取消组合（后续按键走本进程逻辑）");
+            self.drop_composition(context);
+            return true;
         }
         // v 模式（v123 / v1+2*3）由我们自己维护组合串；命中即消费按键
         if let Some(consumed) = self.v_mode_key(context, vk, mask) {
@@ -801,10 +819,20 @@ impl TextService_Impl {
                     let api_ok = eng.delete_candidate_on_current_page(i.saturating_sub(overlay.len()));
                     let blocked = victim.as_deref().map(xunyin_rime::blocklist::block).unwrap_or(false);
                     match &victim {
-                        Some(w) => crate::tsf_log!(
-                            "keydown: Ctrl+{} 删词 {w:?}（librime={api_ok} 黑名单={blocked}）",
-                            i + 1
-                        ),
+                        Some(w) => {
+                            if log_input() {
+                                crate::tsf_log!(
+                                    "keydown: Ctrl+{} 删词 {w:?}（librime={api_ok} 黑名单={blocked}）",
+                                    i + 1
+                                );
+                            } else {
+                                crate::tsf_log!(
+                                    "keydown: Ctrl+{} 删词（{} 字，librime={api_ok} 黑名单={blocked}）",
+                                    i + 1,
+                                    w.chars().count()
+                                );
+                            }
+                        }
                         None => crate::tsf_log!("keydown: Ctrl+{} 删词：该位置没有候选", i + 1),
                     }
                     true
@@ -829,7 +857,11 @@ impl TextService_Impl {
                             text.push_str(&eng.get_commit_text());
                         }
                         text.push_str(&out);
-                        crate::tsf_log!("keydown: punct_map {ch:?} -> {text:?}");
+                        if log_input() {
+                            crate::tsf_log!("keydown: punct_map {ch:?} -> {text:?}");
+                        } else {
+                            crate::tsf_log!("keydown: punct_map 命中（{} 字）", text.chars().count());
+                        }
                         custom_commit = Some(text);
                         true
                     }
@@ -840,9 +872,12 @@ impl TextService_Impl {
                 },
             },
         };
-        crate::tsf_log!(
-            "keydown: vk=0x{vk:02X} shift={shift} keycode=0x{keycode:X} mask=0x{mask:X} consumed={consumed}"
-        );
+        // 逐键轨迹默认不写（含原始按键，量大）：排查时开 XUNYIN_LOG_INPUT=1
+        if log_input() {
+            crate::tsf_log!(
+                "keydown: vk=0x{vk:02X} shift={shift} keycode=0x{keycode:X} mask=0x{mask:X} consumed={consumed}"
+            );
+        }
         if !consumed {
             return false;
         }
@@ -906,13 +941,21 @@ impl TextService_Impl {
         }
         crate::status_bar::refresh_status_bar(&self.shared);
         if vk == 0x0D {
-            crate::tsf_log!(
-                "keydown: Enter commit_text={commit:?} composing_snapshot={}",
-                snapshot
-                    .as_ref()
-                    .map(|s| s.preedit.clone())
-                    .unwrap_or_default()
-            );
+            if log_input() {
+                crate::tsf_log!(
+                    "keydown: Enter commit_text={commit:?} composing_snapshot={}",
+                    snapshot
+                        .as_ref()
+                        .map(|s| s.preedit.clone())
+                        .unwrap_or_default()
+                );
+            } else {
+                crate::tsf_log!(
+                    "keydown: Enter 上屏 {} 字，组合剩 {} 字",
+                    commit.chars().count(),
+                    snapshot.as_ref().map(|s| s.preedit.chars().count()).unwrap_or(0)
+                );
+            }
         }
         // 拼音音节间加分隔符号（"ni hao" → "ni'hao"，微软拼音风格）
         let sep = cached_cfg().input.separator();
@@ -978,7 +1021,11 @@ impl TextService_Impl {
                     overlay.push(text);
                     overlay_comments.push(comment);
                 }
-                crate::tsf_log!("keydown: 快捷输入 {t} -> {} 个候选", overlay.len());
+                if log_input() {
+                    crate::tsf_log!("keydown: 快捷输入 {t} -> {} 个候选", overlay.len());
+                } else {
+                    crate::tsf_log!("keydown: 快捷输入命中 -> {} 个候选", overlay.len());
+                }
             }
         }
         if overlay.is_empty() && cfg.input.enable_assoc && preedit.is_empty() {
@@ -998,7 +1045,7 @@ impl TextService_Impl {
             let mut m = overlay_comments;
             for (i, (t, cm)) in candidates.into_iter().zip(comments.into_iter()).enumerate() {
                 if xunyin_rime::blocklist::is_blocked(&t) {
-                    crate::tsf_log!("keydown: 候选 {t:?} 已被删词过滤");
+                    crate::tsf_log!("keydown: 1 个候选已被删词过滤");
                     continue;
                 }
                 cand_map.push(i);
@@ -1013,9 +1060,17 @@ impl TextService_Impl {
             st.cand_map = cand_map;
         }
         self.update_candidates(disp_candidates, disp_comments, disp_selected, page, page_size);
-        crate::tsf_log!(
-            "keydown: vk=0x{vk:02X} -> consumed, preedit={preedit:?} commit={commit:?} candidates={cand_count}"
-        );
+        if log_input() {
+            crate::tsf_log!(
+                "keydown: vk=0x{vk:02X} -> consumed, preedit={preedit:?} commit={commit:?} candidates={cand_count}"
+            );
+        } else {
+            crate::tsf_log!(
+                "keydown: 已消费，组合 {} 字，上屏 {} 字，候选 {cand_count} 个",
+                preedit.chars().count(),
+                commit.chars().count()
+            );
+        }
         true
     }
 
@@ -1346,12 +1401,14 @@ impl ITfKeyEventSink_Impl for TextService_Impl {
         lparam: LPARAM,
     ) -> Result<BOOL> {
         let r = test_key(&self.shared, wparam.0 as u32, lparam.0 as usize);
-        crate::tsf_log!(
-            "OnTestKeyDown: vk=0x{:02X} lparam=0x{:X} -> {}",
-            wparam.0 as u32,
-            lparam.0 as usize,
-            r
-        );
+        if log_input() {
+            crate::tsf_log!(
+                "OnTestKeyDown: vk=0x{:02X} lparam=0x{:X} -> {}",
+                wparam.0 as u32,
+                lparam.0 as usize,
+                r
+            );
+        }
         Ok(BOOL::from(r))
     }
 
@@ -1364,11 +1421,9 @@ impl ITfKeyEventSink_Impl for TextService_Impl {
         // Shift 松开需要交给 Rime（ascii_composer 在松开时切换中英）
         let r = key::is_shift_key(wparam.0 as u32)
             && (crate::svc::ready() || engine::engine().is_some());
-        crate::tsf_log!(
-            "OnTestKeyUp: vk=0x{:02X} -> {}",
-            wparam.0 as u32,
-            r
-        );
+        if log_input() {
+            crate::tsf_log!("OnTestKeyUp: vk=0x{:02X} -> {}", wparam.0 as u32, r);
+        }
         Ok(BOOL::from(r))
     }
 
@@ -1379,11 +1434,13 @@ impl ITfKeyEventSink_Impl for TextService_Impl {
         lparam: LPARAM,
     ) -> Result<BOOL> {
         let vk = wparam.0 as u32;
-        crate::tsf_log!(
-            "OnKeyDown: vk=0x{:02X} lparam=0x{:X}",
-            vk,
-            lparam.0 as usize
-        );
+        if log_input() {
+            crate::tsf_log!(
+                "OnKeyDown: vk=0x{:02X} lparam=0x{:X}",
+                vk,
+                lparam.0 as usize
+            );
+        }
         // Shift 状态跟踪：用于判定“裸 Shift”（按下后没有夹带其它按键）
         if let Ok(mut st) = self.shared.lock() {
             if key::is_shift_key(vk) {
@@ -1397,7 +1454,9 @@ impl ITfKeyEventSink_Impl for TextService_Impl {
             Some(ctx) => self.handle_key_down(&ctx, vk, lparam.0 as usize),
             None => false,
         };
-        crate::tsf_log!("OnKeyDown: vk=0x{vk:02X} -> handled={handled}");
+        if log_input() {
+            crate::tsf_log!("OnKeyDown: vk=0x{vk:02X} -> handled={handled}");
+        }
         Ok(BOOL::from(handled))
     }
 
@@ -1432,7 +1491,7 @@ impl ITfKeyEventSink_Impl for TextService_Impl {
                                 let _ = self.schedule_edit(&ctx, "", &r.commit, 0);
                             }
                             crate::candidate_window::hide_candidates();
-                            crate::tsf_log!("OnKeyUp: Shift -> commit pinyin {:?}", r.commit);
+                            crate::tsf_log!("OnKeyUp: Shift -> 上屏拼音 {} 字", r.commit.chars().count());
                         } else if let Ok(mut st) = self.shared.lock() {
                             st.ascii_mode = r.ascii;
                             st.full_shape = r.full;
@@ -1450,7 +1509,7 @@ impl ITfKeyEventSink_Impl for TextService_Impl {
                                     let _ = self.schedule_edit(&ctx, "", &raw, 0);
                                 }
                                 crate::candidate_window::hide_candidates();
-                                crate::tsf_log!("OnKeyUp: Shift -> commit pinyin {raw:?}");
+                                crate::tsf_log!("OnKeyUp: Shift -> 上屏拼音 {} 字", raw.chars().count());
                             }
                         } else {
                             // 未组合：切换中英（ascii_mode）
