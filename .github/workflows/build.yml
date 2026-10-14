@@ -11,6 +11,12 @@ permissions:
 jobs:
   build:
     runs-on: windows-latest
+    # secrets 不能出现在 step 级 if 的表达式里：GitHub 在**校验阶段**就会把整份
+    # workflow 判为无效（报 Unrecognized named-value: 'secrets'），CI 完全不跑。
+    # 所以先提到 job 级 env，再用 env.XXX 判断，脚本里也用 $env:XXX。
+    env:
+      SIGN_PFX_BASE64: ${{ secrets.SIGN_PFX_BASE64 }}
+      SIGN_PFX_PASSWORD: ${{ secrets.SIGN_PFX_PASSWORD }}
     steps:
       - uses: actions/checkout@v4
 
@@ -75,15 +81,15 @@ jobs:
           cargo build --release --features packer
           cargo build --release --features packer --target i686-pc-windows-msvc
 
-      - name: 导入签名证书（如已配置 secrets）
-        if: ${{ secrets.SIGN_PFX_BASE64 != '' }}
+      - name: 导入签名证书（配置了 secrets 才做）
+        if: ${{ env.SIGN_PFX_BASE64 != '' }}
         shell: powershell
         run: |
-          $bytes = [Convert]::FromBase64String("${{ secrets.SIGN_PFX_BASE64 }}")
+          $bytes = [Convert]::FromBase64String($env:SIGN_PFX_BASE64)
           $pfx = Join-Path $env:RUNNER_TEMP "sign.pfx"
           [IO.File]::WriteAllBytes($pfx, $bytes)
           "SIGN_PFX=$pfx" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
-          "SIGN_PFX_PASSWORD=${{ secrets.SIGN_PFX_PASSWORD }}" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "SIGN_PFX_PASSWORD=$env:SIGN_PFX_PASSWORD" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
       - name: 生成安装包（wind-installer）
         shell: powershell
