@@ -1,3 +1,16 @@
+# 迅音输入法 · Windows 构建与发布
+#
+# ⚠️ 所有 run: 块必须是**纯 ASCII**。原因：GitHub 把 run 块写成**不带 BOM** 的临时 .ps1，
+#    而 `shell: powershell` 跑的是 Windows PowerShell 5.1，它读取无 BOM 的脚本会按
+#    **系统 ANSI 码页**解码 → 中文变乱码，乱码字节还可能吃掉字符串的结束引号，整段脚本
+#    直接解析失败（实测报 "The string is missing the terminator"，属 ParserError）。
+#    中文说明请写在 YAML 注释里（YAML 按 UTF-8 读，不受影响）；步骤名可以用中文。
+#    仓库里的 tools/*.ps1 都是 UTF-8 **带 BOM**，所以脚本文件本身没有这个问题。
+#
+# 另外两条踩过的坑：
+#   * secrets 不能出现在 step 级 if 表达式里（会在校验阶段判整份 workflow 无效）；
+#   * PowerShell 数组 splat 只按位置传值，具名参数必须用哈希表 splat。
+
 name: build-windows
 
 on:
@@ -11,9 +24,7 @@ permissions:
 jobs:
   build:
     runs-on: windows-latest
-    # secrets 不能出现在 step 级 if 的表达式里：GitHub 在**校验阶段**就会把整份
-    # workflow 判为无效（报 Unrecognized named-value: 'secrets'），CI 完全不跑。
-    # 所以先提到 job 级 env，再用 env.XXX 判断，脚本里也用 $env:XXX。
+    # secrets 提到 job 级 env：step 级 if 里不能用 secrets（见文件头说明）。
     env:
       SIGN_PFX_BASE64: ${{ secrets.SIGN_PFX_BASE64 }}
       SIGN_PFX_PASSWORD: ${{ secrets.SIGN_PFX_PASSWORD }}
@@ -37,11 +48,12 @@ jobs:
       - name: 单元测试
         shell: powershell
         run: |
-          cd xunyin-tsf; cargo test
-          if ($LASTEXITCODE -ne 0) { throw "xunyin-tsf 测试失败" }
-          # 配置解析 + 快捷输入/联想/黑名单（这些模块已移到共享 crate）
-          cd ../xunyin-rime; cargo test --lib -- config:: quick_input:: assoc:: blocklist::
-          if ($LASTEXITCODE -ne 0) { throw "xunyin-rime 配置测试失败" }
+          cd xunyin-tsf
+          cargo test
+          if ($LASTEXITCODE -ne 0) { throw "xunyin-tsf tests failed" }
+          cd ../xunyin-rime
+          cargo test --lib -- config:: quick_input:: assoc:: blocklist::
+          if ($LASTEXITCODE -ne 0) { throw "xunyin-rime config tests failed" }
 
       - name: 构建 xunyin-tsf（x64）
         working-directory: xunyin-tsf
@@ -51,7 +63,7 @@ jobs:
         working-directory: xunyin-tsf
         run: cargo build --release --target i686-pc-windows-msvc
 
-      # 常驻服务（DLL 会从旁边拉起它；改服务代码不用重开宿主应用）
+      # 常驻服务：DLL 会从旁边拉起它；改服务代码不用重开宿主应用
       - name: 构建 xunyin-svc（x64）
         working-directory: xunyin-svc
         run: cargo build --release
@@ -60,7 +72,7 @@ jobs:
         working-directory: xunyin-svc
         run: cargo build --release --target i686-pc-windows-msvc
 
-      # 设置中心是原生 Win32 应用（无 WebView2 依赖），直接 cargo build
+      # 设置中心是原生 Win32 应用（无 WebView2 依赖）
       - name: 构建设置中心（原生）
         working-directory: xunyin-ime/native
         run: cargo build --release
@@ -68,21 +80,21 @@ jobs:
       - name: 注入构建版本号
         shell: powershell
         run: |
+          # NOTE: single quotes would keep $env: literal and write
+          # 'version = "0.1.$env:GITHUB_RUN_NUMBER"' into Cargo.toml, which makes
+          # cargo fail with a semver parse error. Use a double-quoted replacement.
           $conf = "xunyin-ime/native/Cargo.toml"
           $ver = "0.1.$env:GITHUB_RUN_NUMBER"
           $text = Get-Content $conf -Raw
-          # 替换串必须用双引号：单引号里 $env: 不展开，会把字面量
-          # "0.1.$env:GITHUB_RUN_NUMBER" 写进 Cargo.toml，cargo 直接报 semver 错
-          # （之前 CI 就是死在这一步：步骤 5~10 全绿，注入版本号一跑就失败）。
           $text = $text -replace '(?m)^version = ".+"', "version = `"$ver`""
           if ($text -notmatch [regex]::Escape("version = `"$ver`"")) {
-            throw "版本号注入失败（$conf 里没找到 version 行）"
+            throw "version injection failed: no version line in $conf"
           }
           [System.IO.File]::WriteAllText((Join-Path (Get-Location) $conf), $text, (New-Object System.Text.UTF8Encoding($false)))
-          Write-Host "已注入版本号 $ver"
+          Write-Host "injected version $ver"
           cd xunyin-ime/native
           cargo build --release
-          if ($LASTEXITCODE -ne 0) { throw "版本号注入后重建失败" }
+          if ($LASTEXITCODE -ne 0) { throw "rebuild after version injection failed" }
 
       - name: 构建安装器（stub / 卸载器 / 打包器）
         working-directory: installer
@@ -103,9 +115,9 @@ jobs:
       - name: 生成安装包（wind-installer）
         shell: powershell
         run: |
-          # 具名参数必须用**哈希表** splat：数组 splat 只按位置传值，不会把 "-Arch"
-          # 当参数名——数组里的 "-SkipBuild" 会被当成 -Arch 的值，ValidateSet 直接拒绝
-          # （CI 之前就死在这一步，报"参数 -SkipBuild 不属于 ValidateSet"）。
+          # NOTE: named parameters need a **hashtable** splat. An array splat binds
+          # positionally, so "-SkipBuild" would be passed as the value of -Arch and
+          # the ValidateSet would reject it.
           $params = @{
             SkipBuild   = $true
             Arch        = "both"
@@ -116,11 +128,12 @@ jobs:
             $params.Sign = $true
             $params.PfxPath = $env:SIGN_PFX
             $params.PfxPassword = $env:SIGN_PFX_PASSWORD
-            Write-Host "已启用代码签名"
+            Write-Host "code signing enabled"
           } else {
-            Write-Host "未配置签名证书（secrets.SIGN_PFX_BASE64），跳过签名"
+            Write-Host "no signing certificate (secrets.SIGN_PFX_BASE64), packing unsigned"
           }
           .\tools\pack-installer.ps1 @params
+          if ($LASTEXITCODE -ne 0) { throw "pack-installer failed" }
 
       - name: 生成便携包（含 32 位注册脚本）
         shell: powershell
@@ -151,8 +164,9 @@ jobs:
           body: |
             Auto-built Windows installer (commit ${{ github.sha }})
 
-            - Setup: installs the IME, registers both x64/x86 TSF views, includes an uninstaller
-            - Portable zip: unzip, then run `register-ime.ps1` as admin (also for 32-bit Windows)
+            - Setup x64: for 64-bit Windows
+            - Setup x86: for 32-bit Windows
+            - Portable zip: unzip, then run `register-ime.ps1` as admin
           files: |
             build/installer-dist/*.exe
             build/*-portable.zip
