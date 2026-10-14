@@ -9,7 +9,14 @@ param(
     [string]$Name = "xunyin-ime",
     [int]$Cols = 110,
     [int]$Rows = 45,
-    [switch]$Thresholded
+    [switch]$Thresholded,
+    # 只画一块区域（"x,y,w,h"，窗口客户区物理像素）并按 -Zoom 放大，用来"凑近看"某个控件
+    [string]$Crop = "",
+    [int]$Zoom = 1,
+    # 列出该进程的顶层窗口（句柄 + 客户区尺寸），用来挑非主窗口（例如状态栏）
+    [switch]$ListWindows,
+    # 指定要画哪个窗口（按客户区宽度匹配，状态栏那种浮窗用得上）
+    [int]$ClientWidth = 0
 )
 
 $ErrorActionPreference = "Stop"
@@ -53,23 +60,59 @@ public static class WinShot
         return found;
     }
 
+    public static string List(uint pid)
+    {
+        var sb = new StringBuilder();
+        EnumWindows((h, l) =>
+        {
+            uint p; GetWindowThreadProcessId(h, out p);
+            if (p == pid)
+            {
+                RECT r;
+                GetClientRect(h, out r);
+                sb.Append(h.ToString()).Append(" client=").Append(r.Right - r.Left).Append('x').Append(r.Bottom - r.Top).Append('\n');
+            }
+            return true;
+        }, IntPtr.Zero);
+        return sb.ToString();
+    }
+
+    public static IntPtr HandleWithWidth(uint pid, int width)
+    {
+        IntPtr found = IntPtr.Zero;
+        EnumWindows((h, l) =>
+        {
+            uint p; GetWindowThreadProcessId(h, out p);
+            if (p == pid)
+            {
+                RECT r;
+                if (GetClientRect(h, out r) && Math.Abs((r.Right - r.Left) - width) <= 4) { found = h; return false; }
+            }
+            return true;
+        }, IntPtr.Zero);
+        return found;
+    }
+
     private delegate bool EnumProc(IntPtr h, IntPtr l);
     [DllImport("user32.dll")] private static extern bool EnumWindows(EnumProc cb, IntPtr l);
 
-    public static string Ascii(IntPtr hwnd, int cols, int rows, bool thresholded)
+    public static string Ascii(IntPtr hwnd, int cols, int rows, bool thresholded, int cropX, int cropY, int cropW, int cropH, int zoom)
     {
         RECT r;
         if (!GetClientRect(hwnd, out r)) return "GetClientRect 失败";
         int w = r.Right - r.Left, h = r.Bottom - r.Top;
         if (w <= 0 || h <= 0) return "窗口尺寸为 0";
+        if (cropW > 0 && cropH > 0) { w = cropW; h = cropH; }
         using (var bmp = new Bitmap(w, h, PixelFormat.Format32bppArgb))
         {
             using (var g = Graphics.FromImage(bmp))
             {
                 IntPtr hdc = g.GetHdc();
-                bool ok = PrintWindow(hwnd, hdc, 2); // PW_RENDERFULLCONTENT
+                bool ok;
+                if (cropW > 0 && cropH > 0) { ok = BitBltFromWindow(hwnd, hdc, cropX, cropY, cropW, cropH); }
+                else { ok = PrintWindow(hwnd, hdc, 2); } // PW_RENDERFULLCONTENT
                 g.ReleaseHdc(hdc);
-                if (!ok) return "PrintWindow 失败";
+                if (!ok) return "取窗口像素失败";
             }
             var sb = new StringBuilder();
             sb.Append("窗口 ").Append(w).Append('x').Append(h).Append('\n');
@@ -77,8 +120,10 @@ public static class WinShot
             {
                 for (int rx = 0; rx < cols; rx++)
                 {
-                    int x0 = rx * w / cols, x1 = Math.Max(x0 + 1, (rx + 1) * w / cols);
-                    int y0 = ry * h / rows, y1 = Math.Max(y0 + 1, (ry + 1) * h / rows);
+                    int x0 = rx * w / cols, x1 = x0 + zoom;
+                    int y0 = ry * h / rows, y1 = y0 + zoom;
+                    if (x1 > w) x1 = w;
+                    if (y1 > h) y1 = h;
                     long sum = 0; int n = 0;
                     for (int y = y0; y < y1; y++)
                         for (int x = x0; x < x1; x++)
@@ -111,12 +156,34 @@ public static class WinShot
             return sb.ToString();
         }
     }
+
+    [DllImport("user32.dll")] private static extern IntPtr GetDC(IntPtr h);
+    [DllImport("user32.dll")] private static extern int ReleaseDC(IntPtr h, IntPtr dc);
+    [DllImport("gdi32.dll")] private static extern bool BitBlt(IntPtr d, int dx, int dy, int dw, int dh, IntPtr s, int sx, int sy, int rop);
+    private static bool BitBltFromWindow(IntPtr hwnd, IntPtr hdc, int x, int y, int w, int h)
+    {
+        IntPtr src = GetDC(hwnd);
+        if (src == IntPtr.Zero) return false;
+        bool ok = BitBlt(hdc, 0, 0, w, h, src, x, y, 0x00CC0020); // SRCCOPY
+        ReleaseDC(hwnd, src);
+        return ok;
+    }
 }
 '@
 
 [WinShot]::MakeDpiAware()
 $proc = Get-Process -Name $Name -ErrorAction SilentlyContinue | Select-Object -First 1
 if (-not $proc) { throw "找不到进程 $Name" }
-$hwnd = [WinShot]::HandleOf([uint32]$proc.Id)
+if ($ListWindows) {
+    Write-Output ([WinShot]::List([uint32]$proc.Id))
+    exit 0
+}
+$hwnd = if ($ClientWidth -gt 0) { [WinShot]::HandleWithWidth([uint32]$proc.Id, $ClientWidth) } else { [WinShot]::HandleOf([uint32]$proc.Id) }
 if ($hwnd -eq [IntPtr]::Zero) { throw "进程 $Name 没有可见窗口" }
-Write-Output ([WinShot]::Ascii($hwnd, $Cols, $Rows, $Thresholded.IsPresent))
+$cx = 0; $cy = 0; $cw = 0; $ch = 0
+if ($Crop) {
+    $p = $Crop -split ','
+    if ($p.Count -ne 4) { throw "-Crop 需要 x,y,w,h" }
+    $cx = [int]$p[0]; $cy = [int]$p[1]; $cw = [int]$p[2]; $ch = [int]$p[3]
+}
+Write-Output ([WinShot]::Ascii($hwnd, $Cols, $Rows, $Thresholded.IsPresent, $cx, $cy, $cw, $ch, [Math]::Max(1, $Zoom)))

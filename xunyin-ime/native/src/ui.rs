@@ -1151,12 +1151,18 @@ unsafe fn text_width_of(dc: HDC, s: &str, font: HFONT) -> i32 {
 /// `CreateFontW` 对不存在的族名**不报错**，只会在选进 DC 时静默替换成别的字体，
 /// 于是图标码位会渲染成方框；所以这里选进一个临时 DC 再回读实际字体名。
 unsafe fn font_face_exists(font: &HFONT) -> bool {
+    let face = Self::font_face_name(font);
+    face.contains("Fluent") || face.contains("MDL2")
+}
+
+/// 字体实际选中的字面名（CreateFontW 对不存在的族名会静默替换，所以要看这个）。
+unsafe fn font_face_name(font: &HFONT) -> String {
     if font.0.is_null() {
-        return false;
+        return String::new();
     }
     let dc = CreateCompatibleDC(None);
     if dc.is_invalid() {
-        return false;
+        return String::new();
     }
     let old = SelectObject(dc, HGDIOBJ(font.0));
     let mut buf = [0u16; 64];
@@ -1164,10 +1170,9 @@ unsafe fn font_face_exists(font: &HFONT) -> bool {
     SelectObject(dc, old);
     let _ = DeleteDC(dc);
     if n <= 1 {
-        return false;
+        return String::new();
     }
-    let face = String::from_utf16_lossy(&buf[..(n as usize - 1).min(buf.len())]);
-    face.contains("Fluent") || face.contains("MDL2")
+    String::from_utf16_lossy(&buf[..(n as usize - 1).min(buf.len())])
 }
     fn s(&self, v: i32) -> i32 {
         ((v as f32) * (self.dpi as f32 / 96.0)).round() as i32
@@ -1226,6 +1231,15 @@ unsafe fn font_face_exists(font: &HFONT) -> bool {
                 let _ = DeleteObject(HGDIOBJ(f.0));
             }
             self.icon_font_ok = icon_ok;
+            // 临时调试：确认侧栏图标到底用了哪个字体（连 PostMessage 测试用）
+            if let Ok(dir) = std::env::var("XUNYIN_UI_DUMP") {
+                let face = if icon_ok {
+                    Self::font_face_name(&self.font_icon)
+                } else {
+                    "（无图标字体，用 emoji 兜底）".to_string()
+                };
+                let _ = std::fs::write(std::path::Path::new(&dir).join("icon-font.txt"), face);
+            }
         }
     }
 
@@ -3137,8 +3151,9 @@ fn draw_dict(app: &mut App, dc: HDC, x0: i32, y0: i32, w: i32) -> i32 {
         .iter()
         .map(|&i| match &app.phrase_rows[i] {
             xunyin_rime::phrases::Row::Entry(e) => {
-                let w = e.weight.map(|w| format!("   [{w}]")).unwrap_or_default();
-                format!("{}   →   {}{w}", e.codes, e.text)
+                // 权重不进列表行（列表里不需要方括号），点中这一行会在下面的
+                // 「权重」输入框里回填，改完点"添加 / 更新"即生效
+                format!("{}   →   {}", e.codes, e.text)
             }
             xunyin_rime::phrases::Row::Comment(c) => c.clone(),
         })
