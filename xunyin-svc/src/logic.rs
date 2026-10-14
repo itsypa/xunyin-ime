@@ -484,7 +484,7 @@ impl Logic {
     ) {
         // 联想：学习「上一词 → 本词」，并取出本词之后的联想候选
         if !commit.is_empty() {
-            if cfg.input.enable_assoc {
+            if cfg.input.enable_assoc && std::env::var("XUNYIN_SVC_NO_ASSOC").is_err() {
                 if let Some((p, t)) = self.last_commit.take() {
                     if t.elapsed() < std::time::Duration::from_secs(5) {
                         assoc::learn_and_maybe_save(&p, &commit);
@@ -518,7 +518,7 @@ impl Logic {
         // 叠加候选：快捷输入（rq/sj/xq）→ 联想 → Rime 候选
         let mut overlay: Vec<String> = Vec::new();
         let mut overlay_comments: Vec<String> = Vec::new();
-        if cfg.input.enable_quick_input {
+        if cfg.input.enable_quick_input && std::env::var("XUNYIN_SVC_NO_QUICK").is_err() {
             if let Some(t) = snapshot
                 .as_ref()
                 .and_then(|s| quick_input::trigger(&s.preedit))
@@ -557,8 +557,9 @@ impl Logic {
         let mut cand_map: Vec<usize> = Vec::new();
         let mut f_c: Vec<String> = Vec::new();
         let mut f_m: Vec<String> = Vec::new();
+        let no_blocklist = std::env::var("XUNYIN_SVC_NO_BLOCKLIST").is_ok();
         for (i, (t, m)) in cands.into_iter().zip(comments.into_iter()).enumerate() {
-            if blocklist::is_blocked(&t) {
+            if !no_blocklist && blocklist::is_blocked(&t) {
                 continue;
             }
             cand_map.push(i);
@@ -596,18 +597,29 @@ impl Logic {
             return;
         }
         out.preedit = preedit;
+        crate::log("T1");
         out.caret = caret;
+        crate::log("T2");
         out.commit = commit;
+        crate::log("T3");
         out.overlay_len = overlay.len();
+        crate::log("T4");
         out.comments = overlay_comments.into_iter().chain(f_m).collect();
+        crate::log("T5");
         out.candidates = overlay.iter().cloned().chain(f_c).collect();
+        crate::log("T6");
         out.selected = if overlay.is_empty() { selected } else { 0 };
         out.page = page;
         if page_size > 0 {
             out.page_size = page_size;
         }
-        self.overlay = overlay;
-        self.cand_map = cand_map;
+        crate::log("T7");
+        // 注意：这里**不能整体赋值**（self.overlay = overlay 会让服务 0xC0000005，
+        // 偏移固定 0x8df8）。改成"清空 + 追加"，行为等价且稳定。
+        self.overlay.clear();
+        self.overlay.extend(overlay);
+        self.cand_map.clone_from(&cand_map);
+        crate::log("T8");
         // 注意：这里不读引擎状态——实测"紧跟 process_key / 首次 process_key 之后"
         // 调用 get_status/get_option 会让服务进程 0xC0000005（DLL 里同样顺序没事）。
         // 状态改在**每次按键的最开头**读（那时还没碰过引擎），等价且稳定。
