@@ -41,6 +41,22 @@ use windows_core::w;
 
 // ---------------- 设计令牌（看这里就能改整套观感）----------------
 
+// 圆角、字号、间距只留这几档 —— 参照水杉输入法设置页的做法：**不再到处写
+// 12px / 10px / 13.5px 之类的中间值**，否则各页看起来就不是一套东西。
+/// 卡片圆角
+const R_CARD: i32 = 8;
+/// 控件圆角（下拉、按钮、输入框、分段）
+const R_CTRL: i32 = 8;
+/// 小控件/列表行圆角
+const R_ROW: i32 = 6;
+/// 勾选框圆角
+const R_BOX: i32 = 5;
+/// 字号层级：页面标题 / 分组标题 / 正文 / 说明
+const FS_PAGE: i32 = 18;
+const FS_SECTION: i32 = 15;
+const FS_BODY: i32 = 14;
+const FS_CAPTION: i32 = 12;
+
 /// 主题令牌（亮色/深色由 theme_from 生成）。
 #[derive(Clone)]
 struct Theme {
@@ -52,6 +68,8 @@ struct Theme {
     card: u32,
     /// 卡片描边
     border: u32,
+    /// 控件描边（比卡片描边更明显一点，控件才"立"得起来）
+    field_border: u32,
     /// 分隔线
     divider: u32,
     /// 主要文字
@@ -70,6 +88,10 @@ struct Theme {
     accent: u32,
     /// 强调色的浅底（选中项背景）
     accent_soft: u32,
+    /// 轨道/未打开开关的底色（中性灰，不带蓝味）
+    track: u32,
+    /// 危险操作（删除）
+    danger: u32,
     /// 深色模式
     dark: bool,
 }
@@ -169,38 +191,56 @@ fn page_header(app: &mut App, dc: HDC, x: i32, y: i32, w: i32, title: &str, desc
 
 fn theme_from(cfg: &XunyinConfig, dark: bool) -> Theme {
     let accent = hex_argb(&cfg.appearance.accent, 0xFF2A6FDB);
+    // 深色底上同一个强调色会显暗：往白里提亮一点再用（水杉输入法也是这么做的：
+    // 亮色主题 #6f6bc7、深色主题用更亮的 #8E8CD8）。用户自己配的主色只改色相不改这套关系。
+    let accent = if dark {
+        mix_argb(accent, 0xFFFFFFFF, 0.18)
+    } else {
+        accent
+    };
     if dark {
+        // 深色：**中性灰**（对齐 Win11 / 水杉输入法），不用带蓝味的深灰——
+        // 蓝底 + 蓝字容易显脏、显旧。
         Theme {
-            bg: 0xFF16181D,
-            sidebar: 0xFF1C1F26,
-            card: 0xFF23262E,
-            border: 0xFF32363F,
-            divider: 0xFF2C3039,
-            text: 0xFFE9EAF0,
-            text2: 0xFFA3A9B7,
-            text3: 0xFF7B8291,
-            hover: 0xFF2B2F38,
-            pressed: 0xFF343946,
-            field: 0xFF2A2E37,
+            bg: 0xFF202020,
+            sidebar: 0xFF181818,
+            card: 0xFF262626,
+            border: 0xFF3A3A3A,
+            field_border: 0xFF4A4A4A,
+            divider: 0xFF303030,
+            text: 0xFFF0F0F0,
+            text2: 0xFFC0C0C0,
+            text3: 0xFF8C8C8C,
+            hover: 0xFF2C2C2C,
+            pressed: 0xFF383838,
+            field: 0xFF2D2D2D,
             accent,
-            accent_soft: mix_argb(accent, 0xFF23262E, 0.22),
+            // 选中项底色：**把强调色按低比例混进卡片底**，而不是拿强调色当底——
+            // 后者会让深色文字压在中等饱和的蓝上，对比度只有 2:1 出头，读不清。
+            accent_soft: mix_argb(0xFF262626, accent, 0.22),
+            track: 0xFF4A4A4A,
+            danger: 0xFFE8A0A0,
             dark: true,
         }
     } else {
+        // 亮色：背景 #F3F3F3 + 白色卡片 + 8% 灰描边（Fluent / Notion 那一路）
         Theme {
-            bg: 0xFFF4F5F8,
-            sidebar: 0xFFFFFFFF,
+            bg: 0xFFF3F3F3,
+            sidebar: 0xFFFAFAFA,
             card: 0xFFFFFFFF,
-            border: 0xFFECEEF4,
-            divider: 0xFFF1F3F7,
-            text: 0xFF1F2430,
-            text2: 0xFF6B7280,
-            text3: 0xFF9AA1AF,
-            hover: 0xFFF4F6FA,
-            pressed: 0xFFE9EDF5,
-            field: 0xFFF3F5F9,
+            border: 0xFFE8E8E8,
+            field_border: 0xFFDCDCDC,
+            divider: 0xFFECECEC,
+            text: 0xFF242424,
+            text2: 0xFF5A5A5A,
+            text3: 0xFF8A8A8A,
+            hover: 0xFFF2F2F2,
+            pressed: 0xFFE8E8E8,
+            field: 0xFFFFFFFF,
             accent,
-            accent_soft: mix_argb(accent, 0xFFFFFFFF, 0.12),
+            accent_soft: mix_argb(0xFFFFFFFF, accent, 0.12),
+            track: 0xFFDCDCDC,
+            danger: 0xFFB42318,
             dark: false,
         }
     }
@@ -326,12 +366,17 @@ enum Focus {
 
 // ---------------- 应用状态 ----------------
 
+/// 侧栏图标：`Segoe Fluent Icons` / `Segoe MDL2 Assets` 的私有区码位。
+/// 这四个是**实测渲染确认过**的（用 tools/render-glyph.ps1 打点阵看过）：
+/// E765 键盘、E790 调色板、E8F1 书架、E946 圆圈 i。
+/// 拿不到图标字体时（精简系统）退回 PAGES_EMOJI。
 const PAGES: [(&str, &str, &str); 4] = [
-    ("⌨", "输入设置", "方案、按键行为、模糊音"),
-    ("🎨", "外观主题", "配色、字号、候选窗预览"),
-    ("📚", "词库管理", "短语导入导出、用户词库备份"),
-    ("ⓘ", "关于", "版本、快捷键、诊断维护"),
+    ("\u{E765}", "输入设置", "方案、按键行为、模糊音"),
+    ("\u{E790}", "外观主题", "配色、字号、候选窗预览"),
+    ("\u{E8F1}", "词库管理", "短语导入导出、用户词库备份"),
+    ("\u{E946}", "关于", "版本、快捷键、诊断维护"),
 ];
+const PAGES_EMOJI: [&str; 4] = ["⌨", "🎨", "📚", "ⓘ"];
 
 struct App {
     hwnd: HWND,
@@ -370,6 +415,11 @@ struct App {
     font_bold: HFONT,
     font_small: HFONT,
     font_title: HFONT,
+    /// 分组标题（卡片标题）：比正文大一档、半粗
+    font_section: HFONT,
+    /// 图标字体（Segoe Fluent Icons / Segoe MDL2 Assets）；取不到时用 emoji 兜底
+    font_icon: HFONT,
+    icon_font_ok: bool,
     toast: String,
     toast_until: std::time::Instant,
     engine_ready: bool,
@@ -578,6 +628,9 @@ impl App {
             font_bold: HFONT::default(),
             font_small: HFONT::default(),
             font_title: HFONT::default(),
+            font_section: HFONT::default(),
+            font_icon: HFONT::default(),
+            icon_font_ok: false,
             toast: String::new(),
             toast_until: std::time::Instant::now(),
             engine_ready: false,
@@ -631,18 +684,18 @@ impl App {
         self.cards.push(r);
         unsafe {
             if let Some(g) = Gfx::new(dc) {
-                // 轻投影：两层半透明圆角
+                // 轻投影：1px 偏移的一层柔边（原来 2px/35% 太重，卡片像浮在半空）
                 g.fill_round(
-                    RECT { left: r.left, top: r.top + 2, right: r.right, bottom: r.bottom + 2 },
-                    12,
-                    argb(0x00101828, if t.dark { 0.35 } else { 0.06 }),
+                    RECT { left: r.left, top: r.top + 1, right: r.right, bottom: r.bottom + 1 },
+                    R_CARD,
+                    argb(0x00000000, if t.dark { 0.28 } else { 0.05 }),
                 );
-                g.fill_round(r, 12, t.card);
-                g.stroke_round(r, 12, t.border, 1.0);
+                g.fill_round(r, R_CARD, t.card);
+                g.stroke_round(r, R_CARD, t.border, 1.0);
             }
             let mut ty = y + 14;
             let tr = RECT { left: x + 18, top: ty, right: x + w - 18, bottom: ty + 22 };
-            text(dc, tr, title, self.font_bold, t.text, DT_LEFT, true);
+            text(dc, tr, title, self.font_section, t.text, DT_LEFT, true);
             let _ = ty;
         }
         y + 14 + 24 + self.s(4)
@@ -752,7 +805,7 @@ impl App {
                     right: r.right,
                     bottom: cy + track_h / 2,
                 };
-                g.fill_round(tr, track_h / 2, if t.dark { 0xFF3A3F4A } else { 0xFFE4E8F0 });
+                g.fill_round(tr, track_h / 2, t.track);
                 let fr = RECT { left: tr.left, top: tr.top, right: cx, bottom: tr.bottom };
                 g.fill_round(fr, track_h / 2, t.accent);
                 g.fill_circle(cx, cy, knob / 2, 0xFFFFFFFF);
@@ -764,7 +817,7 @@ impl App {
                         bottom: cy + knob / 2,
                     },
                     knob / 2,
-                    if self.dragging_slider == Some(id) { t.accent } else { argb(0x00202838, 0.22) },
+                    if self.dragging_slider == Some(id) { t.accent } else { t.field_border },
                     if self.dragging_slider == Some(id) { 2.0 } else { 1.0 },
                 );
             }
@@ -787,8 +840,8 @@ impl App {
         let hot = self.hover == Some(id) || self.combo_open == Some(id);
         unsafe {
             if let Some(g) = Gfx::new(dc) {
-                g.fill_round(r, 8, if hot { t.hover } else { t.field });
-                g.stroke_round(r, 8, if hot { t.accent } else { t.border }, 1.0);
+                g.fill_round(r, R_CTRL, if hot { t.hover } else { t.field });
+                g.stroke_round(r, R_CTRL, if hot { t.accent } else { t.field_border }, 1.0);
             }
             let tr = RECT { left: r.left + 12, top: r.top, right: r.right - 26, bottom: r.bottom };
             text(dc, tr, value, self.font, t.text, DT_LEFT, true);
@@ -803,6 +856,15 @@ impl App {
     }
 
     fn button(&mut self, dc: HDC, id: Id, r: RECT, label: &str, primary: bool) {
+        self.button_ex(dc, id, r, label, primary, false)
+    }
+
+    /// 危险操作（删除 / 清空）：中性底 + 红色文字，别用大红色实心块抢视线。
+    fn button_danger(&mut self, dc: HDC, id: Id, r: RECT, label: &str) {
+        self.button_ex(dc, id, r, label, false, true)
+    }
+
+    fn button_ex(&mut self, dc: HDC, id: Id, r: RECT, label: &str, primary: bool, danger: bool) {
         let t = self.theme.clone();
         let hot = self.hover == Some(id);
         let down = self.pressed == Some(id);
@@ -813,15 +875,17 @@ impl App {
                         if down { mix_argb(t.accent, 0x00000000, 0.18) } else if hot { mix_argb(t.accent, 0xFFFFFFFF, 0.12) } else { t.accent },
                         0xFFFFFFFF,
                     )
+                } else if danger {
+                    (if down { t.pressed } else if hot { t.hover } else { t.card }, t.danger)
                 } else {
                     (
                         if down { t.pressed } else if hot { t.hover } else { t.card },
                         t.text,
                     )
                 };
-                g.fill_round(r, 8, bg);
+                g.fill_round(r, R_CTRL, bg);
                 if !primary {
-                    g.stroke_round(r, 8, t.border, 1.0);
+                    g.stroke_round(r, R_CTRL, t.field_border, 1.0);
                 }
                 let _ = fg;
             }
@@ -830,7 +894,13 @@ impl App {
                 r,
                 label,
                 self.font,
-                if primary { 0xFFFFFFFF } else { t.text },
+                if primary {
+                    0xFFFFFFFF
+                } else if danger {
+                    t.danger
+                } else {
+                    t.text
+                },
                 DT_CENTER,
                 true,
             );
@@ -850,7 +920,7 @@ impl App {
         unsafe {
             if let Some(g) = Gfx::new(dc) {
                 if checked {
-                    g.fill_round(br, 5, t.accent);
+                    g.fill_round(br, R_BOX, t.accent);
                     // 对勾
                     let (cx, cy) = ((br.left + br.right) / 2, (br.top + br.bottom) / 2);
                     let _ = g;
@@ -865,8 +935,8 @@ impl App {
                         2,
                     );
                 } else {
-                    g.fill_round(br, 5, if t.dark { 0xFF2E323C } else { 0xFFFFFFFF });
-                    g.stroke_round(br, 5, if self.hover == Some(id) { t.accent } else { argb(0x00606878, 0.45) }, 1.0);
+                    g.fill_round(br, R_BOX, t.card);
+                    g.stroke_round(br, R_BOX, if self.hover == Some(id) { t.accent } else { t.text3 }, 1.0);
                 }
             }
             let lr = RECT { left: br.right + self.s(9), top: r.top, right: r.right, bottom: r.bottom };
@@ -876,10 +946,11 @@ impl App {
     }
 
     fn chip(&mut self, dc: HDC, id: Id, r: RECT, color: u32) {
+        let t = self.theme.clone();
         unsafe {
             if let Some(g) = Gfx::new(dc) {
-                g.fill_round(r, 6, color);
-                g.stroke_round(r, 6, argb(0x00202838, 0.25), 1.0);
+                g.fill_round(r, R_ROW, color);
+                g.stroke_round(r, R_ROW, t.field_border, 1.0);
             }
         }
         self.push_hit(id, r);
@@ -891,8 +962,8 @@ impl App {
             || (id == Id::PunctOut && self.focus == Focus::PunctOut);
         unsafe {
             if let Some(g) = Gfx::new(dc) {
-                g.fill_round(r, 8, t.field);
-                g.stroke_round(r, 8, if focused { t.accent } else { t.border }, 1.0);
+                g.fill_round(r, R_CTRL, t.field);
+                g.stroke_round(r, R_CTRL, if focused { t.accent } else { t.field_border }, 1.0);
             }
             let tr = RECT { left: r.left + 10, top: r.top, right: r.right - 8, bottom: r.bottom };
             if value.is_empty() && !focused {
@@ -917,8 +988,8 @@ impl App {
         let t = self.theme.clone();
         unsafe {
             if let Some(g) = Gfx::new(dc) {
-                g.fill_round(r, 8, t.field);
-                g.stroke_round(r, 8, t.border, 1.0);
+                g.fill_round(r, R_CTRL, t.field);
+                g.stroke_round(r, R_CTRL, t.field_border, 1.0);
             }
         }
         if items.is_empty() {
@@ -961,19 +1032,50 @@ unsafe fn text_width_of(dc: HDC, s: &str, font: HFONT) -> i32 {
     SelectObject(dc, old);
     sz.cx
 }
+
+/// 字体族是否真的存在。
+/// `CreateFontW` 对不存在的族名**不报错**，只会在选进 DC 时静默替换成别的字体，
+/// 于是图标码位会渲染成方框；所以这里选进一个临时 DC 再回读实际字体名。
+unsafe fn font_face_exists(font: &HFONT) -> bool {
+    if font.0.is_null() {
+        return false;
+    }
+    let dc = CreateCompatibleDC(None);
+    if dc.is_invalid() {
+        return false;
+    }
+    let old = SelectObject(dc, HGDIOBJ(font.0));
+    let mut buf = [0u16; 64];
+    let n = GetTextFaceW(dc, Some(&mut buf));
+    SelectObject(dc, old);
+    let _ = DeleteDC(dc);
+    if n <= 1 {
+        return false;
+    }
+    let face = String::from_utf16_lossy(&buf[..(n as usize - 1).min(buf.len())]);
+    face.contains("Fluent") || face.contains("MDL2")
+}
     fn s(&self, v: i32) -> i32 {
         ((v as f32) * (self.dpi as f32 / 96.0)).round() as i32
     }
 
     fn rebuild_fonts(&mut self) {
         unsafe {
-            for f in [self.font, self.font_bold, self.font_small, self.font_title] {
+            for f in [
+                self.font,
+                self.font_bold,
+                self.font_small,
+                self.font_title,
+                self.font_section,
+                self.font_icon,
+            ] {
                 if !f.0.is_null() {
                     let _ = DeleteObject(HGDIOBJ(f.0));
                 }
             }
             let name = wide("Microsoft YaHei UI");
-            let mk = |px: i32, weight: i32| {
+            let mk_family = |family: &str, px: i32, weight: i32| {
+                let fam = wide(family);
                 CreateFontW(
                     -((px * self.dpi as i32 / 96).max(11)),
                     0,
@@ -988,13 +1090,28 @@ unsafe fn text_width_of(dc: HDC, s: &str, font: HFONT) -> i32 {
                     CLIP_DEFAULT_PRECIS,
                     CLEARTYPE_QUALITY,
                     (DEFAULT_PITCH.0 | FF_DONTCARE.0) as u32,
-                    PCWSTR(name.as_ptr()),
+                    PCWSTR(fam.as_ptr()),
                 )
             };
-            self.font = mk(14, FW_NORMAL.0 as i32);
-            self.font_bold = mk(14, FW_SEMIBOLD.0 as i32);
-            self.font_small = mk(12, FW_NORMAL.0 as i32);
-            self.font_title = mk(17, FW_SEMIBOLD.0 as i32);
+            let mk = |px: i32, weight: i32| mk_family("Microsoft YaHei UI", px, weight);
+            self.font = mk(FS_BODY, FW_NORMAL.0 as i32);
+            self.font_bold = mk(FS_BODY, FW_SEMIBOLD.0 as i32);
+            self.font_small = mk(FS_CAPTION, FW_NORMAL.0 as i32);
+            self.font_title = mk(FS_PAGE, FW_SEMIBOLD.0 as i32);
+            self.font_section = mk(FS_SECTION, FW_SEMIBOLD.0 as i32);
+            // 侧栏图标：Win11 是 Segoe Fluent Icons，Win10 是 Segoe MDL2 Assets，
+            // 两者这几个码位是同一套（都实测过点阵）。都没有（精简系统）就退回 emoji。
+            let mut icon_ok = false;
+            for family in ["Segoe Fluent Icons", "Segoe MDL2 Assets"] {
+                let f = mk_family(family, 20, FW_NORMAL.0 as i32);
+                if Self::font_face_exists(&f) {
+                    self.font_icon = f;
+                    icon_ok = true;
+                    break;
+                }
+                let _ = DeleteObject(HGDIOBJ(f.0));
+            }
+            self.icon_font_ok = icon_ok;
         }
     }
 
@@ -1310,9 +1427,14 @@ impl App {
         };
         unsafe {
             if let Some(g) = Gfx::new(dc) {
-                g.fill_round(RECT { left: r.left, top: r.top + 2, right: r.right, bottom: r.bottom + 2 }, 10, argb(0x00101828, if t.dark { 0.5 } else { 0.10 }));
-                g.fill_round(r, 10, t.card);
-                g.stroke_round(r, 10, t.border, 1.0);
+                // 下拉是浮层：投影比卡片重一点才分得出层次
+                g.fill_round(
+                    RECT { left: r.left - 2, top: r.top + 2, right: r.right + 2, bottom: r.bottom + 4 },
+                    R_CARD,
+                    argb(0x00000000, if t.dark { 0.45 } else { 0.10 }),
+                );
+                g.fill_round(r, R_CARD, t.card);
+                g.stroke_round(r, R_CARD, t.field_border, 1.0);
             }
             for (i, (_, label)) in items.iter().enumerate() {
                 let rr = RECT {
@@ -2263,33 +2385,67 @@ fn paint(app: &mut App) {
             text(mem, sr, "设置中心", app.font_small, t.text3, DT_LEFT, true);
         }
         for (i, (icon, name, _)) in PAGES.iter().enumerate() {
-            let top = app.s(84 + (i as i32) * 50);
-            let r = RECT { left: app.s(12), top, right: side_w - app.s(12), bottom: top + app.s(42) };
+            let top = app.s(84 + (i as i32) * 46);
+            let r = RECT { left: app.s(12), top, right: side_w - app.s(12), bottom: top + app.s(40) };
             let id = Id::Nav(i);
             let sel = app.page == i;
             let hot = app.hover == Some(id);
             if let Some(g) = Gfx::new(mem) {
                 if sel {
-                    g.fill_round(r, 10, t.accent_soft);
+                    g.fill_round(r, R_CTRL, t.accent_soft);
                 } else if hot {
-                    g.fill_round(r, 10, t.hover);
+                    g.fill_round(r, R_CTRL, t.hover);
                 }
             }
-            let ir = RECT { left: r.left + app.s(12), top: r.top, right: r.left + app.s(40), bottom: r.bottom };
-            text(mem, ir, icon, app.font, if sel { t.accent } else { t.text2 }, DT_LEFT, true);
+            // 选中态：左侧一条圆角指示条（Fluent 的做法），比整块高亮底更干净
+            if sel {
+                if let Some(g) = Gfx::new(mem) {
+                    let cy = (r.top + r.bottom) / 2;
+                    g.fill_round(
+                        RECT {
+                            left: app.s(6),
+                            top: cy - app.s(10),
+                            right: app.s(10),
+                            bottom: cy + app.s(10),
+                        },
+                        app.s(2),
+                        t.accent,
+                    );
+                }
+            }
+            let (glyph, ifont) = if app.icon_font_ok {
+                (*icon, app.font_icon)
+            } else {
+                (PAGES_EMOJI[i], app.font)
+            };
+            let ir = RECT { left: r.left + app.s(12), top: r.top, right: r.left + app.s(38), bottom: r.bottom };
+            text(mem, ir, glyph, ifont, if sel { t.accent } else { t.text2 }, DT_LEFT, true);
             let nr = RECT { left: r.left + app.s(42), top: r.top, right: r.right - app.s(8), bottom: r.bottom };
             text(
                 mem,
                 nr,
                 name,
                 if sel { app.font_bold } else { app.font },
-                if sel { t.accent } else { t.text },
+                t.text,
                 DT_LEFT,
                 true,
             );
             app.hits.push(Hit { id, rect: r });
         }
         {
+            // 页脚（版本 + 一句提示）上方加一条细分隔线，把导航和说明分开
+            if let Some(g) = Gfx::new(mem) {
+                g.fill_round(
+                    RECT {
+                        left: app.s(20),
+                        top: h - app.s(66),
+                        right: side_w - app.s(20),
+                        bottom: h - app.s(65),
+                    },
+                    0,
+                    t.divider,
+                );
+            }
             let br = RECT { left: app.s(20), top: h - app.s(56), right: side_w - app.s(12), bottom: h - app.s(34) };
             text(mem, br, &format!("版本 {}", env!("CARGO_PKG_VERSION")), app.font_small, t.text3, DT_LEFT, true);
             let hr = RECT { left: app.s(20), top: h - app.s(34), right: side_w - app.s(12), bottom: h - app.s(14) };
@@ -2409,12 +2565,14 @@ fn paint(app: &mut App) {
                 }
                 let tr = RECT { left: tx, top: ty, right: tx + tw, bottom: ty + th };
                 if let Some(g) = Gfx::new(mem) {
-                    g.fill_round(tr, 8, if t.dark { 0xFF2E323C } else { 0xFF23304A });
+                    // 说明浮标：跟主题走的中性卡片，不再写死蓝底
+                    g.fill_round(tr, R_CARD, t.card);
+                    g.stroke_round(tr, R_CARD, t.field_border, 1.0);
                 }
                 unsafe {
                     for (i, l) in lines.iter().enumerate() {
                         let top = tr.top + app.s(6) + (i as i32) * app.s(24);
-                        let color = if i == 0 { 0xFFFFFFFF } else { 0xFFBFD3F5 };
+                        let color = if i == 0 { t.text } else { t.text3 };
                         text(
                             mem,
                             RECT { left: tr.left + app.s(12), top, right: tr.right - app.s(12), bottom: top + app.s(22) },
@@ -2435,7 +2593,10 @@ fn paint(app: &mut App) {
             let tw = App::text_width_of(mem, &msg, app.font) + app.s(30);
             let r = RECT { left: cx, top: h - app.s(48), right: cx + tw, bottom: h - app.s(16) };
             if let Some(g) = Gfx::new(mem) {
-                g.fill_round(r, 8, if t.dark { 0xFF2E323C } else { 0xFF23304A });
+                // 提示条：深色主题用略亮的灰、浅色主题用深灰 + 白字（白底 + 深字的"系统提示"
+                // 在这套界面里太轻，容易看不见）
+                g.fill_round(r, R_CTRL, if t.dark { 0xFF323232 } else { 0xFF2B2B2B });
+                g.stroke_round(r, R_CTRL, if t.dark { 0xFF4A4A4A } else { 0x00000000 }, 1.0);
             }
             text(mem, r, &msg, app.font, 0xFFFFFFFF, DT_CENTER, true);
         }
@@ -2569,7 +2730,7 @@ fn draw_input(app: &mut App, dc: HDC, x0: i32, y0: i32, w: i32) -> i32 {
     let add = RECT { left: ov.right + app.s(8), top: fy, right: ov.right + app.s(8) + kw / 2, bottom: fy + app.s(32) };
     let del = RECT { left: add.right + app.s(6), top: fy, right: rx + col_w - app.s(18), bottom: fy + app.s(32) };
     app.button(dc, Id::PunctAdd, add, "添加", true);
-    app.button(dc, Id::PunctDel, del, "删除", false);
+    app.button_danger(dc, Id::PunctDel, del, "删除");
     let bottom = slots
         .iter()
         .zip(hs.iter())
@@ -2776,7 +2937,7 @@ fn draw_dict(app: &mut App, dc: HDC, x0: i32, y0: i32, w: i32) -> i32 {
     let bhalf = (binner - app.s(8)) / 2;
     app.button(dc, Id::BackupNow, RECT { left: rx + app.s(18), top: cy, right: rx + app.s(18) + bhalf, bottom: cy + app.s(34) }, "立即备份", true);
     app.button(dc, Id::ExportUserDict, RECT { left: rx + app.s(18) + bhalf + app.s(8), top: cy, right: rx + app.s(18) + bhalf * 2 + app.s(8), bottom: cy + app.s(34) }, "导出用户词库", false);
-    app.button(dc, Id::ClearUserDict, RECT { left: rx + app.s(18), top: cy + app.s(42), right: rx + app.s(18) + bhalf, bottom: cy + app.s(76) }, "清空用户词库", false);
+    app.button_danger(dc, Id::ClearUserDict, RECT { left: rx + app.s(18), top: cy + app.s(42), right: rx + app.s(18) + bhalf, bottom: cy + app.s(76) }, "清空用户词库");
     unsafe {
         text(dc, RECT { left: rx + app.s(18) + bhalf + app.s(12), top: cy + app.s(48), right: rx + col_w - app.s(18), bottom: cy + app.s(72) }, "清空学习记录、联想与删词黑名单", app.font_small, t.text3, DT_LEFT, true);
     }
@@ -2867,13 +3028,13 @@ fn draw_about(app: &mut App, dc: HDC, x0: i32, y0: i32, w: i32) -> i32 {
     {
         let bx = x + app.s(18) + ((i as i32) % 2) * (bw + app.s(8));
         let by = cy + ((i as i32) / 2) * app.s(42);
-        app.button(
-            dc,
-            *id,
-            RECT { left: bx, top: by, right: bx + bw, bottom: by + app.s(34) },
-            label,
-            false,
-        );
+        let r = RECT { left: bx, top: by, right: bx + bw, bottom: by + app.s(34) };
+        // 清空日志 / 恢复默认设置是"会丢东西"的操作，用危险样式（中性底 + 红字）
+        if matches!(id, Id::ClearLogs | Id::ResetAll) {
+            app.button_danger(dc, *id, r, label);
+        } else {
+            app.button(dc, *id, r, label, false);
+        }
     }
 
     let (x, cy0, col_w) = slots[1];
