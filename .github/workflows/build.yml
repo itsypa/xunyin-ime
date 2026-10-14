@@ -13,9 +13,9 @@
 
 name: build-windows
 
+# 只在手动触发时跑（Actions 页面 → build-windows → Run workflow，或 gh workflow run）。
+# 之前挂在 push 上，改一点代码就出一堆 run，噪音太大。
 on:
-  push:
-    branches: [main]
   workflow_dispatch:
 
 permissions:
