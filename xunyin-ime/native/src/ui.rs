@@ -132,6 +132,18 @@ impl Cols {
 /// 两栏卡片分配：先把高卡片分给较矮的一栏（LPT），再在**各自栏内按原顺序**从上到下排。
 /// 返回每张卡片在原阅读顺序下的 (x, y, 栏宽)。
 fn balance(hs: &[i32], x0: i32, y0: i32, w: i32, gap: i32) -> Vec<(i32, i32, i32)> {
+    // 窗口窄了就退回**单栏**：两栏各自只剩三百来像素时，标签和右侧控件会挤在一起
+    // （水杉输入法干脆固定单栏 + 最大宽度，就是这个道理）。这里保留宽屏两栏，
+    // 但保证窄窗不会烂掉。
+    if w < 880 {
+        let mut y = y0;
+        let mut out = Vec::with_capacity(hs.len());
+        for h in hs {
+            out.push((x0, y, w));
+            y += h + gap;
+        }
+        return out;
+    }
     let col_w = (w - gap) / 2;
     let xs = [x0, x0 + col_w + gap];
     let mut order: Vec<usize> = (0..hs.len()).collect();
