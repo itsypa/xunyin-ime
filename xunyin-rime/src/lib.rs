@@ -7,7 +7,10 @@
 //! 包含 rime.dll 的 FFI 绑定、RimeEngine 高级封装(会话/上下文/状态快照)、
 //! 以及数据目录解析工具。
 
+pub mod assoc;
+pub mod blocklist;
 pub mod config;
+pub mod quick_input;
 pub mod reload;
 pub mod rime_engine;
 pub mod rime_ffi;

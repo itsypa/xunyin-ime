@@ -20,8 +20,10 @@ pub struct Now {
 
 /// 取本地时间（`GetLocalTime`）。
 pub fn local_now() -> Now {
-    use windows::Win32::System::SystemInformation::GetLocalTime;
-    let st = unsafe { GetLocalTime() };
+    // xunyin-rime 用的是 windows-sys（不引 windows crate）
+    use windows_sys::Win32::System::SystemInformation::GetLocalTime;
+    let mut st = windows_sys::Win32::Foundation::SYSTEMTIME::default();
+    unsafe { GetLocalTime(&mut st) };
     Now {
         year: st.wYear as i32,
         month: st.wMonth as u32,

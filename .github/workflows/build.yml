@@ -33,7 +33,8 @@ jobs:
         run: |
           cd xunyin-tsf; cargo test
           if ($LASTEXITCODE -ne 0) { throw "xunyin-tsf 测试失败" }
-          cd ../xunyin-rime; cargo test --lib config::tests
+          # 配置解析 + 快捷输入/联想/黑名单（这些模块已移到共享 crate）
+          cd ../xunyin-rime; cargo test --lib -- config:: quick_input:: assoc:: blocklist::
           if ($LASTEXITCODE -ne 0) { throw "xunyin-rime 配置测试失败" }
 
       - name: 构建 xunyin-tsf（x64）

@@ -15,7 +15,7 @@ const MAX_ENTRIES: usize = 20_000;
 static BLOCKED: Mutex<Option<HashSet<String>>> = Mutex::new(None);
 
 pub fn path() -> PathBuf {
-    xunyin_rime::config::user_data_dir().join("blocked.txt")
+    crate::config::user_data_dir().join("blocked.txt")
 }
 
 fn with_set<R>(f: impl FnOnce(&mut HashSet<String>) -> R) -> R {

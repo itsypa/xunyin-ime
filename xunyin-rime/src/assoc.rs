@@ -19,7 +19,7 @@ type Table = HashMap<String, Vec<(String, u32)>>;
 static TABLE: Mutex<Option<Table>> = Mutex::new(None);
 
 pub fn path() -> PathBuf {
-    xunyin_rime::config::user_data_dir().join("assoc.txt")
+    crate::config::user_data_dir().join("assoc.txt")
 }
 
 /// 是否值得学习这条关系：太长的不学（句子级联想噪声大）。

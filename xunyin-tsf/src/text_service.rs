@@ -334,7 +334,7 @@ impl TextService_Impl {
         // 注意：v 模式里数字是**输入**（v123 的 1/2/3），不能当候选选择键用，
         // 否则第二个数字就会变成"选第 2 项"（实测踩过）。上屏统一用空格/回车。
         if plain && (vk == 0x20 || vk == 0x0D) {
-            let cands = crate::quick_input::v_mode_candidates(&buf);
+            let cands = xunyin_rime::quick_input::v_mode_candidates(&buf);
             let text = cands
                 .first()
                 .map(|(t, _)| t.clone())
@@ -364,7 +364,7 @@ impl TextService_Impl {
         }
         let caret = buf.encode_utf16().count();
         let _ = self.schedule_edit(context, buf, "", caret);
-        let cands = crate::quick_input::v_mode_candidates(buf);
+        let cands = xunyin_rime::quick_input::v_mode_candidates(buf);
         let (items, comments): (Vec<String>, Vec<String>) = cands.into_iter().unzip();
         crate::tsf_log!("vmode: buf={buf:?} 候选={items:?}");
         if let Ok(mut st) = self.shared.lock() {
@@ -730,7 +730,7 @@ impl TextService_Impl {
                     // librime 的删词只对用户词库的学习词有效，词库原生词删不掉，
                     // 所以再记一层自己的黑名单，保证"删了就不再出现"。
                     let api_ok = eng.delete_candidate_on_current_page(i.saturating_sub(overlay.len()));
-                    let blocked = victim.as_deref().map(crate::blocklist::block).unwrap_or(false);
+                    let blocked = victim.as_deref().map(xunyin_rime::blocklist::block).unwrap_or(false);
                     match &victim {
                         Some(w) => crate::tsf_log!(
                             "keydown: Ctrl+{} 删词 {w:?}（librime={api_ok} 黑名单={blocked}）",
@@ -814,10 +814,10 @@ impl TextService_Impl {
                 if let Some((p, t)) = prev {
                     // 隔太久的不算「接着打」，避免学出无意义的搭配
                     if t.elapsed() < std::time::Duration::from_secs(5) {
-                        crate::assoc::learn_and_maybe_save(&p, &commit);
+                        xunyin_rime::assoc::learn_and_maybe_save(&p, &commit);
                     }
                 }
-                let followers = crate::assoc::followers(&commit);
+                let followers = xunyin_rime::assoc::followers(&commit);
                 if let Ok(mut st) = self.shared.lock() {
                     st.assoc = followers;
                 }
@@ -901,10 +901,10 @@ impl TextService_Impl {
         if cfg.input.enable_quick_input {
             if let Some(t) = snapshot
                 .as_ref()
-                .and_then(|s| crate::quick_input::trigger(&s.preedit))
+                .and_then(|s| xunyin_rime::quick_input::trigger(&s.preedit))
             {
                 for (text, comment) in
-                    crate::quick_input::date_candidates(t, &crate::quick_input::local_now())
+                    xunyin_rime::quick_input::date_candidates(t, &xunyin_rime::quick_input::local_now())
                 {
                     overlay.push(text);
                     overlay_comments.push(comment);
@@ -928,7 +928,7 @@ impl TextService_Impl {
             let mut c = overlay.clone();
             let mut m = overlay_comments;
             for (i, (t, cm)) in candidates.into_iter().zip(comments.into_iter()).enumerate() {
-                if crate::blocklist::is_blocked(&t) {
+                if xunyin_rime::blocklist::is_blocked(&t) {
                     crate::tsf_log!("keydown: 候选 {t:?} 已被删词过滤");
                     continue;
                 }

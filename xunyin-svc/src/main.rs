@@ -9,6 +9,9 @@
 //!
 //! 协议：命名管道 `\\.\pipe\xunyin-ime-svc-v1`，消息 = 4 字节小端长度 + JSON 文本。
 
+mod logic;
+
+use logic::Logic;
 use serde_json::{json, Value};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use windows::Win32::Foundation::{CloseHandle, HANDLE, ERROR_PIPE_CONNECTED};
@@ -34,6 +37,16 @@ const MAX_MSG: usize = 1 << 20; // 单条消息上限 1MB
 const IDLE_EXIT_MS: u64 = 60_000;
 
 static CLIENTS: AtomicUsize = AtomicUsize::new(0);
+/// 输入状态与引擎**进程内单例**：librime 的引擎是进程级单例，
+/// 每个连接各 new 一个 Logic 会导致重复 init → 直接崩（实测踩过）。
+/// 所有连接的按键都串行进这里，行为也因此与宿主进程内的旧实现一致。
+static LOGIC: std::sync::Mutex<Option<Logic>> = std::sync::Mutex::new(None);
+
+fn with_logic<R>(f: impl FnOnce(&mut Logic) -> R) -> R {
+    let mut g = LOGIC.lock().unwrap_or_else(|e| e.into_inner());
+    let l = g.get_or_insert_with(Logic::new);
+    f(l)
+}
 /// 最近一次有客户端活动的时间（毫秒时间戳）
 static LAST_ACTIVITY: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
@@ -52,8 +65,14 @@ fn wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(std::iter::once(0)).collect()
 }
 
+/// 输入逻辑开关（第 2 阶段调试用；默认关，避免服务被未定位的崩溃带走）。
+fn input_enabled() -> bool {
+    std::env::var("XUNYIN_SVC_INPUT").map(|v| v == "1").unwrap_or(false)
+}
+
 /// 服务自己的日志（宿主进程的日志里看不到服务的事，分开写）。
-fn log(msg: &str) {
+fn log(msg: impl AsRef<str>) {
+    let msg = msg.as_ref();
     use std::io::Write as _;
     let dir = std::env::var_os("APPDATA")
         .map(std::path::PathBuf::from)
@@ -77,17 +96,26 @@ fn log(msg: &str) {
 fn read_msg(h: HANDLE) -> Option<Value> {
     let mut len_buf = [0u8; 4];
     if !read_exact(h, &mut len_buf) {
+        log("read_msg: 读长度失败（对端关闭或出错）");
         return None;
     }
     let len = u32::from_le_bytes(len_buf) as usize;
     if len == 0 || len > MAX_MSG {
+        log(format!("read_msg: 长度异常 {len}"));
         return None;
     }
     let mut buf = vec![0u8; len];
     if !read_exact(h, &mut buf) {
+        log("read_msg: 读正文失败");
         return None;
     }
-    serde_json::from_slice(&buf).ok()
+    match serde_json::from_slice(&buf) {
+        Ok(v) => Some(v),
+        Err(e) => {
+            log(format!("read_msg: JSON 解析失败 {e}"));
+            None
+        }
+    }
 }
 
 fn read_exact(h: HANDLE, buf: &mut [u8]) -> bool {
@@ -142,6 +170,32 @@ fn serve(h: HANDLE) {
                 })
             }
             "ping" => json!({ "t": "pong", "tag": SVC_TAG, "pid": std::process::id() }),
+            // ── 输入逻辑（第 2 阶段：从 DLL 搬过来的部分）──────────────
+            // ⚠️ 默认关闭：实测在服务线程里驱动 librime 会 0xC0000005 崩溃
+            //    （引擎在 DLL/独立探针里跑没问题，怀疑与线程/初始化上下文有关，
+            //     待定位）。开着它会让服务进程直接挂掉，所以先只用握手+心跳。
+            //    设 XUNYIN_SVC_INPUT=1 才启用，供后续调试。
+            "key" if input_enabled() => {
+                let vk = msg.get("vk").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+                let mask = msg.get("mask").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+                let shift = msg.get("shift").and_then(|v| v.as_bool()).unwrap_or(false);
+                let r = with_logic(|l| l.key(vk, mask, shift));
+                json!({ "t": "reply", "reply": r })
+            }
+            "select" if input_enabled() => {
+                let index = msg.get("index").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
+                let r = with_logic(|l| l.select(index));
+                json!({ "t": "reply", "reply": r })
+            }
+            "status" => {
+                let r = with_logic(|l| l.status());
+                json!({ "t": "reply", "reply": r })
+            }
+            "command" if input_enabled() => {
+                let name = msg.get("name").and_then(|v| v.as_str()).unwrap_or("");
+                let r = with_logic(|l| l.command(name));
+                json!({ "t": "reply", "reply": r })
+            }
             "shutdown" => {
                 log("收到 shutdown，退出");
                 let _ = write_msg(h, &json!({ "t": "bye", "tag": SVC_TAG }));

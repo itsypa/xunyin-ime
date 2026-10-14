@@ -11,8 +11,6 @@
 //!     ├─ DisplayAttribute  组合串下划线显示属性
 //!     └─ ClassFactory      COM 类工厂
 
-mod assoc;
-mod blocklist;
 mod candidate;
 mod candidate_window;
 mod class_factory;
@@ -21,7 +19,6 @@ mod edit_session;
 mod engine;
 mod key;
 mod log;
-mod quick_input;
 mod register;
 mod svc;
 mod symbol_panel;
