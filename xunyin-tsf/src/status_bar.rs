@@ -1594,9 +1594,15 @@ pub fn notify_repaint() {
 
 /// 刷新模式（模式变化时调用）。
 pub fn refresh_status_bar(shared: &Arc<Mutex<SharedState>>) {
-    let (ascii, full, punct) = match shared.lock() {
+    // **用 try_lock，不要用 lock()**：万一调用方还持着这把锁（历史上就这么写出过一次
+    // 自死锁：按 Shift 切中英把宿主 UI 线程锁死），这里最坏也只是"这次不刷新"，
+    // 绝不能把宿主的输入线程挂住。刷新下一次还会来。
+    let (ascii, full, punct) = match shared.try_lock() {
         Ok(st) => (st.ascii_mode, st.full_shape, st.ascii_punct),
-        Err(_) => return,
+        Err(_) => {
+            crate::tsf_log!("status bar: 刷新时 shared 仍被占用（跳过这一帧，不阻塞）");
+            return;
+        }
     };
     show_status_bar(shared.clone(), ascii, full, punct);
 }
@@ -1675,5 +1681,36 @@ mod asset_tests {
         invalidate_assets();
         invalidate_assets();
         let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(test)]
+mod barrier_tests {
+    use super::*;
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    /// 复现"按 Shift 切中英把宿主卡死"那次事故：调用方**正持着 shared 的锁**来刷新状态栏。
+    ///
+    /// 从前的 refresh_status_bar 内部用 `lock()` 读同一把锁 —— 同一个线程二次加锁 =
+    /// 永久阻塞，宿主的输入线程就此挂死（explorer 挂死时整个任务栏都不响应，用户看到的是
+    /// "其他应用全卡死"）。现在这里最坏只能是"跳过这一帧"，绝不能阻塞。
+    #[test]
+    fn refresh_does_not_block_when_lock_is_held() {
+        let shared = std::sync::Arc::new(std::sync::Mutex::new(
+            crate::text_service::SharedState::default(),
+        ));
+        let guard = shared.lock().unwrap();
+        let (tx, rx) = mpsc::channel();
+        let s2 = shared.clone();
+        std::thread::spawn(move || {
+            refresh_status_bar(&s2);
+            let _ = tx.send(());
+        });
+        assert!(
+            rx.recv_timeout(Duration::from_secs(5)).is_ok(),
+            "锁被占用时 refresh_status_bar 必须立刻返回（自死锁会把宿主卡死）"
+        );
+        drop(guard);
     }
 }

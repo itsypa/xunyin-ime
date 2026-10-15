@@ -1506,9 +1506,15 @@ impl ITfKeyEventSink_Impl for TextService_Impl {
                             }
                             crate::candidate_window::hide_candidates();
                             crate::tsf_log!("OnKeyUp: Shift -> 上屏拼音 {} 字", r.commit.chars().count());
-                        } else if let Ok(mut st) = self.shared.lock() {
-                            st.ascii_mode = r.ascii;
-                            st.full_shape = r.full;
+                        } else {
+                            // 注意作用域：**必须先放掉 shared 的锁再刷状态栏**。
+                            // refresh_status_bar 内部还要读 shared，持着锁调它 = 同一个线程
+                            // 二次加锁 = 死锁 —— 表现是"按 Shift 切中英，宿主直接卡死"
+                            // （explorer 卡死时整个任务栏都不响应，看起来像所有应用都死了）。
+                            if let Ok(mut st) = self.shared.lock() {
+                                st.ascii_mode = r.ascii;
+                                st.full_shape = r.full;
+                            }
                             crate::status_bar::refresh_status_bar(&self.shared);
                         }
                     }
