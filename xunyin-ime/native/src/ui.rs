@@ -1880,7 +1880,17 @@ impl App {
                 }
             }
             Id::DictImport => {
-                if let Some(path) = pick_file(self.hwnd, &[("短语文件", "*.txt"), ("所有文件", "*.*")], "txt") {
+                // 搜狗细胞词库（.scel）是用户手里最常见的旧词库格式，一并支持
+                if let Some(path) = pick_file(
+                    self.hwnd,
+                    &[
+                        ("词库文件（txt / scel）", "*.scel;*.txt"),
+                        ("搜狗细胞词库", "*.scel"),
+                        ("文本短语表", "*.txt"),
+                        ("所有文件", "*.*"),
+                    ],
+                    "scel",
+                ) {
                     match self.core.import_dict_file(&path) {
                         Ok(stats) => {
                             self.stats = stats;
@@ -3186,7 +3196,7 @@ fn draw_dict(app: &mut App, dc: HDC, x0: i32, y0: i32, w: i32) -> i32 {
     app.button(dc, Id::PhraseAdd, RECT { left: lx, top: by, right: lx + bw, bottom: by + app.s(34) }, "添加 / 更新", true);
     app.button_danger(dc, Id::PhraseDel, RECT { left: lx + bw + app.s(8), top: by, right: lx + lw, bottom: by + app.s(34) }, "删除所选");
     let by2 = by + app.s(42);
-    app.button(dc, Id::DictImport, RECT { left: lx, top: by2, right: lx + bw, bottom: by2 + app.s(34) }, "导入短语文件…", false);
+    app.button(dc, Id::DictImport, RECT { left: lx, top: by2, right: lx + bw, bottom: by2 + app.s(34) }, "导入词库（txt/scel）…", false);
     app.button(dc, Id::DictExport, RECT { left: lx + bw + app.s(8), top: by2, right: lx + lw, bottom: by2 + app.s(34) }, "导出短语文件", false);
     // 只在导入/保存有结果时给一行反馈（不再常驻一句说明）
     if !app.stats.last_import.is_empty() {

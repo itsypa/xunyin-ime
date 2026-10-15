@@ -314,31 +314,57 @@ impl Core {
         }
     }
 
-    /// 导入自定义短语文件（Rime 格式：每行「词<TAB>编码」），按行去重追加。
+    /// 导入词库文件，按条去重追加到自定义短语表。
+    ///
+    /// 支持两种格式：
+    /// * **搜狗细胞词库（`.scel`）**：二进制，词和拼音都在文件里（见 [`crate::scel`]）。
+    ///   用户的旧词库大多是这个格式，所以按扩展名自动识别。
+    /// * **文本短语表**：每行「词<TAB>编码」（Rime custom_phrase 格式）。
     pub fn import_dict_file(&self, path: &Path) -> Result<DictStats, String> {
-        let content = std::fs::read_to_string(path)
-            .map_err(|e| format!("读取「{}」失败：{e}", path.display()))?;
         let dir = user_data_dir();
         std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
         let phrase_path = dir.join("custom_phrase.txt");
 
         let mut skipped = 0usize;
         let mut new_lines: Vec<String> = Vec::new();
-        for raw in content.lines() {
-            // 去掉 BOM：外部编辑器/表格导出的文件常带，留着会被当成"词条+编码"
-            let line = raw.trim_start_matches('\u{FEFF}').trim();
-            if line.is_empty() || line.starts_with('#') {
-                continue;
+        let is_scel = path
+            .extension()
+            .map(|e| e.to_ascii_lowercase() == "scel")
+            .unwrap_or(false);
+
+        if is_scel {
+            let bytes = std::fs::read(path)
+                .map_err(|e| format!("读取「{}」失败：{e}", path.display()))?;
+            let entries = crate::scel::parse(&bytes)
+                .map_err(|e| format!("解析搜狗词库「{}」失败：{e}", path.display()))?;
+            for e in entries {
+                new_lines.push(format!("{}\t{}", e.word, e.code));
             }
-            let valid = line.split(['\t', ' ']).filter(|s| !s.is_empty()).count() >= 2;
-            if !valid {
-                skipped += 1;
-                continue;
+        } else {
+            let content = std::fs::read_to_string(path)
+                .map_err(|e| format!("读取「{}」失败：{e}", path.display()))?;
+            for raw in content.lines() {
+                // 去掉 BOM：外部编辑器/表格导出的文件常带，留着会被当成"词条+编码"
+                let line = raw.trim_start_matches('\u{FEFF}').trim();
+                if line.is_empty() || line.starts_with('#') {
+                    continue;
+                }
+                let valid = line.split(['\t', ' ']).filter(|s| !s.is_empty()).count() >= 2;
+                if !valid {
+                    skipped += 1;
+                    continue;
+                }
+                new_lines.push(line.to_string());
             }
-            new_lines.push(line.to_string());
+            if new_lines.is_empty() && skipped > 0 {
+                return Err(
+                    "无法解析该文件：文本短语表需要每行「词<TAB>编码」；搜狗词库请选 .scel 文件"
+                        .into(),
+                );
+            }
         }
-        if new_lines.is_empty() && skipped > 0 {
-            return Err("无法解析该文件：需要每行「词<TAB>编码」格式".into());
+        if new_lines.is_empty() {
+            return Err("这个文件里没有可导入的词条".into());
         }
 
         let existing: std::collections::HashSet<String> = std::fs::read_to_string(&phrase_path)
@@ -363,7 +389,8 @@ impl Core {
         }
         std::fs::write(&phrase_path, out).map_err(|e| e.to_string())?;
         let mut stats = self.dict_stats();
-        stats.last_import = format!("已导入 {added} 条，跳过 {skipped} 条");
+        let kind = if is_scel { "（搜狗词库）" } else { "" };
+        stats.last_import = format!("已导入 {added} 条{kind}，跳过 {skipped} 条");
         // 自定义短语进入词库需要重新部署
         self.redeploy();
         Ok(stats)

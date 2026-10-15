@@ -11,6 +11,8 @@ pub mod assoc;
 pub mod blocklist;
 pub mod config;
 pub mod keycode;
+pub mod lunar;
+mod lunar_table;
 pub mod phrases;
 pub mod quick_input;
 pub mod preedit;

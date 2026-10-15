@@ -39,7 +39,7 @@ pub const WEEKDAYS: [&str; 7] = [
     "星期一", "星期二", "星期三", "星期四", "星期五", "星期六", "星期日",
 ];
 
-/// 触发词（小写比较）：`rq` 日期、`sj` 时间、`xq` 星期、`v` v 模式。
+/// 触发词（小写比较）：`rq` 日期、`sj` 时间、`xq` 星期、`nl` 农历、`v` v 模式。
 ///
 /// 注意：Rime 的原始输入串用**空格分音节**（"r q"），所以比较前要把空格与
 /// 撇号去掉，否则 `rq` 永远匹配不上（实测踩过这个坑）。
@@ -53,61 +53,89 @@ pub fn trigger(raw: &str) -> Option<&'static str> {
         "rq" => Some("rq"),
         "sj" => Some("sj"),
         "xq" => Some("xq"),
+        "nl" => Some("nl"),
         "v" => Some("v"),
         _ => None,
     }
 }
 
-/// `rq` / `sj` / `xq` 的候选（文本, 注释）。
+/// `rq` / `sj` / `xq` / `nl` 的候选（文本, 注释）。
 pub fn date_candidates(trigger: &str, now: &Now) -> Vec<(String, String)> {
     match trigger {
-        "rq" => vec![
-            (
-                format!("{}年{}月{}日", now.year, now.month, now.day),
-                format!("{} ({})", WEEKDAYS[(now.weekday - 1) as usize % 7], "日期"),
-            ),
-            (
-                format!(
-                    "{:04}-{:02}-{:02}",
-                    now.year, now.month, now.day
+        "rq" => {
+            let wd = weekday_name(now, false);
+            let mut v = vec![
+                (
+                    format!("{}年{}月{}日", now.year, now.month, now.day),
+                    format!("{wd} (日期)"),
                 ),
-                "日期".into(),
-            ),
-            (
-                format!("{}月{}日", now.month, now.day),
-                "日期".into(),
-            ),
-        ],
-        "sj" => vec![
-            (
-                format!("{:02}:{:02}", now.hour, now.minute),
-                "时间".into(),
-            ),
-            (
-                format!("{:02}:{:02}:{:02}", now.hour, now.minute, now.second),
-                "时间".into(),
-            ),
-            (
-                format!(
-                    "{}年{}月{}日 {:02}:{:02}",
-                    now.year, now.month, now.day, now.hour, now.minute
+                (format!("{:04}-{:02}-{:02}", now.year, now.month, now.day), "日期".into()),
+                (format!("{}月{}日", now.month, now.day), "日期".into()),
+                (format!("{:04}/{:02}/{:02}", now.year, now.month, now.day), "日期".into()),
+            ];
+            // 农历跟在后面（搜狗的日期候选里也带农历）
+            if let Some(l) = crate::lunar::to_lunar(now.year, now.month, now.day) {
+                v.push((format!("农历{}", l.month_day()), "农历".into()));
+            }
+            v
+        }
+        "sj" => {
+            // 12 小时制：0 点算上午 12 点，12 点算下午 12 点
+            let pm = now.hour >= 12;
+            let h12 = match now.hour % 12 {
+                0 => 12,
+                h => h,
+            };
+            vec![
+                (format!("{:02}:{:02}", now.hour, now.minute), "时间".into()),
+                (format!("{:02}:{:02}:{:02}", now.hour, now.minute, now.second), "时间".into()),
+                (
+                    format!("{}{}:{:02}", if pm { "下午" } else { "上午" }, h12, now.minute),
+                    "时间".into(),
                 ),
-                "日期时间".into(),
-            ),
-        ],
-        "xq" => vec![
-            (WEEKDAYS[(now.weekday - 1) as usize % 7].to_string(), "星期".into()),
-            (
-                format!(
-                    "{} {}月{}日",
-                    WEEKDAYS[(now.weekday - 1) as usize % 7],
-                    now.month,
-                    now.day
+                (
+                    format!(
+                        "{}年{}月{}日 {:02}:{:02}",
+                        now.year, now.month, now.day, now.hour, now.minute
+                    ),
+                    "日期时间".into(),
                 ),
-                "星期".into(),
-            ),
-        ],
+            ]
+        }
+        "xq" => {
+            let wd = weekday_name(now, false);
+            vec![
+                (wd.clone(), "星期".into()),
+                (weekday_name(now, true), "星期".into()),
+                (
+                    format!("{} {}月{}日", wd, now.month, now.day),
+                    "星期".into(),
+                ),
+            ]
+        }
+        "nl" => match crate::lunar::to_lunar(now.year, now.month, now.day) {
+            Some(l) => vec![
+                (l.full(), "农历".into()),
+                (format!("农历{}", l.month_day()), "农历".into()),
+                (
+                    l.ganzhi_year(),
+                    format!("农历 {}{}年", l.ganzhi, l.zodiac),
+                ),
+            ],
+            // 超出农历表范围（1901 年前 / 2100 年后）就没有候选
+            None => Vec::new(),
+        },
         _ => Vec::new(),
+    }
+}
+
+/// 星期名：`短写` 给「周二」这种，否则「星期二」。
+fn weekday_name(now: &Now, short: bool) -> String {
+    let full = WEEKDAYS[(now.weekday.clamp(1, 7) - 1) as usize % 7];
+    if short {
+        full.replace("星期", "周")
+    } else {
+        full.to_string()
     }
 }
 
@@ -361,6 +389,8 @@ mod tests {
         assert_eq!(trigger("x'q"), Some("xq"));
         assert_eq!(trigger("sj"), Some("sj"));
         assert_eq!(trigger("xq"), Some("xq"));
+        assert_eq!(trigger("nl"), Some("nl"));
+        assert_eq!(trigger("n'l"), Some("nl"));
         assert_eq!(trigger("v"), Some("v"));
         assert_eq!(trigger("n"), None);
         assert_eq!(trigger("rqq"), None);
@@ -371,11 +401,33 @@ mod tests {
         let c = date_candidates("rq", &now());
         assert_eq!(c[0].0, "2026年10月13日");
         assert_eq!(c[1].0, "2026-10-13");
+        // 2026-10-13 是农历九月初四，日期候选里带一条农历
+        assert!(
+            c.iter().any(|(t, _)| t == "农历九月初四"),
+            "日期候选里应当带农历：{c:?}"
+        );
         let s = date_candidates("sj", &now());
         assert_eq!(s[0].0, "09:05");
         assert_eq!(s[1].0, "09:05:07");
+        assert!(s.iter().any(|(t, _)| t == "上午9:05"), "应当有 12 小时制：{s:?}");
         let x = date_candidates("xq", &now());
         assert_eq!(x[0].0, "星期二");
+        assert_eq!(x[1].0, "周二");
+    }
+
+    /// `nl` 农历候选：三种写法都要有，且干支/生肖对得上。
+    #[test]
+    fn lunar_candidates() {
+        let c = date_candidates("nl", &now());
+        assert_eq!(c[0].0, "2026年九月初四");
+        assert_eq!(c[1].0, "农历九月初四");
+        assert_eq!(c[2].0, "丙午年九月初四", "干支纪年 + 生肖");
+        assert!(c[2].1.contains("马"), "注释里带生肖：{:?}", c[2].1);
+        // 下午的时间用「下午」前缀
+        let mut n = now();
+        n.hour = 15;
+        let s = date_candidates("sj", &n);
+        assert!(s.iter().any(|(t, _)| t == "下午3:05"), "{s:?}");
     }
 
     #[test]

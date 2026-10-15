@@ -7,6 +7,7 @@
 #![windows_subsystem = "windows"]
 
 mod core;
+mod scel;
 mod ui;
 
 fn main() {
