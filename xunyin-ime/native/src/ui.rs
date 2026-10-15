@@ -393,7 +393,7 @@ const PAGES: [(&str, &str, &str); 4] = [
     ("\u{E765}", "输入设置", "方案、按键行为、模糊音"),
     ("\u{E790}", "外观主题", "配色、字号、候选窗预览"),
     ("\u{E8F1}", "词库管理", "短语导入导出、用户词库备份"),
-    ("\u{E946}", "关于", "版本、快捷键、诊断维护"),
+    ("\u{E946}", "关于", "版本、快捷键、维护与备份"),
 ];
 const PAGES_EMOJI: [&str; 4] = ["⌨", "🎨", "📚", "ⓘ"];
 
@@ -798,7 +798,7 @@ impl App {
     }
 
     /// 卡片：返回内容区左上角。
-    fn card(&mut self, dc: HDC, x: i32, y: i32, w: i32, h: i32, title: &str, _desc: &str) -> i32 {
+    fn card(&mut self, dc: HDC, x: i32, y: i32, w: i32, h: i32, title: &str, desc: &str) -> i32 {
         let t = self.theme.clone();
         let r = RECT { left: x, top: y, right: x + w, bottom: y + h };
         self.cards.push(r);
@@ -816,6 +816,11 @@ impl App {
             let mut ty = y + 14;
             let tr = RECT { left: x + 18, top: ty, right: x + w - 18, bottom: ty + 22 };
             text(dc, tr, title, self.font_section, t.text, DT_LEFT, true);
+            // 标题右侧一行小字：这张卡是干什么的。
+            // 传空串就不画 —— 大多数卡片名本身就够清楚，只在容易混淆的地方写。
+            if !desc.is_empty() {
+                text(dc, tr, desc, self.font_small, t.text3, DT_RIGHT, true);
+            }
             let _ = ty;
         }
         y + 14 + 24 + self.s(4)
@@ -3414,8 +3419,8 @@ fn draw_about(app: &mut App, dc: HDC, x0: i32, y0: i32, w: i32) -> i32 {
     let t = app.theme.clone();
     let y0 = page_header(app, dc, x0, y0, w, "关于与维护");
     let hs = [
-        app.s(216),            // 维护与诊断（2 列 × 4 行按钮）
-        app.s(132),            // 诊断与配置（2 列 × 2 行按钮）
+        app.s(216),            // 维护（2 列 × 4 行按钮）
+        app.s(132),            // 备份与诊断（2 列 × 2 行按钮）
         app.s(136),            // 更新
         app.s(492),            // 快捷键（13 行）
         app.s(178),            // 输入统计
@@ -3424,7 +3429,10 @@ fn draw_about(app: &mut App, dc: HDC, x0: i32, y0: i32, w: i32) -> i32 {
 
     let (x, cy0, col_w) = slots[0];
     let mh = app.s(216);
-    let cy = app.card(dc, x, cy0, col_w, mh, "维护与诊断", "");
+    // 「维护」只做"打开 / 清理 / 重置 / 重载"这类本机操作；
+    // 导出导入、诊断包在旁边的「备份与诊断」卡里 —— 两张卡从前都叫"诊断"，
+    // 名字重了也看不出分工，现在各归其位并加了说明。
+    let cy = app.card(dc, x, cy0, col_w, mh, "维护", "打开目录 · 清空日志 · 重载与部署");
     // 两列两行排（以前一列横排三个，第三颗会溢出卡片右边缘）
     let inner = col_w - app.s(36);
     let bw = (inner - app.s(8)) / 2;
@@ -3452,9 +3460,9 @@ fn draw_about(app: &mut App, dc: HDC, x0: i32, y0: i32, w: i32) -> i32 {
     }
 
     let (x, cy0, col_w) = slots[1];
-    // 诊断与配置：一键打包现场（日志+配置+环境），以及整套设置的导入导出
+    // 备份与诊断：一键打包现场（日志+配置+环境），以及整套设置的导入导出
     let dh = app.s(132);
-    let cy = app.card(dc, x, cy0, col_w, dh, "诊断与配置", "");
+    let cy = app.card(dc, x, cy0, col_w, dh, "备份与诊断", "导出诊断包与设置 · 恢复皮肤");
     let inner2 = col_w - app.s(36);
     let bw2 = (inner2 - app.s(8)) / 2;
     for (i, (id, label)) in [
@@ -3473,7 +3481,7 @@ fn draw_about(app: &mut App, dc: HDC, x0: i32, y0: i32, w: i32) -> i32 {
 
     let (x, cy0, col_w) = slots[2];
     let uh = app.s(136);
-    let cy = app.card(dc, x, cy0, col_w, uh, "更新", "");
+    let cy = app.card(dc, x, cy0, col_w, uh, "更新", "检查新版本 · 下载安装");
     app.button(dc, Id::UpdateCheck, RECT { left: x + app.s(18), top: cy, right: x + app.s(18) + app.s(140), bottom: cy + app.s(34) }, "检查更新", true);
     app.button(dc, Id::Update, RECT { left: x + app.s(166), top: cy, right: x + app.s(166) + app.s(140), bottom: cy + app.s(34) }, "打开下载页", false);
     app.button(dc, Id::UpdateInstall, RECT { left: x + app.s(18), top: cy + app.s(46), right: x + app.s(18) + app.s(140), bottom: cy + app.s(80) }, "下载并安装", false);
@@ -3511,7 +3519,7 @@ fn draw_about(app: &mut App, dc: HDC, x0: i32, y0: i32, w: i32) -> i32 {
     // ── 输入统计（计数点在常驻服务里：统计的是"真正上屏了多少字"）────────
     let (x, cy0, col_w) = slots[4];
     let sh = app.s(178);
-    let cy = app.card(dc, x, cy0, col_w, sh, "输入统计", "");
+    let cy = app.card(dc, x, cy0, col_w, sh, "输入统计", "只统计真正上屏的字");
     let st = app.input_stats.clone();
     let speed = match st.today_speed_cpm() {
         Some(v) => format!("{v} 字/分"),
