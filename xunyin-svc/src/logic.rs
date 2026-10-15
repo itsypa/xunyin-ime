@@ -38,6 +38,8 @@ pub struct Logic {
     cand_map: Vec<usize>,
     /// v 模式缓冲（含开头的 v）
     v_mode: Option<String>,
+    /// 网址 / 邮箱补全的缓冲串（自己维护，见 `xunyin_rime::web_mode`）
+    web: Option<xunyin_rime::web_mode::Buf>,
     /// 上次上屏的文本与时间（联想学习）
     last_commit: Option<(String, std::time::Instant)>,
     /// 联想候选
@@ -55,6 +57,7 @@ impl Logic {
             overlay_comments: Vec::new(),
             cand_map: Vec::new(),
             v_mode: None,
+            web: None,
             last_commit: None,
             assoc_followers: Vec::new(),
         }
@@ -177,6 +180,11 @@ impl Logic {
         // ── v 模式 ─────────────────────────────────────────────────
         if cfg.input.enable_quick_input {
             if let Some(done) = self.v_mode_key(vk, shift, &mut out) {
+                out.consume = done;
+                return out;
+            }
+            // ── 网址 / 邮箱补全 ────────────────────────────────────
+            if let Some(done) = self.web_key(vk, shift, &mut out) {
                 out.consume = done;
                 return out;
             }
@@ -798,6 +806,142 @@ impl Logic {
         }
         out.preedit = buf.to_string();
         out.caret = buf.encode_utf16().count();
+        out.overlay_len = items.len();
+        out.candidates = items;
+        out.comments = comments;
+        out.selected = 0;
+    }
+
+    /// 网址 / 邮箱补全的按键处理。
+    ///
+    /// 返回 `Some(是否消费)`：`None` = 既不在该模式里、这颗键也没触发它，继续走正常流程。
+    ///
+    /// 触发条件（都在中文组合里，因为英文模式字母是直接上屏的）：
+    ///   * 组合串是纯字母时按 `@` → 邮箱补全（`zhangsan@` → `zhangsan@qq.com` 等）
+    ///   * 组合串恰好是 `www` 时按 `.` → 网址补全（`www.baidu` → `www.baidu.com` 等）
+    fn web_key(&mut self, vk: u32, shift: bool, out: &mut Reply) -> Option<bool> {
+        if let Some(mut buf) = self.web.clone() {
+            match vk {
+                0x1B => {
+                    // Esc：取消，什么都不上屏
+                    self.web = None;
+                    self.cancel_overlay();
+                    out.preedit.clear();
+                    out.caret = 0;
+                    return Some(true);
+                }
+                0x08 => {
+                    if buf.backspace() {
+                        self.web = Some(buf);
+                        self.web_update(out);
+                        return Some(true);
+                    }
+                    // 已经退到模式前缀：退出模式，缓冲原样上屏
+                    self.web = None;
+                    self.cancel_overlay();
+                    out.preedit.clear();
+                    out.caret = 0;
+                    out.commit = buf.text;
+                    return Some(true);
+                }
+                0x0D => {
+                    // 回车：原样上屏（就想打 www.baidu 这种半截的）
+                    self.web = None;
+                    self.cancel_overlay();
+                    out.preedit.clear();
+                    out.caret = 0;
+                    out.commit = buf.text;
+                    return Some(true);
+                }
+                0x20 => {
+                    // 空格：挑第一个补全结果
+                    let text = buf
+                        .candidates()
+                        .first()
+                        .map(|(t, _)| t.clone())
+                        .unwrap_or_else(|| buf.text.clone());
+                    self.web = None;
+                    self.cancel_overlay();
+                    out.preedit.clear();
+                    out.caret = 0;
+                    out.commit = text;
+                    return Some(true);
+                }
+                0x31..=0x39 => {
+                    // 数字：有第 N 个候选就选它；没有这一项就当成普通字符（域名里常有数字）
+                    let i = (vk - 0x31) as usize;
+                    if let Some((text, _)) = buf.candidates().get(i) {
+                        let text = text.clone();
+                        self.web = None;
+                        self.cancel_overlay();
+                        out.preedit.clear();
+                        out.caret = 0;
+                        out.commit = text;
+                        return Some(true);
+                    }
+                }
+                _ => {}
+            }
+            if let Some(ch) = xunyin_rime::web_mode::char_for_key(vk, shift) {
+                if buf.push(ch) {
+                    self.web = Some(buf);
+                    self.web_update(out);
+                    return Some(true);
+                }
+            }
+            // 其它键：退出模式，缓冲原样上屏，这颗键**交给应用**（不再过引擎，
+            // 免得引擎的上屏文本把我们这段覆盖掉）。返回 false 让宿主放行。
+            self.web = None;
+            self.cancel_overlay();
+            out.preedit.clear();
+            out.caret = 0;
+            out.commit = buf.text;
+            return Some(false);
+        }
+
+        // ── 触发 ──
+        let ch = xunyin_rime::web_mode::char_for_key(vk, shift)?;
+        if ch != '@' && ch != '.' {
+            return None;
+        }
+        // 组合串里待上屏的字母（丢掉空格/撇号这类分隔符）
+        let raw: String = self
+            .engine()
+            .map(|e| e.get_input())
+            .unwrap_or_default()
+            .chars()
+            .filter(|c| c.is_ascii_alphabetic())
+            .collect();
+        let buf = if ch == '@' {
+            if raw.is_empty() {
+                return None; // 没有要补全的本地部分，按普通的 @ 处理
+            }
+            xunyin_rime::web_mode::Buf::email(&raw)
+        } else {
+            if !raw.eq_ignore_ascii_case("www") {
+                return None;
+            }
+            xunyin_rime::web_mode::Buf::url()
+        };
+        self.web = Some(buf);
+        self.web_update(out);
+        Some(true)
+    }
+
+    /// 刷新网址 / 邮箱模式：缓冲串当组合串，补全结果当叠加候选。
+    fn web_update(&mut self, out: &mut Reply) {
+        let Some(buf) = self.web.clone() else { return };
+        let (items, comments): (Vec<String>, Vec<String>) =
+            buf.candidates().into_iter().unzip();
+        self.overlay = items.clone();
+        self.overlay_comments = comments.clone();
+        self.cand_map.clear();
+        // 缓冲串就是组合串本身（Rime 里没有对应输入）
+        if let Some(e) = self.engine() {
+            e.clear_composition();
+        }
+        out.preedit = buf.text.clone();
+        out.caret = buf.text.len(); // 缓冲串全是 ASCII，字节数就是字符数
         out.overlay_len = items.len();
         out.candidates = items;
         out.comments = comments;

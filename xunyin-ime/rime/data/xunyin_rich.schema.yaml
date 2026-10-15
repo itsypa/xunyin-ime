@@ -42,6 +42,7 @@ engine:
     - punct_translator
     - script_translator
     - table_translator@custom_phrase
+    - table_translator@import_dict
     - table_translator@melt_eng
     - table_translator@cn_en
     - table_translator@emoji
@@ -94,6 +95,19 @@ custom_phrase:
   enable_completion: false
   enable_sentence: false
   initial_quality: 99
+
+# 批量导入的词库（搜狗细胞词库 .scel / 大词表）。
+#
+# 和「自定义短语」分成两条通道是有意的：用户自己写的短语要**最优先**（99），
+# 而整本导进来的词库动辄几万条，只该作为正常候选的补充 —— 所以给一个负的
+# initial_quality，排在普通词库之后，不会把候选顶满。
+import_dict:
+  dictionary: ""
+  user_dict: import_dict
+  db_class: tabledb
+  enable_completion: false
+  enable_sentence: false
+  initial_quality: -1
 
 punctuator:
   full_shape:

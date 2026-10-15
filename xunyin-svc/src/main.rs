@@ -69,6 +69,29 @@ fn touch() {
     LAST_ACTIVITY.store(now_ms(), Ordering::Relaxed);
 }
 
+/// 输入统计：进程内累计，最多每 5 秒落盘一次。
+///
+/// 上屏的文本只有服务知道（宿主 DLL 只是把结果写进应用），所以计数点在这里。
+/// 每颗键都"读文件 + 写文件"太浪费，改成内存里攒着、定期写。
+static STATS: std::sync::Mutex<Option<xunyin_rime::stats::Stats>> = std::sync::Mutex::new(None);
+static STATS_SAVED_AT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+const STATS_FLUSH_MS: u64 = 5_000;
+
+/// 记一次上屏（`chars` = 上屏了几个字）。
+fn note_commit(chars: usize) {
+    if chars == 0 {
+        return;
+    }
+    let mut g = STATS.lock().unwrap_or_else(|e| e.into_inner());
+    let s = g.get_or_insert_with(xunyin_rime::stats::load);
+    let now = now_ms();
+    s.apply(chars as u64, &xunyin_rime::stats::today(), now);
+    if now.saturating_sub(STATS_SAVED_AT.load(Ordering::Relaxed)) >= STATS_FLUSH_MS {
+        xunyin_rime::stats::save(s);
+        STATS_SAVED_AT.store(now, Ordering::Relaxed);
+    }
+}
+
 /// 按键级诊断日志开关：用户数据目录里放一个 `log-input` 标记文件就开
 /// （与宿主 DLL 里的 `log_input()` 同一个开关、同一个缓存时长）。
 /// 默认关闭 —— 正常使用时不该为每颗键写一行日志。
@@ -282,6 +305,7 @@ fn serve(h: HANDLE) {
                                 r.engine_ok
                             ));
                         }
+                        note_commit(r.commit.chars().count());
                         json!({ "t": "reply", "reply": r })
                     }
                     Err(why) => json!({ "t": "reply", "reply": { "consume": false, "error": why } }),
@@ -290,7 +314,10 @@ fn serve(h: HANDLE) {
             "select" if input_enabled() => {
                 let index = msg.get("index").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
                 match guard(|| with_logic(|l| l.select(client, index))) {
-                    Ok(r) => json!({ "t": "reply", "reply": r }),
+                    Ok(r) => {
+                        note_commit(r.commit.chars().count());
+                        json!({ "t": "reply", "reply": r })
+                    }
                     Err(why) => json!({ "t": "reply", "reply": { "consume": false, "error": why } }),
                 }
             }
@@ -322,7 +349,11 @@ fn serve(h: HANDLE) {
                     }
                 } else {
                     match guard(|| with_logic(|l| l.command(client, name))) {
-                        Ok(r) => json!({ "t": "reply", "reply": r }),
+                        Ok(r) => {
+                            // 命令也可能上屏（如 Shift 松开把拼音原样上屏）——一并计数
+                            note_commit(r.commit.chars().count());
+                            json!({ "t": "reply", "reply": r })
+                        }
                         Err(why) => {
                             json!({ "t": "reply", "reply": { "consume": false, "error": why } })
                         }

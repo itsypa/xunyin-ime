@@ -309,7 +309,11 @@ enum Id {
     PunctDel,
     PunctRow(usize),
     DictImport,
+    DictImportDir,
     DictExport,
+    ImportDictExport,
+    PhraseImport,
+    StatsReset,
     PhraseQuery,
     PhraseCode,
     PhraseText,
@@ -400,6 +404,8 @@ struct App {
     saved: XunyinConfig,
     schemas: Vec<(String, String)>,
     stats: DictStats,
+    /// 输入统计（上屏字数/速度；数据由常驻服务写，这里只读）
+    input_stats: xunyin_rime::stats::Stats,
     backups: Vec<std::path::PathBuf>,
     /// 皮肤中心的资源列表（皮肤目录优先，否则内置）
     skins: Vec<SkinAsset>,
@@ -664,6 +670,7 @@ impl App {
             cfg,
             schemas: Vec::new(),
             stats: DictStats::default(),
+            input_stats: xunyin_rime::stats::Stats::default(),
             backups: Vec::new(),
             page: 0,
             scroll: 0,
@@ -1880,13 +1887,13 @@ impl App {
                 }
             }
             Id::DictImport => {
-                // 搜狗细胞词库（.scel）是用户手里最常见的旧词库格式，一并支持
+                // 批量词库通道（低优先级）：支持搜狗细胞词库 .scel 与文本词表
                 if let Some(path) = pick_file(
                     self.hwnd,
                     &[
                         ("词库文件（txt / scel）", "*.scel;*.txt"),
                         ("搜狗细胞词库", "*.scel"),
-                        ("文本短语表", "*.txt"),
+                        ("文本词表", "*.txt"),
                         ("所有文件", "*.*"),
                     ],
                     "scel",
@@ -1900,7 +1907,41 @@ impl App {
                     }
                 }
             }
+            Id::DictImportDir => {
+                if let Some(dir) = pick_folder(self.hwnd) {
+                    match self.core.import_dict_dir(&dir) {
+                        Ok(stats) => {
+                            self.stats = stats;
+                            self.toast(&self.stats.last_import.clone());
+                        }
+                        Err(e) => self.toast(&format!("导入失败：{e}")),
+                    }
+                }
+            }
+            Id::PhraseImport => {
+                if let Some(path) = pick_file(
+                    self.hwnd,
+                    &[("短语文件", "*.txt"), ("所有文件", "*.*")],
+                    "txt",
+                ) {
+                    match self.core.import_phrase_file(&path) {
+                        Ok(stats) => {
+                            self.stats = stats;
+                            self.toast(&self.stats.last_import.clone());
+                        }
+                        Err(e) => self.toast(&format!("导入失败：{e}")),
+                    }
+                }
+            }
+            Id::StatsReset => {
+                let _ = self.core.reset_input_stats();
+                self.toast("输入统计已清零");
+            }
             Id::DictExport => match self.core.export_dict() {
+                Ok(p) => self.toast(&format!("已导出：{}", p.display())),
+                Err(e) => self.toast(&format!("导出失败：{e}")),
+            },
+            Id::ImportDictExport => match self.core.export_imported_dict() {
                 Ok(p) => self.toast(&format!("已导出：{}", p.display())),
                 Err(e) => self.toast(&format!("导出失败：{e}")),
             },
@@ -2211,6 +2252,33 @@ fn pick_file(hwnd: HWND, filter: &[(&str, &str)], def_ext: &str) -> Option<std::
     }
 }
 
+/// 选一个文件夹（批量导入词库用）。
+///
+/// 用系统自带的 `SHBrowseForFolderW`：一条依赖都不用加，也不需要 COM。
+fn pick_folder(hwnd: HWND) -> Option<std::path::PathBuf> {
+    use windows::Win32::UI::Shell::{SHBrowseForFolderW, SHGetPathFromIDListW, BROWSEINFOW};
+    unsafe {
+        // 结构体整体清零 = 无回调、无图标、无根目录，正是我们要的默认
+        let mut bi: BROWSEINFOW = std::mem::zeroed();
+        let title = wide("选择词库所在文件夹");
+        bi.hwndOwner = hwnd;
+        bi.lpszTitle = PCWSTR(title.as_ptr());
+        let idl = SHBrowseForFolderW(&mut bi);
+        if idl.is_null() {
+            return None;
+        }
+        let mut buf = [0u16; 260];
+        let ok = SHGetPathFromIDListW(idl, &mut buf).as_bool();
+        // IDList 由 shell 分配，用完必须释放（否则每次选文件夹都漏一块）
+        windows::Win32::System::Com::CoTaskMemFree(Some(idl as *const core::ffi::c_void));
+        if !ok {
+            return None;
+        }
+        let n = buf.iter().position(|c| *c == 0).unwrap_or(0);
+        Some(std::path::PathBuf::from(String::from_utf16_lossy(&buf[..n])))
+    }
+}
+
 // ---------------- 窗口过程与入口 ----------------
 
 const MSG_DEFERRED: u32 = WM_APP + 1;
@@ -2271,6 +2339,7 @@ extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM
                     app.core.init_engine();
                     app.schemas = app.core.schemas();
                     app.stats = app.core.dict_stats();
+                    app.input_stats = app.core.input_stats();
                     app.backups = app.core.list_backups();
                     app.engine_ready = !app.schemas.is_empty();
                     let _ = InvalidateRect(Some(hwnd), None, false);
@@ -3096,6 +3165,7 @@ fn draw_dict(app: &mut App, dc: HDC, x0: i32, y0: i32, w: i32) -> i32 {
         app.s(46 * 3 + 46),                          // 候选来源
         app.s(352),                                  // 用户词库备份/恢复（含导出/清空两行）
         app.s(70) + cell_rows * app.s(28) + app.s(52), // 细胞词库
+        app.s(160),                                  // 导入词库（批量通道）
     ];
     let slots = balance(&hs, x0, y0, w, gap);
 
@@ -3196,7 +3266,7 @@ fn draw_dict(app: &mut App, dc: HDC, x0: i32, y0: i32, w: i32) -> i32 {
     app.button(dc, Id::PhraseAdd, RECT { left: lx, top: by, right: lx + bw, bottom: by + app.s(34) }, "添加 / 更新", true);
     app.button_danger(dc, Id::PhraseDel, RECT { left: lx + bw + app.s(8), top: by, right: lx + lw, bottom: by + app.s(34) }, "删除所选");
     let by2 = by + app.s(42);
-    app.button(dc, Id::DictImport, RECT { left: lx, top: by2, right: lx + bw, bottom: by2 + app.s(34) }, "导入词库（txt/scel）…", false);
+    app.button(dc, Id::PhraseImport, RECT { left: lx, top: by2, right: lx + bw, bottom: by2 + app.s(34) }, "导入短语（txt）…", false);
     app.button(dc, Id::DictExport, RECT { left: lx + bw + app.s(8), top: by2, right: lx + lw, bottom: by2 + app.s(34) }, "导出短语文件", false);
     // 只在导入/保存有结果时给一行反馈（不再常驻一句说明）
     if !app.stats.last_import.is_empty() {
@@ -3272,6 +3342,53 @@ fn draw_dict(app: &mut App, dc: HDC, x0: i32, y0: i32, w: i32) -> i32 {
         by += app.s(24);
         app.button(dc, Id::CellApply, RECT { left: rx + app.s(18), top: by, right: rx + app.s(18) + app.s(120), bottom: by + app.s(34) }, "应用", true);
     }
+
+    // ── 导入词库（批量通道，低优先级）────────────────────────────────
+    //
+    // 和「自定义短语」刻意分成两条通道：短语表里是用户手写的少量词，排最前；
+    // 整本导入的词库（搜狗细胞词库动辄几万条）只作补充，排在普通候选之后。
+    let (x, cy0, col_w) = slots[6];
+    let ih2 = app.s(160);
+    let cy = app.card(dc, x, cy0, col_w, ih2, "导入词库", "");
+    let inner = col_w - app.s(36);
+    let lx = x + app.s(18);
+    let bw = (inner - app.s(8)) / 2;
+    app.button(
+        dc,
+        Id::DictImport,
+        RECT { left: lx, top: cy, right: lx + bw, bottom: cy + app.s(34) },
+        "导入词库（txt/scel）…",
+        true,
+    );
+    app.button(
+        dc,
+        Id::DictImportDir,
+        RECT { left: lx + bw + app.s(8), top: cy, right: lx + inner, bottom: cy + app.s(34) },
+        "导入整个文件夹…",
+        false,
+    );
+    let by = cy + app.s(42);
+    app.button(
+        dc,
+        Id::ImportDictExport,
+        RECT { left: lx, top: by, right: lx + bw, bottom: by + app.s(34) },
+        "导出已导入词库",
+        false,
+    );
+    // 右侧显示"已导入多少条" —— 导入有没有生效一眼能看到
+    unsafe {
+        let info = format!("已导入 {} 条（低优先级）", app.stats.imported_count);
+        text(
+            dc,
+            RECT { left: lx + bw + app.s(8), top: by, right: lx + inner, bottom: by + app.s(34) },
+            &info,
+            app.font_small,
+            t.text3,
+            DT_LEFT | DT_VCENTER | DT_SINGLELINE,
+            true,
+        );
+    }
+
     slots
         .iter()
         .zip(hs.iter())
@@ -3290,6 +3407,7 @@ fn draw_about(app: &mut App, dc: HDC, x0: i32, y0: i32, w: i32) -> i32 {
         app.s(132),            // 诊断与配置（2 列 × 2 行按钮）
         app.s(136),            // 更新
         app.s(492),            // 快捷键（13 行）
+        app.s(178),            // 输入统计
     ];
     let slots = balance(&hs, x0, y0, w, gap);
 
@@ -3378,6 +3496,46 @@ fn draw_about(app: &mut App, dc: HDC, x0: i32, y0: i32, w: i32) -> i32 {
         fy += app.s(34);
     }
     let _ = (fy, kh);
+
+    // ── 输入统计（计数点在常驻服务里：统计的是"真正上屏了多少字"）────────
+    let (x, cy0, col_w) = slots[4];
+    let sh = app.s(178);
+    let cy = app.card(dc, x, cy0, col_w, sh, "输入统计", "");
+    let st = app.input_stats.clone();
+    let speed = match st.today_speed_cpm() {
+        Some(v) => format!("{v} 字/分"),
+        None => "—".to_string(),
+    };
+    let rows = [
+        ("今日上屏", format!("{} 字", st.today_chars)),
+        ("今日次数", format!("{} 次", st.today_commits)),
+        ("今日速度", speed),
+        ("打字时长", format!("{} 分钟", st.today_minutes())),
+        ("累计字数", format!("{} 字", st.total_chars)),
+        ("使用天数", format!("{} 天", st.days)),
+    ];
+    let inner = col_w - app.s(36);
+    for (i, (k, v)) in rows.iter().enumerate() {
+        let col = (i % 3) as i32;
+        let row = (i / 3) as i32;
+        let cw = inner / 3;
+        let bx = x + app.s(18) + col * cw;
+        let by = cy + row * app.s(46);
+        let kr = RECT { left: bx, top: by, right: bx + cw - app.s(6), bottom: by + app.s(20) };
+        let vr = RECT { left: bx, top: by + app.s(18), right: bx + cw - app.s(6), bottom: by + app.s(42) };
+        unsafe {
+            text(dc, kr, k, app.font_small, t.text3, DT_LEFT, true);
+            text(dc, vr, v, app.font_bold, t.text, DT_LEFT, true);
+        }
+    }
+    app.button(
+        dc,
+        Id::StatsReset,
+        RECT { left: x + app.s(18), top: cy + app.s(118), right: x + app.s(18) + app.s(110), bottom: cy + app.s(152) },
+        "清零统计",
+        false,
+    );
+
     slots
         .iter()
         .zip(hs.iter())

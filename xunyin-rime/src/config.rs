@@ -203,6 +203,8 @@ impl InputConfig {
             if self.enable_custom_phrase {
                 s.push_str("    - table_translator@custom_phrase\n");
             }
+            // 导入词库通道不受候选来源开关影响：导入的词必须一直在
+            s.push_str("    - table_translator@import_dict\n");
             if self.enable_english {
                 s.push_str("    - table_translator@melt_eng\n");
                 s.push_str("    - table_translator@cn_en\n");
