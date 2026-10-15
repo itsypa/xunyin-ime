@@ -2507,6 +2507,17 @@ extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM
                     }
                 } else if wparam.0 == TIMER_TASK {
                     // 后台任务（词库下载/部署/回滚）完成检查
+                    // 顺带刷新输入统计：只在"关于与维护"页开着时读一次小文件，
+                    // 这样窗口开着打字，数字也会跟着涨
+                    if let Some(app) = main_of(hwnd) {
+                        if app.page == 3 {
+                            let fresh = app.core.input_stats();
+                            if fresh != app.input_stats {
+                                app.input_stats = fresh;
+                                let _ = InvalidateRect(Some(hwnd), None, false);
+                            }
+                        }
+                    }
                     let mut done: Option<Result<String, String>> = None;
                     let mut kind = 0u8;
                     if let Some(app) = main_of(hwnd) {
