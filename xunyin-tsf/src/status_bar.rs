@@ -1155,16 +1155,13 @@ fn module_dir() -> Option<std::path::PathBuf> {
 
 fn settings_exe_path() -> Option<std::path::PathBuf> {
     let dll_dir = module_dir()?;
-    let names = settings_exe_names();
     // 1) 同目录或逐级向上：安装布局 <安装目录>\xunyin-ime.exe（DLL 在 tsf\ 子目录）。
     //    注意：这里不能因为走到盘符根就提前 return，否则后面两种布局永远搜不到。
     let mut dir = Some(dll_dir.clone());
     while let Some(d) = dir {
-        for name in names {
-            let exe = d.join(name);
-            if exe.is_file() {
-                return Some(exe);
-            }
+        let exe = d.join(SETTINGS_EXE);
+        if exe.is_file() {
+            return Some(exe);
         }
         dir = d.parent().map(|p| p.to_path_buf());
     }
@@ -1176,12 +1173,14 @@ fn settings_exe_path() -> Option<std::path::PathBuf> {
     let mut dir = Some(dll_dir);
     while let Some(d) = dir {
         for profile in ["release", "debug"] {
-            let base = d.join("xunyin-ime").join("native").join("target").join(profile);
-            for name in names {
-                let exe = base.join(name);
-                if exe.is_file() {
-                    return Some(exe);
-                }
+            let exe = d
+                .join("xunyin-ime")
+                .join("native")
+                .join("target")
+                .join(profile)
+                .join(SETTINGS_EXE);
+            if exe.is_file() {
+                return Some(exe);
             }
         }
         dir = d.parent().map(|p| p.to_path_buf());
@@ -1189,38 +1188,20 @@ fn settings_exe_path() -> Option<std::path::PathBuf> {
     // 3) 兜底：默认安装位置 %ProgramFiles%\XunyinIME
     for key in ["ProgramFiles", "ProgramFiles(x86)"] {
         if let Ok(pf) = std::env::var(key) {
-            let base = std::path::Path::new(&pf).join("XunyinIME");
-            for name in names {
-                let exe = base.join(name);
-                if exe.is_file() {
-                    return Some(exe);
-                }
+            let exe = std::path::Path::new(&pf).join("XunyinIME").join(SETTINGS_EXE);
+            if exe.is_file() {
+                return Some(exe);
             }
         }
     }
     None
 }
 
-/// 设置中心可执行文件的候选名（按架构优先）。
+/// 设置中心可执行文件名（只有一份 x64 版：本项目不支持 32 位 Windows）。
 ///
-/// 安装包里两份可能并存：`xunyin-ime.exe`（64 位）与 `xunyin-ime-x86.exe`（32 位）。
-/// **32 位系统上只有后者能跑** —— 从前打包只做了 64 位那份，32 位系统上"设置中心"
-/// 等于不存在（点了没反应）。判据用系统目录：`Sysnative` / `SysWOW64` 只在 64 位
-/// 系统上存在。
-fn settings_exe_names() -> &'static [&'static str] {
-    if cfg!(target_pointer_width = "32") && !is_64bit_os() {
-        &["xunyin-ime-x86.exe"]
-    } else {
-        &["xunyin-ime.exe", "xunyin-ime-x86.exe"]
-    }
-}
-
-/// 这台机器的 Windows 是不是 64 位。
-fn is_64bit_os() -> bool {
-    let windir = std::env::var("WINDIR").unwrap_or_else(|_| r"C:\Windows".into());
-    let w = std::path::Path::new(&windir);
-    w.join("Sysnative").exists() || w.join("SysWOW64").exists()
-}
+/// 32 位**程序**照样能用：那份支持在 tsf-x86 的 DLL/引擎里，与设置中心的位数无关
+/// —— 32 位宿主进程照样能启动这个 x64 设置中心。
+const SETTINGS_EXE: &str = "xunyin-ime.exe";
 
 fn create_hwnd() -> HWND {
     unsafe {

@@ -185,24 +185,6 @@ impl Step<InstallCtx<'_>> for ExtractFiles {
                 .map_err(|e| format!("释放 {} 失败: {}", entry.path, e))?;
         }
 
-        // 32 位系统：把 32 位设置中心落到「主程序名」上。
-        //
-        // payload 里两份并存（`xunyin-ime.exe` 与 `xunyin-ime-x86.exe`），而快捷方式、
-        // 自启动、回执里引用的都是主程序名。32 位系统上那份 64 位的根本跑不起来，
-        // 在这里替换掉，其余引用一律不用动（64 位系统原样不动）。
-        if !crate::util::path::is_64bit_system() {
-            let x86 = ctx.config.install_dir.join("xunyin-ime-x86.exe");
-            let main = ctx.config.install_dir.join(meta::main_exe());
-            if x86.is_file() {
-                match std::fs::copy(&x86, &main) {
-                    Ok(_) => {
-                        let _ = std::fs::remove_file(&x86);
-                        r.log("32 位系统：已换成 32 位设置中心");
-                    }
-                    Err(e) => r.warn(&format!("32 位设置中心替换失败（保留 64 位那份）: {e}")),
-                }
-            }
-        }
         Ok(())
     }
 }

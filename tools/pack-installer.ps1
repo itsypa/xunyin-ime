@@ -2,8 +2,10 @@
     [string]$Version = "",
     # x64 = 64 位 Windows；x86 = 32 位 Windows（也可在 64 位系统上跑，注册走 Sysnative）。
     # 两者都用同一份 payload，只有安装器 stub 的架构不同。
-    [ValidateSet("x64", "x86", "both")]
-    [string]$Arch = "both",
+    # 只出 x64 安装包：本项目不支持 32 位 Windows（安装器 main.rs 里硬性要求 64 位系统）。
+    # 32 位**程序**的支持不受影响 —— 那是 payload 里的 tsf-x86 负责的。
+    [ValidateSet("x64")]
+    [string]$Arch = "x64",
     [ValidateSet("lzma", "zstd")]
     [string]$Compression = "lzma",
     [switch]$Sign,
@@ -36,16 +38,13 @@ if (-not $SkipBuild) {
     Push-Location (Join-Path $root "xunyin-ime\native")
     try {
         cargo build --release
-        # 32 位那份也要出：32 位系统上只有它能跑（从前只编 x64，
-        # 因为 x86 目标压根编译不过 —— SetWindowLongPtrW 的参数类型按指针宽度不同）
-        cargo build --release --target i686-pc-windows-msvc
     } finally { Pop-Location }
 
-    # 安装器 stub / 卸载器 / 打包器（x64 打包器通吃两种架构的产物）
+    # 安装器 stub / 卸载器 / 打包器（只出 x64：本项目不支持 32 位 Windows，
+    # 见安装器 main.rs 的 64 位要求；32 位**程序**的支持在 tsf-x86，与这里无关）
     Push-Location $installerDir
     try {
         cargo build --release --features packer
-        cargo build --release --features packer --target i686-pc-windows-msvc
     } finally { Pop-Location }
 }
 
@@ -56,21 +55,18 @@ New-Item -ItemType Directory -Force $payloadDir, (Join-Path $payloadDir "tsf"), 
 $tsfX64 = Join-Path $root "xunyin-tsf\target\release\xunyin_tsf.dll"
 $tsfX86 = Join-Path $root "xunyin-tsf\target\i686-pc-windows-msvc\release\xunyin_tsf.dll"
 $imeExe = Join-Path $root "xunyin-ime\native\target\release\xunyin-ime.exe"
-$imeExeX86 = Join-Path $root "xunyin-ime\native\target\i686-pc-windows-msvc\release\xunyin-ime.exe"
 $rimeX64 = Join-Path $root "xunyin-ime\rime\rime.dll"
 $rimeX86 = Join-Path $root "xunyin-ime\rime-x86\rime.dll"
 $rimeData = Join-Path $root "xunyin-ime\rime\data"
 $dictMgr = Join-Path $root "xunyin-ime\rime\rime_dict_manager.exe"
 $uninstaller = Join-Path $installerDir "target\release\wind-uninstaller.exe"
 
-foreach ($f in @($tsfX64, $tsfX86, $imeExe, $imeExeX86, $rimeX64, $rimeX86, $dictMgr, $uninstaller)) {
+foreach ($f in @($tsfX64, $tsfX86, $imeExe, $rimeX64, $rimeX86, $dictMgr, $uninstaller)) {
     if (-not (Test-Path $f)) { throw "缺少构建产物: $f" }
 }
 
 # 设置中心 + 引擎（rime.dll 需与 exe 同目录）
 Copy-Item $imeExe (Join-Path $payloadDir "xunyin-ime.exe") -Force
-# 32 位那份并存：32 位系统上 DLL 会优先找 xunyin-ime-x86.exe（见 status_bar.rs）
-Copy-Item $imeExeX86 (Join-Path $payloadDir "xunyin-ime-x86.exe") -Force
 Copy-Item $rimeX64 (Join-Path $payloadDir "rime.dll") -Force
 Copy-Item $dictMgr (Join-Path $payloadDir "rime_dict_manager.exe") -Force
 Copy-Item $uninstaller (Join-Path $payloadDir "uninstall.exe") -Force
@@ -102,7 +98,7 @@ Write-Host "payload 组装完成: $payloadDir ($size MB)"
 
 # 组装后校验：这些文件缺一不可（曾出现过复制后缺失导致安装包不完整）
 $required = @(
-    "xunyin-ime.exe", "xunyin-ime-x86.exe", "rime.dll", "uninstall.exe",
+    "xunyin-ime.exe", "rime.dll", "uninstall.exe",
     "rime\data\default.yaml",
     "tsf\xunyin_tsf_x64.dll", "tsf\rime.dll", "tsf\xunyin-svc.exe",
     "tsf-x86\xunyin_tsf_x86.dll", "tsf-x86\rime.dll", "tsf-x86\xunyin-svc.exe"
@@ -150,8 +146,8 @@ function Pack-One([string]$arch) {
     $sub = if ($arch -eq "x86") { "i686-pc-windows-msvc\release" } else { "release" }
     $stub = Join-Path $installerDir "target\$sub\wind-installer.exe"
     if (-not (Test-Path $stub)) { throw "缺少 $arch 安装器 stub: $stub" }
-    # 卸载器必须与安装器同架构：32 位系统跑不了 x64 卸载器。
-    # 同时这也把上一轮"已加工"的卸载器换回未加工的 stub，避免打包器报"上一轮产物"。
+    # 卸载器与安装器同架构；同时这也把上一轮"已加工"的卸载器换回未加工的 stub，
+    # 避免打包器报"上一轮产物"。
     $un = Join-Path $installerDir "target\$sub\wind-uninstaller.exe"
     if (-not (Test-Path $un)) { throw "缺少 $arch 卸载器: $un" }
     Copy-Item $un (Join-Path $payloadDir "uninstall.exe") -Force
@@ -179,9 +175,4 @@ function Pack-One([string]$arch) {
     Write-Host ("安装包({0}): {1} ({2:N1} MB)" -f $arch, $pkg.FullName, ($pkg.Length / 1MB))
 }
 
-if ($Arch -eq "both") {
-    Pack-One "x64"
-    Pack-One "x86"
-} else {
-    Pack-One $Arch
-}
+Pack-One $Arch

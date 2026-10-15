@@ -120,7 +120,7 @@ jobs:
           # the ValidateSet would reject it.
           $params = @{
             SkipBuild   = $true
-            Arch        = "both"
+            Arch        = "x64"
             Version     = "0.1.$env:GITHUB_RUN_NUMBER"
             Compression = "lzma"
           }
@@ -165,7 +165,8 @@ jobs:
             Auto-built Windows installer (commit ${{ github.sha }})
 
             - Setup x64: for 64-bit Windows
-            - Setup x86: for 32-bit Windows
+              （只发 x64 安装包；32 位 Windows 不支持。64 位系统里的 32 位程序照样能打字 ——
+              安装包内的 tsf-x86 会一并装好）
             - Portable zip: unzip, then run `register-ime.ps1` as admin
           files: |
             build/installer-dist/*.exe

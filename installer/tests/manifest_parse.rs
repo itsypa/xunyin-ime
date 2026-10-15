@@ -75,12 +75,18 @@ fn project_config_parses_all_sections() {
     assert_eq!(cfg.package.icon, "assets/installer.ico");
 }
 
-/// 仓库自带的 app.toml 必须始终能被当前结构体解析——防止配置与代码漂移。
+/// 演示清单 `app.demo.toml` 必须覆盖到每一个**能力段**，且都能被当前结构体解析
+/// ——防止"代码加了字段、配置样例没人写"这种漂移。
+///
+/// 注意：这里读的是 `app.demo.toml`（虚构的示例应用，把 [ime]/[[font]]/[autostart]/
+/// [[shortcut]]/[startup]/[datadir] 都列了出来）。从前这条测试读的是产品自己的
+/// `app.toml`，断言里却写着示例应用的名字和"应有 autostart 段"——产品清单一被定制化
+/// （改名字、去掉用不上的能力段）它就永远过不了，属于指向错了文件。
 #[test]
 fn repo_app_toml_parses_with_all_capability_sections() {
-    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/app.toml");
-    let text = std::fs::read_to_string(path).expect("读取仓库 app.toml 失败");
-    let cfg = ProjectConfig::from_toml_str(&text).expect("解析仓库 app.toml 失败");
+    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/app.demo.toml");
+    let text = std::fs::read_to_string(path).expect("读取 app.demo.toml 失败");
+    let cfg = ProjectConfig::from_toml_str(&text).expect("解析 app.demo.toml 失败");
 
     let autostart = cfg.manifest.autostart.as_ref().expect("应有 autostart 段");
     assert!(autostart.enabled);
@@ -109,6 +115,32 @@ fn repo_app_toml_parses_with_all_capability_sections() {
     assert_eq!(cfg.manifest.theme.accent, "#4C8BF5");
     assert_eq!(cfg.manifest.paths.install, r"%ProgramFiles%\{id}");
     assert_eq!(cfg.manifest.strings.data_dir_hint, "项目文件、配置路径");
+}
+
+/// 产品清单 `app.toml` 的守卫：必须能被当前结构体解析，且关键字段没被写歪。
+///
+/// 与上面那条的分工：演示清单证明"所有能力段都能解析"，这条证"我们自己在用的这份
+/// 配置是好的"（改名、改路径时最容易忘的就是它）。
+#[test]
+fn product_app_toml_parses_and_names_are_consistent() {
+    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/app.toml");
+    let text = std::fs::read_to_string(path).expect("读取 app.toml 失败");
+    let cfg = ProjectConfig::from_toml_str(&text).expect("解析 app.toml 失败");
+
+    // 设置中心/主程序名：payload 里就是这两个名字（pack-installer.ps1 按它复制）
+    assert_eq!(cfg.manifest.app.main_exe, "xunyin-ime.exe");
+    assert_eq!(cfg.manifest.app.setting_exe, "xunyin-ime.exe");
+    // 输入法注册：x64 + x86 两份 DLL 都要在（32 位程序靠后者）
+    let ime = cfg.manifest.ime.as_ref().expect("应有 ime 段");
+    assert_eq!(ime.dll_x64, "tsf\\xunyin_tsf_x64.dll");
+    assert_eq!(ime.dll_x86, "tsf-x86\\xunyin_tsf_x86.dll");
+    // 两条快捷方式：设置 + 卸载
+    assert_eq!(cfg.manifest.shortcut.len(), 2);
+    // 装完启动设置中心
+    assert!(
+        cfg.manifest.startup.as_ref().expect("应有 startup 段").prestart,
+        "装完应当启动设置中心"
+    );
 }
 
 /// 占位符使一份快捷方式配置对 dev/release 变体通用：同一段 config，按各变体的
