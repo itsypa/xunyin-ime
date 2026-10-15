@@ -334,12 +334,46 @@ impl Default for XunyinConfig {
     }
 }
 
-/// 用户数据目录：`%APPDATA%\com.xunyin.ime`（与 TSF 引擎/设置中心共用）。
+/// 用户数据目录（词库、配置、日志、皮肤都在这儿，TSF 引擎与设置中心共用）。
+///
+/// 两个来源，按优先级：
+/// 1. **安装器写下的数据目录**：装的时候如果选了"自定义/跟随安装位置的 Data 目录"，
+///    安装器会把绝对路径写进 `%LOCALAPPDATA%\com.xunyin.ime\datadir.conf`（清单里声明
+///    `[datadir] conf_file` 才有这一步）。安装时选的位置必须在这里被认，否则用户看到的
+///    "装在 D 盘"就是假的 —— 数据仍会跑到 C 盘的 AppData。
+/// 2. 默认 `%APPDATA%\com.xunyin.ime`：开发布局与没写过配置的老安装都走这条。
 pub fn user_data_dir() -> PathBuf {
+    if let Some(dir) = installed_data_dir() {
+        return dir;
+    }
     std::env::var_os("APPDATA")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("."))
         .join("com.xunyin.ime")
+}
+
+/// 安装期写下的数据目录（`datadir.conf` 的内容）。只读一次并缓存：
+/// 进程活着的时候不会去换数据目录（换了也要重开应用才看得到）。
+fn installed_data_dir() -> Option<PathBuf> {
+    static CACHE: std::sync::OnceLock<Option<PathBuf>> = std::sync::OnceLock::new();
+    CACHE
+        .get_or_init(|| {
+            std::env::var_os("LOCALAPPDATA")
+                .map(PathBuf::from)
+                .and_then(|base| read_data_dir_conf(&base))
+        })
+        .clone()
+}
+
+/// 从 `%LOCALAPPDATA%\com.xunyin.ime\datadir.conf` 里读安装期选定的数据目录。
+/// （安装器按 wind-installer 的约定把 conf 写在这个位置。）
+fn read_data_dir_conf(local_appdata: &std::path::Path) -> Option<PathBuf> {
+    let text = std::fs::read_to_string(local_appdata.join("com.xunyin.ime").join("datadir.conf")).ok()?;
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    Some(PathBuf::from(trimmed))
 }
 
 /// 配置文件路径。
@@ -453,6 +487,29 @@ impl CachedConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 安装器写下的数据目录必须被认：否则安装时选的 `D:\...\Data` 是摆设，
+    /// 数据仍旧跑回 C 盘 AppData（用户在实机安装里踩过这个坑）。
+    #[test]
+    fn reads_installed_data_dir_conf() {
+        let base = std::env::temp_dir().join(format!("xunyin-cfgtest-{}", std::process::id()));
+        let dir = base.join("com.xunyin.ime");
+        std::fs::create_dir_all(&dir).unwrap();
+
+        // 没有 conf：回退默认（返回 None）
+        assert!(read_data_dir_conf(&base).is_none());
+
+        // 有 conf：认绝对路径，并去掉首尾空白（安装器写的是裸路径，没有换行也行）
+        let want = base.join("Data");
+        std::fs::write(dir.join("datadir.conf"), format!("  {}\r\n", want.display())).unwrap();
+        assert_eq!(read_data_dir_conf(&base), Some(want));
+
+        // 空文件当没写（不与"数据目录 = 当前目录"混淆）
+        std::fs::write(dir.join("datadir.conf"), "   \n").unwrap();
+        assert!(read_data_dir_conf(&base).is_none());
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
 
     /// 旧版配置文件（没有 punct_map 字段）必须能反序列化 —— 否则升级后设置会全丢。
     #[test]

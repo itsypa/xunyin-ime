@@ -26,11 +26,10 @@ static WRITE_COUNT: AtomicU64 = AtomicU64::new(0);
 /// 候选日志路径（全部写入，任一成功即可读到）。
 fn log_paths() -> Vec<PathBuf> {
     let mut v = Vec::new();
-    if let Some(appdata) = std::env::var_os("APPDATA") {
-        let logs = PathBuf::from(appdata).join("com.xunyin.ime").join("logs");
-        let _ = std::fs::create_dir_all(&logs);
-        v.push(logs.join("tsf.log"));
-    }
+    // 统一走共享 crate 的数据目录（安装时可能被指到别处，见 datadir.conf）
+    let logs = xunyin_rime::user_data_dir().join("logs");
+    let _ = std::fs::create_dir_all(&logs);
+    v.push(logs.join("tsf.log"));
     v.push(std::env::temp_dir().join("xunyin-tsf.log"));
     v
 }

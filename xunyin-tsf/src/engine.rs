@@ -288,11 +288,11 @@ fn shared_data_dir() -> PathBuf {
 }
 
 /// 用户数据目录（与设置中心共用，词库/日志互通）。
+///
+/// 走共享 crate 的统一入口：安装时若把数据目录选在别处（安装器写 `datadir.conf`），
+/// 这里必须跟着走 —— 自己拼 `%APPDATA%\com.xunyin.ime` 会让词库和配置分家。
 fn user_data_dir() -> PathBuf {
-    std::env::var_os("APPDATA")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join("com.xunyin.ime")
+    xunyin_rime::user_data_dir()
 }
 
 fn data_dirs() -> (PathBuf, PathBuf) {

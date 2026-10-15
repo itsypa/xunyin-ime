@@ -175,11 +175,8 @@ fn valid_asset(data: &[u8], want: (usize, usize)) -> bool {
 
 /// 用户皮肤目录（工具导出、菜单打开都用它）。
 pub fn skins_dir() -> std::path::PathBuf {
-    std::env::var_os("APPDATA")
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(|| std::path::PathBuf::from("."))
-        .join("com.xunyin.ime")
-        .join("skins")
+    // 统一走共享 crate 的数据目录（安装时可能被指到别处，见 datadir.conf）
+    xunyin_rime::user_data_dir().join("skins")
 }
 
 /// 皮肤搜索目录，磁盘优先、按顺序命中即用。

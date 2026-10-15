@@ -149,7 +149,21 @@ fn run_install(args: Args) {
     if args.silent {
         let mut config = installer::config::InstallConfig::default();
         if let Some(dir) = args.dir {
+            // `--dir` 给的就是**安装目录本身**（不是父目录）：应用内升级要靠它原地覆盖，
+            // 追加子目录会装出第二份。GUI 里"选目录"才按父目录处理（见 install_wizard）。
             config.install_dir = dir;
+        }
+        if args.datadir.is_none() {
+            // 没显式指定数据目录时，与程序目录并排（<安装目录的父目录>\Data）——
+            // 这样 `--dir D:\Apps\XunyinIME` 的数据会落在 D:\Apps\Data，与向导里选
+            // D:\Apps 的结果一致；也不至于让程序在 D 盘、数据跑到 %ProgramFiles%\Data。
+            let data = config
+                .install_dir
+                .parent()
+                .map(|p| p.join("Data"))
+                .unwrap_or_else(|| std::path::PathBuf::from("Data"));
+            config.custom_data_dir = Some(data);
+            config.use_custom_data_dir = true;
         }
         if let Some(datadir) = args.datadir {
             config.custom_data_dir = Some(datadir);

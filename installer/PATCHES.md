@@ -26,6 +26,16 @@
 | `src/ui/install_wizard.rs`：清单没有 `[datadir]` 段时**不显示**"数据目录"输入框，改为一行说明 | 没有 `[datadir]` 时安装器不写数据目录配置（`plan.rs` 有判断）、主程序也不读它，那个输入框改了不生效 —— 是个会误导人的假控件 |
 | `src/util/path.rs`：新增 `expand_path()`，向导里的同名实现改为调用它 | 界面与安装配置各写一份 `%VAR%` 展开时，两边的默认路径会悄悄分叉（就是上一条问题的成因之一） |
 
+### 2.6 目录语义：选父目录 → 程序 `<父>\XunyinIME`、数据 `<父>\Data`（2026-10-15 定稿）
+
+| 改动 | 原因 |
+|---|---|
+| `src/meta.rs`：新增 `install_folder_name()`（取 `[paths].install` 的末段，即 `XunyinIME`） | 追加子目录时用的应该是**产品名**，不是 `app.id`（反向域名不像给人看的文件夹名） |
+| `src/ui/install_wizard.rs`：`finalize_picked_folder()` = `<所选>\XunyinIME`；新增 `sibling_data_dir()` = 安装目录的**父目录**下的 `Data`；选完安装目录后**同步**更新数据目录栏 | 与产品定稿一致：默认 `%ProgramFiles%\XunyinIME` + `%ProgramFiles%\Data`；选 `D:\Program Files` 则 `D:\Program Files\XunyinIME` + `D:\Program Files\Data` |
+| `src/ui/install_wizard.rs`：数据目录栏改为只读（去掉"更改"按钮） | 数据目录由安装位置推导，避免"改了不生效/两边不一致"；要单独指定用 `--datadir` |
+| `src/main.rs`：`--dir` 保持**安装目录本身**（不追加），未给 `--datadir` 时数据目录取 `<安装目录的父目录>\Data` | `--dir` 还被应用内升级使用（必须原地覆盖，追加会装出第二份）；数据目录则与程序并排，和向导的结果一致 |
+| `src/installer/acl.rs` + `steps.rs`：新增 `grant_users_modify_tree()`，写完数据目录配置后给数据目录授 `Users:(OI)(CI)M` | 数据目录默认落在 `%ProgramFiles%\Data`，只有管理员可写；而输入法以普通用户身份运行（写配置/词库/日志）——不授权就是"设置存不上、学过的词不生效" |
+
 ## 3. `vendor/windui`（依赖）
 
 GUI 库 `windui` 0.16.1 在 i686 下编译不过，本地副本已修：

@@ -151,6 +151,20 @@ pub fn default_data_path() -> String {
     expand_id(&manifest().paths.data)
 }
 
+/// 安装到"父目录"下面时用的文件夹名：取 `[paths].install` 的最后一段
+/// （`%ProgramFiles%\XunyinIME` → `XunyinIME`）。
+///
+/// 为什么要它：向导里选的是**父目录**（例如 `D:\Program Files`），程序要装进
+/// `<父>\XunyinIME`。从前这一步追加的是 `app.id`（反向域名 `com.xunyin.ime`），
+/// 用户看到的就是 `<父>\com.xunyin.ime` 这种不像给人看的文件夹名。
+pub fn install_folder_name() -> String {
+    let path = default_install_path();
+    path.rsplit(['\\', '/'])
+        .find(|s| !s.is_empty() && !s.contains('%'))
+        .unwrap_or("XunyinIME")
+        .to_string()
+}
+
 // ── 可覆盖文案（留空即回退到中性默认）────────────────────────────────────────
 
 /// 清单值优先，留空则用 `default`。

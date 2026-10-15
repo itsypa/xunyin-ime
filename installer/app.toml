@@ -49,7 +49,17 @@ accent = "#4285F4"
 [paths]
 install  = '%ProgramFiles%\XunyinIME'
 portable = '%USERPROFILE%\XunyinIME'
-data     = '%APPDATA%\com.xunyin.ime'
+# 数据目录默认是**安装位置旁边的 Data**：默认装到 %ProgramFiles%\XunyinIME 时，
+# 数据就在 %ProgramFiles%\Data；装了别处（如 D:\Program Files）则跟着到
+# D:\Program Files\Data。安装器会把实际路径写进 datadir.conf，主程序启动时读它
+# （见 xunyin-rime/src/config.rs::user_data_dir）。
+data     = '%ProgramFiles%\Data'
+
+# ── 数据目录配置 ──────────────────────────────────────────────────────────
+# 声明这一段，安装器才会把「实际数据目录」写进 %LOCALAPPDATA%\{id}\datadir.conf
+# 并纳入回执（卸载时删除）。主程序读同一个文件 —— 少了它，安装时选的数据位置就是摆设。
+[datadir]
+conf_file = "datadir.conf"
 
 [strings]
 data_dir_hint       = "用户词库、配置与日志路径"

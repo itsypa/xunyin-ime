@@ -33,6 +33,12 @@
 卸载：安装版走「设置 → 应用」，或安装目录里的 `uninstall.exe`（支持 `--silent`、`--keep-user-data`）；
 便携版用 `register-ime.ps1 -Unregister`。
 
+安装位置：向导里选的是**父目录** —— 程序装进 `<所选>\XunyinIME`，数据（词库/配置/日志/皮肤）
+放在并排的 `<所选>\Data`。默认父目录是 `%ProgramFiles%`，即 `%ProgramFiles%\XunyinIME`
+与 `%ProgramFiles%\Data`；选了 `D:\Program Files` 就是这两层落在 D 盘。安装器会把实际数据
+目录写进 `%LOCALAPPDATA%\com.xunyin.ime\datadir.conf`，主程序启动时读它（所以数据位置
+与程序位置一致，不会"程序在 D 盘、数据跑回 C 盘"）。卸载默认保留数据目录，卸载向导里可勾选一并删除。
+
 ## 目录结构
 
 ```

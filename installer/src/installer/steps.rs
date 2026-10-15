@@ -445,12 +445,20 @@ impl Step<InstallCtx<'_>> for WriteDataDirConf {
     /// 升级时不重写文件（保留用户既有配置），但**仍要记回执**：文件归本产品所有，
     /// 卸载时该删。只在首装时记的话，「装过又升过」的用户卸载必留残留，
     /// 而这个文件正是数据目录的解析来源，会污染下次全新安装。
-    fn run(&self, ctx: &mut InstallCtx, _r: &mut dyn Reporter) -> Result<(), String> {
+    fn run(&self, ctx: &mut InstallCtx, r: &mut dyn Reporter) -> Result<(), String> {
         let path = if ctx.is_fresh_install {
             userdata::write_datadir_conf(ctx.config.effective_data_dir(), &self.info.conf_file)?
         } else {
             userdata::datadir_conf_path(&self.info.conf_file)
         };
+
+        // 数据目录要能被普通用户写：输入法是普通用户身份运行的，而默认位置可能是
+        // `%ProgramFiles%\Data` 这种只有管理员可写的地方（本地修补，见 acl.rs）。
+        let data_dir = ctx.config.effective_data_dir().to_path_buf();
+        let _ = std::fs::create_dir_all(&data_dir);
+        if let Err(e) = acl::grant_users_modify_tree(&data_dir) {
+            r.warn(&format!("数据目录授权失败（普通用户可能写不进去）: {e}"));
+        }
 
         ctx.receipt.push(ReceiptEntry::DataDirConfWritten {
             path: path.to_string_lossy().to_string(),

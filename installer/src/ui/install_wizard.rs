@@ -344,11 +344,11 @@ pub fn run_install_wizard(opts: WizardOptions) {
                                 folder_pick_dialog("选择安装目录", &install_dir.get()),
                                 move |path| {
                                     if let Some(path) = path {
-                                        install_dir.set(
-                                            finalize_picked_folder(path)
-                                                .to_string_lossy()
-                                                .to_string(),
-                                        );
+                                        // 选的目录当父目录：程序进 <父>\XunyinIME，
+                                        // 数据跟着放到 <父>\Data（与默认布局一致）
+                                        let target = finalize_picked_folder(path);
+                                        data_dir.set(sibling_data_dir(&target).to_string_lossy().to_string());
+                                        install_dir.set(target.to_string_lossy().to_string());
                                     }
                                 },
                             );
@@ -399,14 +399,16 @@ pub fn run_install_wizard(opts: WizardOptions) {
                         .height(34)
                         // 0.12 的 `enabled` 直接收 bool，不必再为一个常量分配信号槽
                         // （信号槽当前不回收，旧写法每次构建都占一个永不释放的位置）。
-                        .enabled(is_fresh_install)
+                        // 本地修补：数据目录固定为"安装位置旁的 Data"，由安装目录推导，
+                        // 所以这一栏只读展示（不再给"更改"按钮 —— 从前那个按钮改了不生效）。
+                        .enabled(false)
                         .visible_when(move || install_mode.get() == 0 && has_datadir),
                 )
                 .child(
                     Element::button("更改")
                         .height(34)
                         .enabled(is_fresh_install)
-                        .visible_when(move || install_mode.get() == 0 && has_datadir)
+                        .visible_when(|| false)
                         .on_click(move |ctx: &mut EventCtx| {
                             ctx.request_pick_folder(
                                 folder_pick_dialog("选择数据目录", &data_dir.get()),
@@ -796,12 +798,22 @@ fn folder_pick_dialog(title: &str, current_path: &str) -> PickDialog {
     dialog
 }
 
-/// 用户选完目录后的收尾。
+/// 用户选完**安装**目录后的收尾：把所选目录当**父目录**，装进它的 `XunyinIME` 子目录。
 ///
-/// 本地修补：**不再自动追加 `app.id` 子目录**。上游的用意是"选父目录 → 自动建
-/// 应用文件夹"，但装上之后用户看到的是 `<我选的目录>\com.xunyin.ime\` 这一层莫名其妙的
-/// 文件夹名（app.id 是反向域名，不是给人看的）。这里让"我选的目录就是安装目录"，
-/// 默认值仍来自清单 `[paths].install`（`%ProgramFiles%\XunyinIME`）。
+/// 本地修补：上游这一步追加的是 `app.id`（`com.xunyin.ime`），装上之后用户看到的是
+/// `<我选的目录>\com.xunyin.ime\` 这种反向域名文件夹 —— 名字不像给人看的。
+/// 改成追加清单里的产品文件夹名（`[paths].install` 的末段，即 `XunyinIME`）。
 fn finalize_picked_folder(path: PathBuf) -> PathBuf {
-    path
+    path.join(crate::meta::install_folder_name())
+}
+
+/// 安装目录对应的数据目录：**与程序目录并排的 `Data`**。
+///
+/// 与用户约定的一致：默认 `%ProgramFiles%\XunyinIME` + `%ProgramFiles%\Data`；
+/// 选了 `D:\Program Files` 则 `D:\Program Files\XunyinIME` + `D:\Program Files\Data`。
+fn sibling_data_dir(install_dir: &std::path::Path) -> PathBuf {
+    install_dir
+        .parent()
+        .map(|p| p.join("Data"))
+        .unwrap_or_else(|| PathBuf::from("Data"))
 }

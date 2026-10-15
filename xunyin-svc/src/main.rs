@@ -173,11 +173,9 @@ fn guard<R>(f: impl FnOnce() -> R) -> Result<R, String> {
 fn log(msg: impl AsRef<str>) {
     let msg = msg.as_ref();
     use std::io::Write as _;
-    let dir = std::env::var_os("APPDATA")
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(std::env::temp_dir)
-        .join("com.xunyin.ime")
-        .join("logs");
+    // 统一走共享 crate 的数据目录：安装时若把数据目录选在别处（安装器写 datadir.conf），
+    // 服务日志要跟着走，否则"日志和数据在一起"这件事就不成立了。
+    let dir = xunyin_rime::user_data_dir().join("logs");
     let _ = std::fs::create_dir_all(&dir);
     if let Ok(mut f) = std::fs::OpenOptions::new()
         .create(true)
