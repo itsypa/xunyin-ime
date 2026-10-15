@@ -210,6 +210,9 @@ pub fn run_install_wizard(opts: WizardOptions) {
 
     // ---- 状态（Signal<T> 是 Copy 句柄，move 闭包自动复制，无需 clone 样板）----
     let is_fresh_install = crate::installer::registry::detect_installed_version().is_none();
+    // 清单声明了 `[datadir]` 才谈得上"自定义数据目录"：没有它，安装器不写数据目录配置、
+    // 主程序也不读，界面上那两行控件就是假的（改了不生效）—— 所以这种情况下不显示。
+    let has_datadir = crate::meta::manifest().datadir.is_some();
     // quiet 模式同样从配置页开始（只是整页置灰不可改），停留片刻再自动进入安装。
     // 直接跳到进度页会让用户来不及看清"在装什么、装到哪"，观感上像是窗口闪了一下。
     let current_page = signal(PAGE_CONFIG);
@@ -397,13 +400,13 @@ pub fn run_install_wizard(opts: WizardOptions) {
                         // 0.12 的 `enabled` 直接收 bool，不必再为一个常量分配信号槽
                         // （信号槽当前不回收，旧写法每次构建都占一个永不释放的位置）。
                         .enabled(is_fresh_install)
-                        .visible_when(move || install_mode.get() == 0),
+                        .visible_when(move || install_mode.get() == 0 && has_datadir),
                 )
                 .child(
                     Element::button("更改")
                         .height(34)
                         .enabled(is_fresh_install)
-                        .visible_when(move || install_mode.get() == 0)
+                        .visible_when(move || install_mode.get() == 0 && has_datadir)
                         .on_click(move |ctx: &mut EventCtx| {
                             ctx.request_pick_folder(
                                 folder_pick_dialog("选择数据目录", &data_dir.get()),
@@ -418,6 +421,19 @@ pub fn run_install_wizard(opts: WizardOptions) {
                                 },
                             );
                         }),
+                )
+                // 清单没有 [datadir] 段 = 安装器不会写数据目录配置、主程序也不读它，
+                // 此时那两行控件是**假的**（改了不生效）。本地修补：这种情况直接说明
+                // 数据实际放在哪儿，不给会误导的输入框。
+                .child(
+                    Element::label(format!(
+                        "数据固定在 %APPDATA%\\{}（应用数据目录，本产品不提供自定义）",
+                        crate::meta::app_id()
+                    ))
+                    .weight(1.0)
+                    .font_size(12.0)
+                    .fg(Color::hex(theme::text_muted()))
+                    .visible_when(move || install_mode.get() == 0 && !has_datadir),
                 )
                 .child(
                     Element::label("便捷模式不配置数据目录")
@@ -757,21 +773,9 @@ pub fn default_data_dir() -> String {
 }
 
 /// 展开路径中的 %VAR% 环境变量占位符。
+/// 实现搬到了 [`crate::util::path::expand_path`]，与安装配置共用一份。
 fn expand_env_path(s: &str) -> std::path::PathBuf {
-    let mut result = s.to_string();
-    for (var, fallback) in &[
-        ("ProgramFiles", r"C:\Program Files"),
-        ("APPDATA", r"C:\Users\Default\AppData\Roaming"),
-        ("LOCALAPPDATA", r"C:\Users\Default\AppData\Local"),
-        ("USERPROFILE", r"C:\Users\Default"),
-    ] {
-        let token = format!("%{}%", var);
-        if result.contains(&token) {
-            let val = std::env::var(var).unwrap_or_else(|_| fallback.to_string());
-            result = result.replace(&token, &val);
-        }
-    }
-    std::path::PathBuf::from(result)
+    crate::util::path::expand_path(s)
 }
 
 /// 构建选目录用的 `PickDialog`：起始目录取当前配置路径（`%VAR%` 展开后）最近的
@@ -792,15 +796,12 @@ fn folder_pick_dialog(title: &str, current_path: &str) -> PickDialog {
     dialog
 }
 
-/// 用户选完目录后的收尾：若选的目录名不是 APP_ID，自动追加子目录。
+/// 用户选完目录后的收尾。
+///
+/// 本地修补：**不再自动追加 `app.id` 子目录**。上游的用意是"选父目录 → 自动建
+/// 应用文件夹"，但装上之后用户看到的是 `<我选的目录>\com.xunyin.ime\` 这一层莫名其妙的
+/// 文件夹名（app.id 是反向域名，不是给人看的）。这里让"我选的目录就是安装目录"，
+/// 默认值仍来自清单 `[paths].install`（`%ProgramFiles%\XunyinIME`）。
 fn finalize_picked_folder(path: PathBuf) -> PathBuf {
-    if path
-        .file_name()
-        .map(|n| n != crate::meta::app_id())
-        .unwrap_or(true)
-    {
-        path.join(crate::meta::app_id())
-    } else {
-        path
-    }
+    path
 }

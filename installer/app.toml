@@ -106,5 +106,9 @@ compression = "lzma"
 source_dir  = "../build/installer-payload"
 output_name = "XunyinIME-Setup"
 output_dir  = "../build/installer-dist"
-logo        = "../xunyin-ime/icons/128x128.png"
-icon        = "../xunyin-ime/icons/icon.ico"
+# 向导里显示的图与安装包 EXE 的图标，都指向**当前**的应用图标。
+# 从前这里指着 Tauri 时代的 icon.ico / 128x128.png（2026-07-31 的老图），
+# 换图标时没人想起它们 —— 安装界面就一直顶着旧 logo。
+# 这两个文件由 tools/gen-app-icon.ps1 生成，与应用/语言栏图标同源。
+logo        = "../xunyin-ime/icons/logo.png"
+icon        = "../xunyin-ime/icons/xunyin.ico"

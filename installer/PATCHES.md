@@ -17,6 +17,15 @@
 |---|---|
 | 新增 `is_pe32()`；对 32 位 stub/卸载器**跳过 PE 版本信息与图标注入** | 实测 editpe 在 PE32 下会把 `OptionalHeader.SizeOfImage` 写坏（归零后只加新节大小），产物被 Windows 判为「不是有效的 Win32 应用程序」。跳过注入后归档/清单追加照常，功能不受影响，仅少自定义图标与版本号 |
 
+## 2.5 安装目录 / 数据目录（2026-10-15 一轮实机安装发现的问题）
+
+| 改动 | 原因 |
+|---|---|
+| `src/installer/config.rs`：`InstallConfig::default()` 的默认路径改为展开清单 `[paths]`（install/portable/data） | 上游写死 `%ProgramFiles%\{app.id}` / `%APPDATA%\{app.id}`，而向导界面上显示的却是 `[paths]` 里的值 —— 用户看到"装到 `C:\Program Files\XunyinIME`"，实际落在 `...\com.xunyin.ime`（实机安装时确认过） |
+| `src/ui/install_wizard.rs`：`finalize_picked_folder()` 不再自动追加 `app.id` 子目录 | 用户选了目录之后又被套一层 `com.xunyin.ime`（反向域名当文件夹名，不像给人看的）：选了 `D:\Apps` 结果装到 `D:\Apps\com.xunyin.ime`。现在"选的目录就是安装目录" |
+| `src/ui/install_wizard.rs`：清单没有 `[datadir]` 段时**不显示**"数据目录"输入框，改为一行说明 | 没有 `[datadir]` 时安装器不写数据目录配置（`plan.rs` 有判断）、主程序也不读它，那个输入框改了不生效 —— 是个会误导人的假控件 |
+| `src/util/path.rs`：新增 `expand_path()`，向导里的同名实现改为调用它 | 界面与安装配置各写一份 `%VAR%` 展开时，两边的默认路径会悄悄分叉（就是上一条问题的成因之一） |
+
 ## 3. `vendor/windui`（依赖）
 
 GUI 库 `windui` 0.16.1 在 i686 下编译不过，本地副本已修：

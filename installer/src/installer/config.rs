@@ -26,24 +26,17 @@ pub struct InstallConfig {
 
 impl Default for InstallConfig {
     fn default() -> Self {
-        let program_files =
-            std::env::var("ProgramFiles").unwrap_or_else(|_| r"C:\Program Files".to_string());
-        let app_data = std::env::var("APPDATA").unwrap_or_else(|_| {
-            let mut p = PathBuf::from(std::env::var("USERPROFILE").unwrap_or_default());
-            p.push("AppData\\Roaming");
-            p.to_string_lossy().to_string()
-        });
-        let _local_app_data = std::env::var("LOCALAPPDATA").unwrap_or_else(|_| {
-            let mut p = PathBuf::from(std::env::var("USERPROFILE").unwrap_or_default());
-            p.push("AppData\\Local");
-            p.to_string_lossy().to_string()
-        });
-
+        // 本地修补：默认路径一律取自清单 `[paths]`。
+        //
+        // 上游这里写死 `%ProgramFiles%\{app.id}` / `%APPDATA%\{app.id}`，而向导界面上显示的
+        // 却是 `[paths].install` / `[paths].data` —— 两者不一致时，用户看到"装到
+        // C:\Program Files\XunyinIME"，实际却落在 `...\com.xunyin.ime`（实测踩过）。
+        // 以清单为唯一来源，界面显示的就是实际生效的。
         Self {
             app_name: meta::app_display_name().to_string(),
             app_version: meta::app_version().to_string(),
-            install_dir: PathBuf::from(program_files).join(meta::app_id()),
-            data_dir: PathBuf::from(app_data).join(meta::app_id()),
+            install_dir: crate::util::path::expand_path(&meta::default_install_path()),
+            data_dir: crate::util::path::expand_path(&meta::default_data_path()),
             use_custom_data_dir: false,
             custom_data_dir: None,
             start_menu_folder: meta::start_menu_folder().to_string(),

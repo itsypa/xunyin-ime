@@ -1,6 +1,8 @@
 ﻿param(
     # 应用 / 语言栏图标：蓝底白字「迅」，多尺寸 ICO（语言栏、任务栏、安装器共用）。
     [string]$OutFile = (Join-Path (Split-Path -Parent $PSScriptRoot) "xunyin-ime\icons\xunyin.ico"),
+    # 安装向导里显示的那张 logo（PNG）。同一份底图渲染，避免"图标换了、向导还顶着旧图"。
+    [string]$LogoOut = (Join-Path (Split-Path -Parent $PSScriptRoot) "xunyin-ime\icons\logo.png"),
     [int[]]$Sizes = @(16, 24, 32, 48, 64, 128, 256)
 )
 
@@ -116,3 +118,30 @@ $w.Dispose(); $ms.Dispose()
 
 $len = (Get-Item -LiteralPath $OutFile).Length
 Write-Host "已生成 $OutFile（$($Sizes -join '/')，共 $len 字节）"
+
+# ── 顺带出一张 PNG，给安装向导当 logo ────────────────────────────────────────
+# 为什么要脚本一起生成：从前向导的 logo 是另外手放的图片（还是 Tauri 时代的旧图），
+# 换图标时没人想起它 —— 安装界面就一直顶着旧 logo。同一个来源就不会再对不上。
+if ($LogoOut) {
+    $bmp = New-Object System.Drawing.Bitmap(256, 256, [System.Drawing.Imaging.PixelFormat]::Format32bppArgb)
+    $g = [System.Drawing.Graphics]::FromImage($bmp)
+    $g.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::AntiAlias
+    $g.TextRenderingHint = [System.Drawing.Text.TextRenderingHint]::AntiAliasGridFit
+    $g.Clear([System.Drawing.Color]::Transparent)
+    $rect = New-Object System.Drawing.RectangleF(0, 0, 256, 256)
+    $grad = New-Object System.Drawing.Drawing2D.LinearGradientBrush(
+        $rect, $BlueTop, $BlueBottom, [System.Drawing.Drawing2D.LinearGradientMode]::Vertical)
+    $path = New-RoundRect 1 1 254 254 56
+    $g.FillPath($grad, $path)
+    $font = New-Object System.Drawing.Font("Microsoft YaHei UI", 150, [System.Drawing.FontStyle]::Bold, [System.Drawing.GraphicsUnit]::Pixel)
+    $brush = New-Object System.Drawing.SolidBrush($White)
+    $fmt = New-Object System.Drawing.StringFormat
+    $fmt.Alignment = [System.Drawing.StringAlignment]::Center
+    $fmt.LineAlignment = [System.Drawing.StringAlignment]::Center
+    $textRect = New-Object System.Drawing.RectangleF(0, 6, 256, 256)
+    $g.DrawString("迅", $font, $brush, $textRect, $fmt)
+    New-Item -ItemType Directory -Force -Path (Split-Path -Parent $LogoOut) | Out-Null
+    $bmp.Save($LogoOut, [System.Drawing.Imaging.ImageFormat]::Png)
+    $g.Dispose(); $bmp.Dispose(); $grad.Dispose(); $path.Dispose(); $font.Dispose(); $brush.Dispose()
+    Write-Host "已生成 $LogoOut（256×256 PNG，供安装向导显示）"
+}
