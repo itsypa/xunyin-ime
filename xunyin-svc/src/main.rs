@@ -402,6 +402,30 @@ fn main() {
     crashlog::install();
     let pipe = pipe_name();
     let name = wide(&pipe);
+    // ── 单实例保护 ────────────────────────────────────────────────────
+    // 这条管道上已经有服务在监听就直接退出。为什么必须挡：
+    //   * 两个服务进程会**各起一份 librime 引擎**，同时抢同一份用户词库（leveldb 锁），
+    //     表现是"刚学会的词时灵时不灵"；
+    //   * 热更新换代（DLL 杀旧实例 + 拉新实例）在多个宿主进程同时触发时会短暂竞态，
+    //     实测真的并起过两个。
+    // 用 CreateFile 探测即可：能打开就说明有实例在监听，不用走协议。
+    if let Ok(h) = unsafe {
+        windows::Win32::Storage::FileSystem::CreateFileW(
+            windows::core::PCWSTR(name.as_ptr()),
+            windows::Win32::Storage::FileSystem::FILE_GENERIC_READ.0
+                | windows::Win32::Storage::FileSystem::FILE_GENERIC_WRITE.0,
+            windows::Win32::Storage::FileSystem::FILE_SHARE_READ
+                | windows::Win32::Storage::FileSystem::FILE_SHARE_WRITE,
+            None,
+            windows::Win32::Storage::FileSystem::OPEN_EXISTING,
+            windows::Win32::Storage::FileSystem::FILE_ATTRIBUTE_NORMAL,
+            None,
+        )
+    } {
+        let _ = unsafe { CloseHandle(h) };
+        log("已有服务在运行，本进程退出（避免两个引擎抢同一份用户词库）");
+        return;
+    }
     let mode = NAMED_PIPE_MODE(PIPE_TYPE_BYTE.0 | PIPE_READMODE_BYTE.0 | PIPE_WAIT.0);
     let open = FILE_FLAGS_AND_ATTRIBUTES(PIPE_ACCESS_DUPLEX.0);
     touch();
