@@ -150,9 +150,25 @@ fn request(msg: serde_json::Value) -> Option<serde_json::Value> {
     }
 }
 
-/// 把服务的回复转成 [Reply]；服务侧逻辑出错（error 有值）时返回 None 让调用方退回本进程逻辑。
+/// 把服务的一条消息拆出里面的 [Reply]。
+///
+/// **服务把结果包了一层**：`{"t":"reply","reply":{...真正的内容...}}`。
+/// 这里必须先取 `reply` 再反序列化 —— 直接把整条消息喂给 `Reply`（它带
+/// `#[serde(default)]`）会**静默**得到一份全默认的 Reply：consume=false、组合串为空。
+/// 后果不是"报错"，而是每颗键都被当成"服务说不用管"而放行给应用（打不出中文），
+/// 每次状态栏命令都石沉大海（中英/全半角切不动）。真实踩过这个坑。
+///
+/// 拿不到一条像样的 Reply 时返回 None，让调用方退回本进程逻辑。
 fn parse_reply(v: serde_json::Value) -> Option<Reply> {
-    match serde_json::from_value::<Reply>(v) {
+    // 兼容"没包一层"的旧格式：有 reply 就取出来用，没有就把整条当回复。
+    let inner = v.get("reply").cloned().unwrap_or(v);
+    // 必须确认它真的像一条 Reply：不能靠 serde 的默认值把"什么都没有"当成
+    // "服务已经处理完了"。consume 是每条 Reply 都有的字段，拿它当哨兵。
+    if inner.get("consume").is_none() {
+        crate::tsf_log!("svc: 回复里没有 Reply（{inner}）→ 退回本进程逻辑");
+        return None;
+    }
+    match serde_json::from_value::<Reply>(inner) {
         Ok(r) => {
             if let Some(e) = r.error.as_deref() {
                 crate::tsf_log!("svc: 服务侧逻辑出错（{e}）→ 退回本进程逻辑");
@@ -604,14 +620,52 @@ mod tests {
         assert!(!proto_compatible(0));
     }
 
-    /// 端到端：真的连一把服务 —— 握手 → 预热 → 按键往返。
+    /// 服务把结果包在 `{"t":"reply","reply":{...}}` 里 —— 解析必须取出内层。
     ///
-    /// 这是「切到输入法之后一个字都打不出来」那次的回归测试：当时请求通道在 worker
-    /// 里根本没建起来，`request()` 永远返回 None，上游就把每颗键都丢了。
-    /// 现在 `ready()` 只有在**预热往返成功**之后才为真，所以这两条断言正好卡住那条路径。
+    /// 这条测试守的是"切到输入法后打不出中文"那类故障：把整条消息直接喂给带
+    /// `#[serde(default)]` 的 `Reply` 不会报错，只会得到一份"consume=false、组合串为空"
+    /// 的默认值，于是每颗键都被放行给应用、状态栏命令全部无效。
+    #[test]
+    fn parse_reply_unwraps_the_reply_field() {
+        let msg = serde_json::json!({
+            "t": "reply",
+            "reply": {
+                "consume": true, "preedit": "ni", "caret": 2,
+                "candidates": ["你", "尼"], "selected": 0, "page_size": 9,
+                "engine_ok": true
+            }
+        });
+        let r = parse_reply(msg).expect("应当解析出服务回复");
+        assert!(r.consume, "consume 必须被解析出来（否则键会被放行给应用）");
+        assert_eq!(r.preedit, "ni");
+        assert_eq!(r.caret, 2);
+        assert_eq!(r.candidates, vec!["你".to_string(), "尼".to_string()]);
+        assert!(r.engine_ok);
+
+        // 没包一层的旧格式也要认
+        let bare = serde_json::json!({ "consume": true, "preedit": "n" });
+        assert!(parse_reply(bare).expect("旧格式也要能用").consume);
+
+        // 服务侧报错 → 退回本进程逻辑
+        let err = serde_json::json!({ "t": "reply", "reply": { "consume": false, "error": "boom" } });
+        assert!(parse_reply(err).is_none(), "有 error 就退回本进程");
+
+        // 完全不认识的消息（例如服务开了 XUNYIN_SVC_INPUT=0 时的回声）
+        // **不能**被当成"服务已处理" —— 那又会退回"吞键/放行"的老毛病
+        assert!(
+            parse_reply(serde_json::json!({ "t": "echo", "from": "key" })).is_none(),
+            "不认识的消息必须返回 None，让调用方退回本进程逻辑"
+        );
+    }
+
+    /// 端到端：真的连一把服务 —— 握手 → 预热 → 按键 → **内容正确**。
     ///
-    /// 用隔离的管道名（XUNYIN_SVC_PIPE），不打扰用户正在用的那个服务；
-    /// 并用 XUNYIN_SVC_INPUT=0 让服务不碰 librime（测试不写用户的词库/索引）。
+    /// 这条测试守两件事（都是真实故障）：
+    ///   1) 请求通道必须建得起来、按键必须能往返（曾经 worker 根本没建请求队列）；
+    ///   2) 回包内容必须真的被解析出来 —— 只断言 `is_some()` 是不够的：
+    ///      回复解成全默认值时同样是 `Some`，而结果是"打不出中文"。
+    ///
+    /// 用隔离的管道名（XUNYIN_SVC_PIPE），不打扰用户正在用的那个服务实例。
     /// 需要先构建服务：`cargo build --release --manifest-path ../xunyin-svc/Cargo.toml`。
     ///
     /// 手动跑：`cargo test -- --ignored --nocapture`
@@ -626,28 +680,30 @@ mod tests {
             "XUNYIN_SVC_PIPE",
             format!(r"\\.\pipe\xunyin-ime-svc-test-{}", std::process::id()),
         );
-        std::env::set_var("XUNYIN_SVC_INPUT", "0");
+        // 这次要的是**真实的输入逻辑**（服务里的 librime），不是回声
+        std::env::remove_var("XUNYIN_SVC_INPUT");
         poll();
         // 连上 + 预热成功之前 ready() 一直是 false
-        let deadline = std::time::Instant::now() + Duration::from_secs(60);
+        let deadline = std::time::Instant::now() + Duration::from_secs(90);
         while !ready() && std::time::Instant::now() < deadline {
             std::thread::sleep(Duration::from_millis(100));
         }
-        assert!(ready(), "60s 没能连上服务并完成预热：{}", status_line());
-        // 按键必须能往返。服务开了 XUNYIN_SVC_INPUT=0，回复内容不重要（consume=false），
-        // 关键**必须有回复** —— 没有回复就是上游丢键那条故障。
-        let r = key(0x4E, 0, false); // N
-        assert!(
-            r.is_some(),
-            "按键请求没有回复 → 上游会丢键（这正是本次故障）"
-        );
-        assert!(key(0x49, 0, false).is_some(), "第二颗键也要能往返");
-        // 连续往返：曾经有过"第一条通、后面全超时"的情况
-        for i in 0..20 {
-            assert!(
-                key(0x41u32 + (i % 26) as u32, 0, false).is_some(),
-                "第 {i} 次往返失败"
-            );
-        }
+        assert!(ready(), "90s 没能连上服务并完成预热：{}", status_line());
+
+        // n → 组合串 + 候选都必须解析出来
+        let r = key(0x4E, 0, false).expect("按键没有回复 → 上游会丢键");
+        assert!(r.consume, "N 应当被服务消费");
+        assert!(r.engine_ok, "引擎应当就绪");
+        assert_eq!(r.preedit, "n", "组合串没解析出来（回包被当成默认值了）");
+        assert!(!r.candidates.is_empty(), "N 应当有候选");
+        assert!(r.caret > 0, "组合内光标位置要能用");
+
+        // 再加一颗键，确认不是只能通一次
+        let r2 = key(0x49, 0, false).expect("第二颗键没有回复");
+        assert!(r2.preedit.starts_with("ni"), "组合串应当累加：{:?}", r2.preedit);
+        assert!(!r2.candidates.is_empty());
+
+        // 收尾：把组合取消掉，别把状态留给别的客户端
+        let _ = key(0x1B, 0, false);
     }
 }
