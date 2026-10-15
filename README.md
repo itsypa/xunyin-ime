@@ -24,7 +24,9 @@
   自定义短语导入导出、**用户词库备份/恢复**；设置自动保存，约 1 秒后对新会话生效。
 - **热重载**（对标小狼毫）：装好新方案 / 换完词库后点「重新部署」，正在运行的应用
   （记事本、浏览器、ChatGPT…）会自动重建引擎并用上新方案，**不用重启任何应用**。
-- **x86 / x64 双架构**：32 位与 64 位应用均可用。
+- **32 位程序也能用**：安装包内含 x86 的 TSF DLL + 引擎 + 服务，64 位系统里的 32 位程序
+  （老工具、部分游戏、国产小软件）照样能打中文。注意**只支持 64 位 Windows** ——
+  32 位系统装不了（设置中心与安装器都是 x64 程序）。
 
 ## 目录结构
 
@@ -212,13 +214,13 @@ blit 按常量步长取像素，长度不足会读越界，所以宁可忽略也
 1. 编译 `xunyin-tsf`（x64 + x86 release）；
 2. 编译设置中心（Tauri release + 前端 dist）；
 3. 用 [wind-installer](https://github.com/huanfeng/wind-installer)（清单驱动）生成
-   **安装器 + 卸载器**：`XunyinIME-Setup-<版本>-x64.exe`（64 位 Windows）与
-   `XunyinIME-Setup-<版本>-x86.exe`（32 位 Windows）；
+   **安装器 + 卸载器**：`XunyinIME-Setup-<版本>-x64.exe`（只发 x64：本项目不支持
+   32 位 Windows；32 位**程序**的支持在安装包内的 `tsf-x86`，与安装包架构无关）；
 4. 上传产物并在 Release 中发布。
 
 构建成功后还会自动发布 **GitHub Release**：每次构建注入唯一版本号
 `0.1.<构建序号>`（合法 semver），Release 名称与安装包文件名均为英文
-（`XunyinIME v0.1.<序号>` / `XunyinIME-Setup-0.1.<序号>-x64.exe` / `-x86.exe`），避免中文
+（`XunyinIME v0.1.<序号>` / `XunyinIME-Setup-0.1.<序号>-x64.exe`），避免中文
 编码显示问题；应用本身安装后仍显示中文名「迅音输入法」。以后想手动控制版本时，
 可以改为按 `v*` 标签触发。
 
@@ -267,8 +269,8 @@ CLSID/GUID、快捷方式、启动行为、文案等）。安装器支持 `--sil
 
 | 方式 | 适用 | 说明 |
 |---|---|---|
-| `XunyinIME-Setup-<版本>-x64.exe` | 64 位 Windows | 安装器：注册双架构 TSF、建快捷方式、写卸载项，装完自动打开设置中心 |
-| `XunyinIME-<版本>-portable.zip` | 任意 Windows（含 32 位） | 解压后以管理员运行其中的 `register-ime.ps1` 注册输入法 |
+| `XunyinIME-Setup-<版本>-x64.exe` | 64 位 Windows | 安装器：注册 x64 与 x86 两套 TSF、建快捷方式、写卸载项，装完自动打开设置中心 |
+| `XunyinIME-<版本>-portable.zip` | 64 位 Windows | 解压后以管理员运行其中的 `register-ime.ps1` 注册输入法 |
 
 卸载：安装版走「设置 → 应用 → 迅音输入法」，也可直接运行安装目录下的 `uninstall.exe`
 （支持 `--silent`、`--keep-user-data`）；便携版用 `register-ime.ps1 -Unregister`。

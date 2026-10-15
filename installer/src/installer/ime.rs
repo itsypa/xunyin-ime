@@ -59,11 +59,10 @@ pub fn register_com(install_dir: &Path) -> ComRegistration {
         }
     }
 
-    // 32 位安装器跑在 32 位 Windows 上时没有 x64 视图可言（x64 DLL 无法加载）：
-    // 那个系统里唯一的视图就是 x86，跳过 x64 分支以免留下必然失败的告警。
-    let skip_x64 = cfg!(target_pointer_width = "32") && !is_64bit_windows();
     let x64 = install_dir.join(&ime.dll_x64);
-    if !skip_x64 && x64.exists() {
+    // 安装器只发 x64 且在 32 位系统上直接退出（见 main.rs），所以这里不必再判"32 位系统
+    // 上跳过 x64 视图"——那条分支已不可达。
+    if x64.exists() {
         let target = system_deploy_path(ime, &ime.dll_x64, false).unwrap_or_else(|| x64.clone());
         match deploy_and_register(&x64, &target, false) {
             Ok(()) => out.registered.push((target, false)),
@@ -83,15 +82,6 @@ pub fn register_com(install_dir: &Path) -> ComRegistration {
     }
 
     out
-}
-
-/// 是否为 64 位 Windows。
-///
-/// 判据取 `%WINDIR%\Sysnative` 或 `SysWOW64` 是否存在：两者都只在 64 位系统上出现
-/// （Sysnative 是 32 位进程访问真 System32 的别名，64 位进程看不到）。
-fn is_64bit_windows() -> bool {
-    let windir = std::env::var("WINDIR").unwrap_or_else(|_| r"C:\Windows".to_string());
-    Path::new(&windir).join("Sysnative").exists() || Path::new(&windir).join("SysWOW64").exists()
 }
 
 /// 复制到系统目录 → 授予 AppContainer 读权限 → 对系统副本注册。

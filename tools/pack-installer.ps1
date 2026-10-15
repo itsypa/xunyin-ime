@@ -1,7 +1,5 @@
 ﻿param(
     [string]$Version = "",
-    # x64 = 64 位 Windows；x86 = 32 位 Windows（也可在 64 位系统上跑，注册走 Sysnative）。
-    # 两者都用同一份 payload，只有安装器 stub 的架构不同。
     # 只出 x64 安装包：本项目不支持 32 位 Windows（安装器 main.rs 里硬性要求 64 位系统）。
     # 32 位**程序**的支持不受影响 —— 那是 payload 里的 tsf-x86 负责的。
     [ValidateSet("x64")]
