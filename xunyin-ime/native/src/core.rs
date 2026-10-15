@@ -430,6 +430,11 @@ impl Core {
             return Err("这个文件夹里没有 .scel 或 .txt 词库文件".into());
         }
         let total_files = files.len();
+        // 先把所有文件读完再**一次性写入**：
+        //   * 每个文件各写一次的话，几万行的表要被重复读写 N 遍；
+        //   * append_to 结尾会触发一次后台全量部署，N 个文件就是 N 次重建索引。
+        let mut all_lines: Vec<String> = Vec::new();
+        let mut skipped_total = 0usize;
         let mut ok_files = 0usize;
         let mut bad: Vec<String> = Vec::new();
         for f in &files {
@@ -440,17 +445,20 @@ impl Core {
                     continue;
                 }
             };
-            let kind = if is_scel_path(f) { "（搜狗词库）" } else { "" };
-            if self.append_to("import_dict.txt", lines, skipped, kind).is_ok() {
-                ok_files += 1;
-            }
+            skipped_total += skipped;
+            all_lines.extend(lines);
+            ok_files += 1;
         }
-        let mut stats = self.dict_stats();
+        if all_lines.is_empty() {
+            return Err(format!("这 {total_files} 个文件里没有可导入的词条"));
+        }
+        let mut stats = self.append_to("import_dict.txt", all_lines, skipped_total, "")?;
         stats.last_import = if bad.is_empty() {
             format!("已导入 {ok_files} 个文件，共 {} 条", stats.imported_count)
         } else {
             format!(
-                "已导入 {ok_files}/{total_files} 个文件，{} 个失败：{}",
+                "已导入 {ok_files}/{total_files} 个文件（共 {} 条），{} 个失败：{}",
+                stats.imported_count,
                 bad.len(),
                 bad.join("；")
             )
@@ -482,8 +490,10 @@ impl Core {
             out.push('\n');
         }
         let mut added = 0usize;
+        // 同一批里也要去重：跨文件重复（比如两个词库都收了同一个品牌词）不该写两遍
+        let mut batch_seen: std::collections::HashSet<String> = std::collections::HashSet::new();
         for line in lines {
-            if !existing.contains(&line) {
+            if !existing.contains(&line) && batch_seen.insert(line.clone()) {
                 out.push_str(&line);
                 out.push('\n');
                 added += 1;

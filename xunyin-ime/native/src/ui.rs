@@ -347,8 +347,6 @@ enum Id {
     SkinItem(usize),
     CellDict(usize),
     CellApply,
-    DictDownload,
-    DictApply,
     DictRollback,
     DictUpdateOne,
     DictOpenDir,
@@ -465,12 +463,39 @@ struct App {
 
 fn main_of(hwnd: HWND) -> Option<&'static mut App> {
     unsafe {
-        let p = GetWindowLongPtrW(hwnd, GWLP_USERDATA);
-        if p == 0 {
+        let p = app_ptr(hwnd);
+        if p.is_null() {
             None
         } else {
-            Some(&mut *(p as *mut App))
+            Some(&mut *p)
         }
+    }
+}
+
+/// 窗口用户数据里存/取 App 指针。
+///
+/// 必须按指针宽度分情况：`SetWindowLongPtrW` 在 64 位下第三参是 `isize`，
+/// 而在 **32 位下它就是 `SetWindowLongW`，第三参是 `i32`**。直接写
+/// `ptr as isize` 的结果是 x86 目标**编译不过** —— 安装包里那份 32 位设置中心
+/// 就是这么一直缺着的（它压根没被成功构建出来过）。
+unsafe fn set_app_ptr(hwnd: HWND, app: *mut App) {
+    #[cfg(target_pointer_width = "64")]
+    let value = app as isize;
+    #[cfg(target_pointer_width = "32")]
+    let value = app as i32;
+    SetWindowLongPtrW(hwnd, GWLP_USERDATA, value);
+}
+
+unsafe fn app_ptr(hwnd: HWND) -> *mut App {
+    let raw = GetWindowLongPtrW(hwnd, GWLP_USERDATA);
+    // 32 位下拿到的是 i32：先当无符号再转指针，避免负值符号扩展
+    #[cfg(target_pointer_width = "64")]
+    {
+        raw as *mut App
+    }
+    #[cfg(target_pointer_width = "32")]
+    {
+        (raw as u32 as usize) as *mut App
     }
 }
 
@@ -2334,7 +2359,7 @@ extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM
             WM_CREATE => {
                 let app = App::create(hwnd);
                 let ptr = Box::into_raw(app);
-                SetWindowLongPtrW(hwnd, GWLP_USERDATA, ptr as isize);
+                set_app_ptr(hwnd, ptr);
                 let _ = PostMessageW(Some(hwnd), MSG_DEFERRED, WPARAM(0), LPARAM(0));
                 let _ = SetTimer(Some(hwnd), TIMER_ENGINE, 1200, None);
                 LRESULT(0)
@@ -2833,16 +2858,6 @@ fn paint(app: &mut App) {
                     "点一下：导出到皮肤目录并定位文件；改完点「重载配置」即时生效".to_string(),
                 )
             }),
-            Some(Id::DictDownload) => Some((
-                "下载到暂存（不动当前词库）".into(),
-                "从上游 rime-frost 下载词库包并校验，只写入 update 暂存区".into(),
-                "校验通过后才会提示可部署".into(),
-            )),
-            Some(Id::DictApply) => Some((
-                "部署到本机（会把暂存词库写进数据目录）".into(),
-                "覆盖前逐个备份旧文件，可用「回滚上次」恢复".into(),
-                String::new(),
-            )),
             Some(Id::DictRollback) => Some((
                 "回滚上次部署".into(),
                 "用备份覆盖回去并重建索引".into(),

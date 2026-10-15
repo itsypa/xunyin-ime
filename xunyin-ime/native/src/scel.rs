@@ -241,4 +241,30 @@ mod tests {
             return;
         }
     }
+
+    /// 野数据不许 panic：解析的是用户从网上随便下的文件，长度和结构都可能不对。
+    #[test]
+    fn never_panics_on_garbage() {
+        let mut seed = 0x1234_5678u32;
+        for _ in 0..300 {
+            let mut buf = Vec::with_capacity(256);
+            for _ in 0..256 {
+                seed = seed.wrapping_mul(1_103_515_245).wrapping_add(12_345);
+                buf.push((seed >> 16) as u8);
+            }
+            let _ = parse(&buf);
+        }
+        // 真实样例的各种截断（砍在头部里、砍在汉字中间……）与尾部乱写
+        if let Ok(bytes) = std::fs::read(r"D:\ref-sogou\payload\16.9.0.5535\scd\60393.scel") {
+            for cut in (0..bytes.len()).step_by(37) {
+                let _ = parse(&bytes[..cut]);
+            }
+            let mut broken = bytes.clone();
+            let n = broken.len();
+            for i in 0..64 {
+                broken[n - 1 - i] = 0xFF;
+            }
+            let _ = parse(&broken);
+        }
+    }
 }

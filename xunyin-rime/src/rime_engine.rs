@@ -881,9 +881,20 @@ pub struct RimeStatusSnapshot {
 mod tests {
     use super::*;
 
+    /// librime 的引擎是**进程级单例**：下面几个测试都会 `RimeEngine::init`，
+    /// 并发跑时会在 librime 内部互相锁死 —— 现象是 CPU 几乎为 0、测试进程永不退出
+    /// （实测挂了十几分钟，`cargo test` 整个卡住）。用一把测试锁把它们串行化。
+    static ENGINE_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// 拿测试锁（前一个测试 panic 过也照样能继续，别让整轮测试跟着挂）。
+    fn engine_slot() -> std::sync::MutexGuard<'static, ()> {
+        ENGINE_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
     /// 端到端验证：初始化引擎 -> 输入拼音 -> 获取候选 -> 上屏
     #[test]
     fn test_engine_pinyin_input() {
+        let _slot = engine_slot();
         // 使用打包的 rime 数据目录（dev 模式资源目录）
         let manifest = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         let shared = manifest
@@ -950,6 +961,7 @@ mod tests {
     /// 验证 schema 列表可用
     #[test]
     fn test_schema_list() {
+        let _slot = engine_slot();
         let manifest = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         let shared = manifest
             .join("..")
@@ -1003,10 +1015,12 @@ mod tests {
 
     /// 验证随包数据只包含迅音拼音方案，且 OpenCC 简化数据齐备。
     ///
-    /// 本输入法只做拼音：五笔/仓颉/双拼/笔画等方案已从随包数据中移除，
-    /// 方案列表必须只剩「迅音拼音（增强词库）」与「迅音拼音」。
+    /// 本输入法只做拼音：五笔/仓颉/双拼/笔画等方案已从随包数据中移除；方案列表里
+    /// **只有一个「迅音拼音（增强词库）」** —— 用户明确要求"输入方案只有一个迅音输入，
+    /// 没有其他"，所以这里连从前那个不带增强词库的 `xunyin_pinyin` 也不再随包。
     #[test]
     fn test_opencc_simplifier() {
+        let _slot = engine_slot();
         let manifest = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         let shared = manifest
             .join("..")
@@ -1060,8 +1074,8 @@ mod tests {
         eprintln!("随包方案列表: {ids:?}");
         assert_eq!(
             ids,
-            vec!["xunyin_rich".to_string(), "xunyin_pinyin".to_string()],
-            "方案列表应只剩迅音拼音的两个方案"
+            vec!["xunyin_rich".to_string()],
+            "方案列表应只剩「迅音拼音（增强词库）」这一个方案"
         );
 
         engine.finalize();

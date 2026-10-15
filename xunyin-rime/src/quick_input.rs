@@ -294,8 +294,9 @@ fn number_to_cn(n: i64, digits: &[&str; 10], upper: bool) -> String {
     let thousand = if upper { "仟" } else { "千" };
     let units = [
         ("", 1u64),
-        (if upper { "万" } else { "万" }, 10_000),
-        (if upper { "亿" } else { "亿" }, 100_000_000),
+        // 万 / 亿 的大写与普通写法同形（只有 十/百/千 有 拾/佰/仟），所以这里不用分大小写
+        ("万", 10_000),
+        ("亿", 100_000_000),
         ("兆", 1_000_000_000_000),
     ];
     let mut groups: Vec<(u64, &str)> = Vec::new();

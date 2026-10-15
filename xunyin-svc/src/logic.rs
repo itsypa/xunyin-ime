@@ -528,6 +528,14 @@ impl Logic {
     /// 换到某个宿主进程：把上一个进程的中英状态存下来，恢复这个进程自己的。
     /// 只在「按应用记忆」打开时做（设置中心可切换成全局统一）。
     fn switch_client(&mut self, client: u32, cfg: &xunyin_rime::XunyinConfig) {
+        // 换了应用：丢掉上一个应用留下的临时缓冲（v 模式 / 网址邮箱补全）。
+        // 不清的话，在 A 应用里敲了半截 `www.`（或 `v12`），切到 B 应用按的第一颗键
+        // 会被当成"继续给 A 补全"，而这颗键本该属于 B。
+        if self.last_client != Some(client) {
+            self.v_mode = None;
+            self.web = None;
+            self.cancel_overlay();
+        }
         if !cfg.input.per_app_mode || client == 0 {
             self.last_client = Some(client);
             return;
