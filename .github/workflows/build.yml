@@ -103,6 +103,9 @@ jobs:
             throw "version injection failed: no version line in $conf"
           }
           [System.IO.File]::WriteAllText((Join-Path (Get-Location) $conf), $text, (New-Object System.Text.UTF8Encoding($false)))
+          # NOTE: later steps (packing, portable zip name) reuse this same version
+          # via the environment, so it is computed in exactly one place.
+          "APP_VERSION=$ver" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
           Write-Host "injected version $ver"
           cd xunyin-ime/native
           cargo build --release
@@ -154,7 +157,7 @@ jobs:
           Copy-Item "build/installer-payload/*" $stage -Recurse -Force
           Remove-Item "$stage/uninstall.exe" -Force -ErrorAction SilentlyContinue
           Copy-Item "tools/register-ime.ps1" $stage -Force
-          Compress-Archive -Path "$stage/*" -DestinationPath "build/XunyinIME-0.1.$env:GITHUB_RUN_NUMBER-portable.zip" -Force
+          Compress-Archive -Path "$stage/*" -DestinationPath "build/XunyinIME-$env:APP_VERSION-portable.zip" -Force
 
       - name: 上传安装包
         uses: actions/upload-artifact@v4
