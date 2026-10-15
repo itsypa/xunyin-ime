@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
-  <assemblyIdentity type="win32" name="LingxiIME.Settings" version="1.0.0.0" processorArchitecture="*"/>
-  <description>灵犀输入法设置中心</description>
+  <assemblyIdentity type="win32" name="XunyinIME.Settings" version="1.0.0.0" processorArchitecture="*"/>
+  <description>迅音输入法设置中心</description>
   <!-- 公共控件 v6：现代按钮/下拉/滑块外观 -->
   <dependency>
     <dependentAssembly>

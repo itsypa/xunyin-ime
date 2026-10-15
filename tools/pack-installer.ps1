@@ -69,6 +69,17 @@ Copy-Item $rimeX64 (Join-Path $payloadDir "rime.dll") -Force
 Copy-Item $dictMgr (Join-Path $payloadDir "rime_dict_manager.exe") -Force
 Copy-Item $uninstaller (Join-Path $payloadDir "uninstall.exe") -Force
 
+# 许可证与第三方声明必须**随包分发**：librime 是 LGPL，词库数据各有其许可，
+# 装到用户机器上时这些文本得在安装目录里看得到（源码仓库里的那份不跟着走）。
+$notices = @(
+    (Join-Path $root "THIRD_PARTY_NOTICES.md"),
+    (Join-Path $installerDir "LICENSE"),        # 安装器本身（wind-installer，MIT）
+    (Join-Path $installerDir "NOTICE.md")
+)
+foreach ($n in $notices) {
+    if (Test-Path $n) { Copy-Item $n $payloadDir -Force }
+}
+
 # 共享词库
 Copy-Item $rimeData (Join-Path $payloadDir "rime\data") -Recurse -Force
 
@@ -96,7 +107,7 @@ Write-Host "payload 组装完成: $payloadDir ($size MB)"
 
 # 组装后校验：这些文件缺一不可（曾出现过复制后缺失导致安装包不完整）
 $required = @(
-    "xunyin-ime.exe", "rime.dll", "uninstall.exe",
+    "xunyin-ime.exe", "rime.dll", "uninstall.exe", "THIRD_PARTY_NOTICES.md",
     "rime\data\default.yaml",
     "tsf\xunyin_tsf_x64.dll", "tsf\rime.dll", "tsf\xunyin-svc.exe",
     "tsf-x86\xunyin_tsf_x86.dll", "tsf-x86\rime.dll", "tsf-x86\xunyin-svc.exe"

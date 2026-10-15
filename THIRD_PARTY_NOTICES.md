@@ -6,19 +6,21 @@
 
 - 项目：[Rime/librime](https://github.com/rime/librime)
 - 许可：LGPL-3.0（运行时以独立 DLL 形式分发）
-- 说明：`xunyin-ime/src-tauri/rime/rime.dll`（x64）与
-  `xunyin-ime/src-tauri/rime-x86/rime.dll`（x86）为 librime 构建产物。
+- 说明：`xunyin-ime/rime/rime.dll`（x64）与 `xunyin-ime/rime-x86/rime.dll`（x86）
+  为 librime 构建产物，安装后分别位于 `tsf\` 与 `tsf-x86\`（与同架构的 TSF DLL 同目录）。
 
 ## Rime 词库数据
 
 - 来源：Rime 官方与社区词库（cn_dicts、cn_dicts_cell、en_dicts、luna_pinyin
-  词表、opencc 等），位于 `xunyin-ime/src-tauri/rime/data`。
-- 许可：GPL/LGPL 与开放词库许可，具体以各文件头注明的版权声明为准。
-- 范围：本输入法只做拼音。随包数据仅保留迅音拼音所需的两个方案
-  （`xunyin_rich`、`xunyin_pinyin`）及其依赖词表；五笔/仓颉/笔画/双拼等
+  词表、opencc 等），位于 `xunyin-ime/rime/data`。中文词库取自
+  [gaboolic/rime-frost](https://github.com/gaboolic/rime-frost) 的发布包，其中多数
+  词表又源自 [iDvel/rime-ice](https://github.com/iDvel/rime-ice) 等上游。
+- 许可：各上游仓库的许可（GPL/LGPL 与开放词库许可），具体以各文件头注明的
+  版权与来源为准。
+- 范围：本输入法只做拼音。随包数据只有一个方案（`xunyin_rich`）及其依赖词表；
+  五笔/仓颉/笔画/双拼等
   无关方案与词表（stroke、cangjie5、double_pinyin*、luna_pinyin 方案定义）
-  已从随包数据中移除，`luna_pinyin.dict.yaml` 仅作为词表被
-  `xunyin_common` 引用。
+  已从随包数据中移除，`luna_pinyin.dict.yaml` 仅作为词表被引用。
 
 ## 词库取材规则（重要）
 
