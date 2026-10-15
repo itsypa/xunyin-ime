@@ -28,7 +28,7 @@ use windows::Win32::System::Pipes::{
 /// （DLL 靠 exe 指纹变化触发重启）。协议兼容时"服务比 DLL 新"也能直接用，
 /// 所以改服务代码**不需要重编 DLL、更不需要重开宿主应用**。
 /// 记法：与 xunyin-rime::svc_proto::SVC_TAG 保持同一个值。
-pub const SVC_TAG: &str = "20261014-3";
+pub const SVC_TAG: &str = "20261014-4";
 /// 协议版本：消息格式不兼容时才改。
 pub const PROTO: u32 = 1;
 
@@ -67,6 +67,24 @@ fn now_ms() -> u64 {
 
 fn touch() {
     LAST_ACTIVITY.store(now_ms(), Ordering::Relaxed);
+}
+
+/// 按键级诊断日志开关：用户数据目录里放一个 `log-input` 标记文件就开
+/// （与宿主 DLL 里的 `log_input()` 同一个开关、同一个缓存时长）。
+/// 默认关闭 —— 正常使用时不该为每颗键写一行日志。
+fn log_keys() -> bool {
+    use std::sync::Mutex;
+    static CACHE: Mutex<Option<(std::time::Instant, bool)>> = Mutex::new(None);
+    let mut g = CACHE.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some((at, v)) = *g {
+        if at.elapsed() < std::time::Duration::from_secs(5) {
+            return v;
+        }
+    }
+    let on = std::env::var_os("XUNYIN_LOG_INPUT").is_some()
+        || xunyin_rime::config::user_data_dir().join("log-input").exists();
+    *g = Some((std::time::Instant::now(), on));
+    on
 }
 
 /// 盯住「重载 / 重新部署」标记：装好新词库、改完配置后，服务里的引擎也要跟着重建，
@@ -250,7 +268,22 @@ fn serve(h: HANDLE) {
                 let mask = msg.get("mask").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
                 let shift = msg.get("shift").and_then(|v| v.as_bool()).unwrap_or(false);
                 match guard(|| with_logic(|l| l.key(client, vk, mask, shift))) {
-                    Ok(r) => json!({ "t": "reply", "reply": r }),
+                    Ok(r) => {
+                        // 按键级诊断：只在用户数据目录里放了 `log-input` 标记时开
+                        // （与宿主 DLL 的 log_input() 同一个开关）。排查"打不出字"时，
+                        // 这一行能直接说明"按键到底有没有到服务、服务回了什么"。
+                        if log_keys() {
+                            log(format!(
+                                "按键 pid={client} vk={vk} mask={mask} -> consume={} preedit={:?} commit={:?} 候选={} engine_ok={}",
+                                r.consume,
+                                r.preedit,
+                                r.commit,
+                                r.candidates.len(),
+                                r.engine_ok
+                            ));
+                        }
+                        json!({ "t": "reply", "reply": r })
+                    }
                     Err(why) => json!({ "t": "reply", "reply": { "consume": false, "error": why } }),
                 }
             }

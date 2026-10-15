@@ -18,7 +18,7 @@ pub fn pipe_name() -> String {
 pub const PROTO: u32 = 1;
 /// 期望的服务构建标记。**改服务代码后把它 + xunyin-svc 的 SVC_TAG 一起改**，
 /// 运行中的 DLL 就会自动换用新服务（不用重开任何应用）。
-pub const SVC_TAG: &str = "20261014-3";
+pub const SVC_TAG: &str = "20261014-4";
 
 /// 服务对一次操作的回答。**DLL 与 xunyin-svc 共用这一个定义**，避免两边字段写歪。
 ///

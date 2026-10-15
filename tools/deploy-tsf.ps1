@@ -280,3 +280,21 @@ foreach ($k in @(
     }
 }
 Write-Host "旧 CLSID 残留检查完成（$legacy）：删除 $removed 项"
+
+# 用户输入法列表（语言栏 / Win+Space 里能选到的那个列表）里的失效条目也要清掉。
+#
+# 只删 CLSID 注册不够：列表里那条 `0804:{旧CLSID}{档案GUID}` 还在，用户切过去时
+# 系统按这个 CLSID 去找文本服务 —— 找不到就**一个字都打不出来**。
+# 当前档案由 DllRegisterServer 里的 InstallLayoutOrTip 负责登记（见 register.rs），
+# 这里只负责把指不到东西的旧条目扫掉。
+$stale = 0
+foreach ($lang in (Get-ChildItem "HKCU:\Control Panel\International\User Profile" -ErrorAction SilentlyContinue)) {
+    foreach ($name in @($lang.Property)) {
+        if ($name -like "*$legacy*") {
+            Remove-ItemProperty -LiteralPath $lang.PSPath -Name $name -Force -ErrorAction SilentlyContinue
+            Write-Host "  清掉失效输入法条目: $($lang.PSChildName) -> $name"
+            $stale++
+        }
+    }
+}
+Write-Host "用户输入法列表清理：删除 $stale 条失效条目"
