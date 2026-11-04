@@ -1,0 +1,14 @@
+# 所有 Windows 产物静态链接 MSVC CRT。
+#
+# VCRUNTIME140.dll 不是 Windows 内置组件：动态链接时，没装 VC++ 运行库的干净机器上
+# 设置中心会直接起不来，TSF DLL 更会被宿主应用 LoadLibrary 失败（输入法直接消失）。
+# 安装器自己早就有同样约束（installer/.cargo/config.toml），这里把同一保证补到
+# 引擎/服务/TSF/设置中心上；rime.dll 本身也是静态 CRT。
+#
+# 注意：RUSTFLAGS 环境变量会覆盖而非合并本文件 —— 外部构建环境若注入 RUSTFLAGS，
+# 需要自己带上同样的 flag。
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]
+
+[target.i686-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]

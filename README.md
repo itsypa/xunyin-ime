@@ -55,6 +55,8 @@ installer/           安装器（清单在 installer/app.toml）
 
 要求：Rust（MSVC 工具链）+ `rustup target add i686-pc-windows-msvc` + VS Build Tools（C++ 桌面负载）。
 **不需要 Node** —— 设置中心是原生 Win32 程序。
+Windows 产物统一静态链接 MSVC CRT（根目录 `.cargo/config.toml`），不依赖 VC++ 运行库；
+安装包里打包前会逐个校验，动态 CRT 会直接让构建失败。
 
 ```powershell
 .\tools\deploy-tsf.ps1 -Arch x64        # 编译 + 签名 + 注册 TSF（-Arch x86 是给 32 位程序用的那份）

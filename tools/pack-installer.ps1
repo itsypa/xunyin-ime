@@ -38,6 +38,13 @@ if (-not $SkipBuild) {
         cargo build --release
     } finally { Pop-Location }
 
+    # 常驻服务：TSF DLL 会从旁边拉起它；x64 与 x86（32 位程序）各一份
+    Push-Location (Join-Path $root "xunyin-svc")
+    try {
+        cargo build --release
+        cargo build --release --target i686-pc-windows-msvc
+    } finally { Pop-Location }
+
     # 安装器 stub / 卸载器 / 打包器（只出 x64：本项目不支持 32 位 Windows，
     # 见安装器 main.rs 的 64 位要求；32 位**程序**的支持在 tsf-x86，与这里无关）
     Push-Location $installerDir
@@ -115,6 +122,25 @@ $required = @(
 $missing = $required | Where-Object { -not (Test-Path (Join-Path $payloadDir $_)) }
 if ($missing) { throw "payload 缺少必要文件: $($missing -join ', ')" }
 Write-Host "payload 校验通过（$($required.Count) 项必要文件齐备）"
+
+# 产物必须静态链接 MSVC CRT：安装器/设置中心/TSF/服务都会在没装 VC++ 运行库的
+# 干净机器上运行，动态依赖 VCRUNTIME140.dll 会直接起不来（TSF 则是 LoadLibrary 失败）。
+# 这一步直接检查二进制，不信任 .cargo/config.toml（RUSTFLAGS 会覆盖它）。
+$crtCheck = Join-Path $installerDir "scripts\verify-static-crt.ps1"
+if (Test-Path $crtCheck) {
+    $crtFiles = @(
+        (Join-Path $payloadDir "xunyin-ime.exe"),
+        (Join-Path $payloadDir "uninstall.exe"),
+        (Join-Path $payloadDir "tsf\xunyin_tsf_x64.dll"),
+        (Join-Path $payloadDir "tsf\xunyin-svc.exe"),
+        (Join-Path $payloadDir "tsf-x86\xunyin_tsf_x86.dll"),
+        (Join-Path $payloadDir "tsf-x86\xunyin-svc.exe")
+    )
+    & $crtCheck -Path $crtFiles
+    if ($LASTEXITCODE -ne 0) { throw "payload 有二进制动态链接了 MSVC CRT（干净机器上无法启动）" }
+} else {
+    Write-Host "跳过静态 CRT 校验：没有 $crtCheck"
+}
 
 # ── 3. 生成安装包 ──────────────────────────────────────────────────────────
 New-Item -ItemType Directory -Force $distDir | Out-Null
