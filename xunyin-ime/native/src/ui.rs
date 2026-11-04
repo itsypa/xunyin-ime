@@ -57,6 +57,26 @@ const FS_SECTION: i32 = 15;
 const FS_BODY: i32 = 14;
 const FS_CAPTION: i32 = 12;
 
+// 纵向节奏也收成几档：卡片标题 42、每个设置行 46、卡片底部留白 10。
+// 所有卡片高度都由 `card_h(行数)` 算出来，不再一页手写一串 92/226/330 ——
+// 那样改一项就要跟着调数字，很容易出现"卡片比内容矮 4px、控件压到描边上"。
+/// 卡片标题区（含上下留白）
+const CARD_TITLE_H: i32 = 42;
+/// 一个设置行（标签 + 右侧控件）
+const ROW_H: i32 = 46;
+/// 卡片底部留白
+const CARD_PAD_B: i32 = 10;
+/// 右侧控件统一宽度（下拉、分段、开关列）
+const CTRL_W: i32 = 168;
+/// 控件高度
+const CTRL_H: i32 = 32;
+/// 侧栏宽
+const SIDE_W: i32 = 212;
+/// 页面标题 + 一句说明的总高
+const PAGE_HEAD_H: i32 = 64;
+/// 两栏间距
+const COL_GAP: i32 = 16;
+
 /// 主题令牌（亮色/深色由 theme_from 生成）。
 #[derive(Clone)]
 struct Theme {
@@ -105,32 +125,42 @@ struct Cols {
     y: [i32; 2],
     w: i32,
     gap: i32,
+    /// 宽窗两栏、窄窗单栏。窗口缩到最小（内容区约 670 逻辑像素）时，
+    /// 两栏每张卡只剩 330 宽 —— 标签和右侧控件会挤在一起，所以直接单栏。
+    single: bool,
 }
 
 impl Cols {
-    fn new(x: i32, y0: i32, w: i32, gap: i32) -> Self {
-        let col_w = (w - gap) / 2;
+    fn new(x: i32, y0: i32, w: i32, gap: i32, single: bool) -> Self {
+        let col_w = if single { w } else { (w - gap) / 2 };
         Cols {
             x: [x, x + col_w + gap],
             y: [y0, y0],
             w: col_w,
             gap,
+            single,
         }
     }
-    /// 取下一张高度 h 的卡片位置（放到较矮的一栏），并返回栏宽。
-    fn place(&mut self, h: i32) -> (i32, i32, i32) {
-        let i = if self.y[0] <= self.y[1] { 0 } else { 1 };
-        let p = (self.x[i], self.y[i], self.w);
-        self.y[i] += h + self.gap;
+    /// 指定放到哪一栏（需要固定阅读顺序时用，自动配平会打乱卡片的先后）。
+    /// 单栏模式下忽略栏号、按调用顺序往下排。
+    fn put(&mut self, col: usize, h: i32) -> (i32, i32, i32) {
+        let col = if self.single { 0 } else { col };
+        let p = (self.x[col], self.y[col], self.w);
+        self.y[col] += h + self.gap;
         p
     }
     fn bottom(&self) -> i32 {
-        self.y[0].max(self.y[1]) - self.gap
+        if self.single {
+            self.y[0] - self.gap
+        } else {
+            self.y[0].max(self.y[1]) - self.gap
+        }
     }
 }
 
-/// 两栏卡片分配：先把高卡片分给较矮的一栏（LPT），再在**各自栏内按原顺序**从上到下排。
-/// 返回每张卡片在原阅读顺序下的 (x, y, 栏宽)。
+/// 两栏卡片分配（保留给未来需要"自动配平"的页面；当前各页都用 Cols::put
+/// 手工分栏，阅读顺序更可控）。
+#[allow(dead_code)]
 fn balance(hs: &[i32], x0: i32, y0: i32, w: i32, gap: i32) -> Vec<(i32, i32, i32)> {
     // 窗口窄了就退回**单栏**：两栏各自只剩三百来像素时，标签和右侧控件会挤在一起
     // （水杉输入法干脆固定单栏 + 最大宽度，就是这个道理）。这里保留宽屏两栏，
@@ -173,23 +203,35 @@ fn reveal_in_explorer(path: &std::path::Path) {
         .spawn();
 }
 
-/// 内容区页头：大标题 + 一句话说明（以前内容区直接是卡片，看着像没做完）。
+/// 内容区页头：大标题 + 一句话说明（说明从 PAGES 里取，和侧栏保持同一套文案）。
 /// 返回卡片起始 y。
-/// 只画页面标题，不再画下面那行小字说明（设置项自己说清楚就够了）。
-fn page_header(app: &mut App, dc: HDC, x: i32, y: i32, w: i32, title: &str) -> i32 {
+fn page_header(app: &mut App, dc: HDC, x: i32, y: i32, w: i32) -> i32 {
     let t = app.theme.clone();
+    let def = &PAGES[app.page];
+    let title = def.title;
+    let subtitle = def.subtitle;
     unsafe {
         text(
             dc,
-            RECT { left: x, top: y, right: x + w, bottom: y + app.s(30) },
+            RECT { left: x, top: y, right: x + w, bottom: y + app.s(28) },
             title,
             app.font_title,
             t.text,
             DT_LEFT,
             true,
         );
+        if !subtitle.is_empty() {
+            text_ellipsis(
+                dc,
+                RECT { left: x, top: y + app.s(30), right: x + w, bottom: y + app.s(50) },
+                subtitle,
+                app.font_small,
+                t.text3,
+                DT_LEFT,
+            );
+        }
     }
-    y + app.s(46)
+    y + app.s(PAGE_HEAD_H)
 }
 
 fn theme_from(cfg: &XunyinConfig, dark: bool) -> Theme {
@@ -302,7 +344,15 @@ enum Id {
     PageSize,
     FontSize,
     Opacity,
+    CornerRadius,
+    PadX,
+    PadY,
+    MinWidth,
+    CandGap,
+    BarMargin,
     Fuzzy(usize),
+    /// 模糊音快速预设：0 南方口音 1 前后鼻音 2 全部 3 清空
+    FuzzyPreset(usize),
     PunctKey,
     PunctOut,
     PunctAdd,
@@ -349,9 +399,7 @@ enum Id {
     CellApply,
     DictRollback,
     DictUpdateOne,
-    DictOpenDir,
     UpdateInstall,
-    DictUpdateCheck,
     DeleteKeyCombo,
     SwitchComment,
     SwitchAssoc,
@@ -361,6 +409,8 @@ enum Id {
     SwitchEnglish,
     SwitchPhrase,
     ComboItem(usize),
+    /// 右侧滚动条的拖动命中区（内容超出窗口时才登记）
+    ScrollBar,
 }
 
 #[derive(Clone)]
@@ -383,17 +433,34 @@ enum Focus {
 
 // ---------------- 应用状态 ----------------
 
-/// 侧栏图标：`Segoe Fluent Icons` / `Segoe MDL2 Assets` 的私有区码位。
-/// 这四个是**实测渲染确认过**的（用 tools/render-glyph.ps1 打点阵看过）：
-/// E765 键盘、E790 调色板、E8F1 书架、E946 圆圈 i。
-/// 拿不到图标字体时（精简系统）退回 PAGES_EMOJI。
-const PAGES: [(&str, &str, &str); 4] = [
-    ("\u{E765}", "输入设置", "方案、按键行为、模糊音"),
-    ("\u{E790}", "外观主题", "配色、字号、候选窗预览"),
-    ("\u{E8F1}", "词库管理", "短语导入导出、用户词库备份"),
-    ("\u{E946}", "关于", "版本、快捷键、维护与备份"),
+/// 一页设置：图标、标题、一句说明、所属分组。
+///
+/// 以前只有 4 页，每页塞十来张卡片（"输入设置"一页里同时有方案、按键、模糊音、
+/// 标点），找一项要来回扫。现在按"输入 / 外观 / 词库 / 其他"四组拆成 9 页，
+/// 每页只放同一类设置；分组名直接画在侧栏里，用户在侧栏就能看出分类。
+struct PageDef {
+    icon: &'static str,
+    title: &'static str,
+    subtitle: &'static str,
+    group: &'static str,
+}
+
+/// 侧栏图标取自 `Segoe Fluent Icons` / `Segoe MDL2 Assets` 的私有区码位，
+/// 每个都在 Win10 的 MDL2 里用 tools/render-glyph.ps1 打过点阵确认。
+/// E765 键盘、E8D4 键帽、E8CB 钥匙、E790 调色板、E7F4 显示器、
+/// E8C4 状态条、E8F1 书架、E8A5 文档、E946 圆圈 i。
+const PAGES: [PageDef; 9] = [
+    PageDef { icon: "\u{E765}", title: "常规输入", subtitle: "输入方案、中英模式、候选来源与学习", group: "输入" },
+    PageDef { icon: "\u{E8D4}", title: "按键与标点", subtitle: "回车、切换键、拼音分隔符与自定义标点", group: "输入" },
+    PageDef { icon: "\u{E8CB}", title: "模糊音", subtitle: "按口音放宽声母、韵母的匹配", group: "输入" },
+    PageDef { icon: "\u{E790}", title: "主题与配色", subtitle: "候选窗预览、主题预设与逐项配色", group: "外观" },
+    PageDef { icon: "\u{E7F4}", title: "候选窗", subtitle: "排列、字体、字号、圆角与内边距", group: "外观" },
+    PageDef { icon: "\u{E8C4}", title: "状态栏与皮肤", subtitle: "右下角状态栏与界面资源文件", group: "外观" },
+    PageDef { icon: "\u{E8F1}", title: "词库管理", subtitle: "词库统计、细胞词库、导入与备份", group: "词库" },
+    PageDef { icon: "\u{E8A5}", title: "自定义短语", subtitle: "按编码直达常用词句，添加后立即生效", group: "词库" },
+    PageDef { icon: "\u{E946}", title: "关于与维护", subtitle: "版本、快捷键、维护与输入统计", group: "其他" },
 ];
-const PAGES_EMOJI: [&str; 4] = ["⌨", "🎨", "📚", "ⓘ"];
+const PAGES_EMOJI: [&str; 9] = ["⌨", "⌨", "🔑", "🎨", "▣", "▤", "📚", "📝", "ⓘ"];
 
 struct App {
     hwnd: HWND,
@@ -453,6 +520,9 @@ struct App {
     toast_until: std::time::Instant,
     engine_ready: bool,
     dragging_slider: Option<Id>,
+    /// 正在拖动滚动条时记下 (轨道顶, 轨道高, 滑块高)，鼠标移动据此换算滚动位置
+    scroll_geom: Option<(i32, i32, i32)>,
+    dragging_scroll: bool,
     gdiplus: usize,
     scroll_max: i32,
     /// 本帧画过的卡片矩形（XUNYIN_UI_DUMP 时导出，用于自动检查越界/重叠）
@@ -636,7 +706,9 @@ unsafe fn text(
 ) {
     let old = SelectObject(dc, HGDIOBJ(font.0));
     let _ = SetBkMode(dc, TRANSPARENT);
-    let _ = SetTextColor(dc, COLORREF(color));
+    // 主题色是 0xAARRGGBB，GDI 的 COLORREF 是 0x00BBGGRR —— 必须先换字节序，
+    // 否则强调色会变成橙色、危险红会变成蓝色（灰度色看不出，所以一直没暴露）。
+    let _ = SetTextColor(dc, COLORREF(argb_to_colorref(color)));
     let buf = wide(s);
     let mut rect = r;
     let mut flags = DRAW_TEXT_FORMAT(align.0 | DT_NOPREFIX.0);
@@ -661,7 +733,7 @@ unsafe fn text_ellipsis(
 ) {
     let old = SelectObject(dc, HGDIOBJ(font.0));
     let _ = SetBkMode(dc, TRANSPARENT);
-    let _ = SetTextColor(dc, COLORREF(color));
+    let _ = SetTextColor(dc, COLORREF(argb_to_colorref(color)));
     let buf = wide(s);
     let mut rect = r;
     let flags =
@@ -670,11 +742,15 @@ unsafe fn text_ellipsis(
     SelectObject(dc, old);
 }
 
-/// ARGB → COLORREF（GDI 文字用）。
+/// ARGB → COLORREF（GDI 文字/画笔用）。
+///
+/// ARGB 的字节序是 A R G B，COLORREF 是 0x00BBGGRR —— 要做的是把 **R 与 B 对调**。
+/// 以前这里取的是低字节当 R（其实是 B），于是强调色文字画成了橙色、
+/// 危险红画成了蓝色；因为大多数文字是灰/白（R=G=B），一直没被看出来。
 fn argb_to_colorref(c: u32) -> u32 {
-    let r = c & 0xFF;
+    let r = (c >> 16) & 0xFF;
     let g = (c >> 8) & 0xFF;
-    let b = (c >> 16) & 0xFF;
+    let b = c & 0xFF;
     r | (g << 8) | (b << 16)
 }
 
@@ -734,6 +810,8 @@ impl App {
             toast_until: std::time::Instant::now(),
             engine_ready: false,
             dragging_slider: None,
+            scroll_geom: None,
+            dragging_scroll: false,
             gdiplus: 0,
             scroll_max: 0,
             cards: Vec::new(),
@@ -752,10 +830,10 @@ impl App {
             app.gdiplus = token;
         }
         app.rebuild_fonts();
-        // 调试用：XUNYIN_UI_PAGE=1..3 直接打开指定页（配合 XUNYIN_UI_DUMP 检查布局）
+        // 调试用：XUNYIN_UI_PAGE=0..8 直接打开指定页（配合 XUNYIN_UI_DUMP 检查布局）
         if let Ok(p) = std::env::var("XUNYIN_UI_PAGE") {
             if let Ok(n) = p.trim().parse::<usize>() {
-                app.page = n.min(3);
+                app.page = n.min(PAGES.len() - 1);
             }
         }
         app
@@ -838,32 +916,76 @@ impl App {
                 g.fill_round(r, R_CARD, t.card);
                 g.stroke_round(r, R_CARD, t.border, 1.0);
             }
-            let mut ty = y + 14;
-            let tr = RECT { left: x + 18, top: ty, right: x + w - 18, bottom: ty + 22 };
+            let ty = y + self.s(14);
+            let tr = RECT { left: x + self.s(18), top: ty, right: x + w - self.s(18), bottom: ty + self.s(22) };
             text(dc, tr, title, self.font_section, t.text, DT_LEFT, true);
             // 标题右侧一行小字：这张卡是干什么的。
             // 传空串就不画 —— 大多数卡片名本身就够清楚，只在容易混淆的地方写。
             if !desc.is_empty() {
                 text(dc, tr, desc, self.font_small, t.text3, DT_RIGHT, true);
             }
-            let _ = ty;
         }
-        y + 14 + 24 + self.s(4)
+        // 与 card_h() 的 CARD_TITLE_H 对齐；这里以前写死 14/24，150% 缩放下
+        // 会比卡片高度少 17px，第一行贴着标题。
+        y + self.s(CARD_TITLE_H)
     }
 
     /// 行标签（左） + 右侧控件；返回行高。
     fn row(&mut self, dc: HDC, x: i32, y: i32, w: i32, label: &str, desc: &str) -> RECT {
         let t = self.theme.clone();
         unsafe {
-            let lr = RECT { left: x, top: y + 4, right: x + w / 2, bottom: y + 24 };
-            text(dc, lr, label, self.font, t.text, DT_LEFT, true);
-            // 说明文字画在标签下方（以前这里被丢弃，界面显得只剩一堆控件）
-            if !desc.is_empty() {
-                let dr = RECT { left: x, top: y + 22, right: x + w / 2, bottom: y + 40 };
+            if desc.is_empty() {
+                // 只有标签时垂直居中，整行看起来不会偏上
+                let lr = RECT { left: x, top: y + self.s(2), right: x + w / 2, bottom: y + self.s(42) };
+                text(dc, lr, label, self.font, t.text, DT_LEFT, true);
+            } else {
+                // 标签在上、说明在下：两行各占 20px，中间留 2px，
+                // 以前标签 4..24、说明 22..40，两行会压在一起。
+                let lr = RECT { left: x, top: y + self.s(1), right: x + w / 2, bottom: y + self.s(22) };
+                text(dc, lr, label, self.font, t.text, DT_LEFT, true);
+                let dr = RECT { left: x, top: y + self.s(23), right: x + w / 2, bottom: y + self.s(42) };
                 text_ellipsis(dc, dr, desc, self.font_small, t.text3, DT_LEFT);
             }
         }
-        RECT { left: x + w / 2, top: y + 4, right: x + w, bottom: y + 40 }
+        RECT { left: x + w / 2, top: y + self.s(4), right: x + w, bottom: y + self.s(40) }
+    }
+
+    /// 一行标准设置：标签在左、开关在右。所有页面都走这几个封装，
+    /// 控件宽度、行高、垂直居中就不会各页一个样。
+    fn row_toggle(&mut self, dc: HDC, x: i32, y: i32, w: i32, label: &str, desc: &str, id: Id, on: bool) {
+        let r = self.row(dc, x, y, w, label, desc);
+        self.toggle_switch(dc, id, r, on);
+    }
+
+    fn row_combo(&mut self, dc: HDC, x: i32, y: i32, w: i32, label: &str, desc: &str, id: Id, value: &str) {
+        let r = self.row(dc, x, y, w, label, desc);
+        let cb = self.row_ctl(r, CTRL_W);
+        self.combo(dc, id, cb, value);
+    }
+
+    fn row_seg(&mut self, dc: HDC, x: i32, y: i32, w: i32, label: &str, desc: &str, id: Id, options: &[&str], sel: usize) {
+        let r = self.row(dc, x, y, w, label, desc);
+        let seg = self.ctl_seg(r);
+        self.segmented(dc, id, seg, options, sel);
+    }
+
+    fn row_slider(
+        &mut self,
+        dc: HDC,
+        x: i32,
+        y: i32,
+        w: i32,
+        label: &str,
+        desc: &str,
+        id: Id,
+        value: i32,
+        min: i32,
+        max: i32,
+        suffix: &str,
+    ) {
+        let r = self.row(dc, x, y, w, label, desc);
+        let sl = self.ctl_slider(r);
+        self.slider(dc, id, sl, value, min, max, suffix);
     }
 
     fn toggle_switch(&mut self, dc: HDC, id: Id, r: RECT, on: bool) {
@@ -892,7 +1014,14 @@ impl App {
         let seg = w / n;
         unsafe {
             if let Some(g) = Gfx::new(dc) {
-                g.fill_round(r, 8, t.field);
+                // 轨道用"卡片底 + 一点文字色"，别用纯白：纯白轨道放在白卡片上
+                // 等于没画，用户看不出这是一组分段按钮。
+                let track_bg = if t.dark {
+                    mix_argb(t.card, 0xFFFFFFFF, 0.07)
+                } else {
+                    mix_argb(t.card, t.text, 0.045)
+                };
+                g.fill_round(r, R_CTRL, track_bg);
                 for (i, _) in options.iter().enumerate() {
                     if i == sel {
                         let sr = RECT {
@@ -901,10 +1030,18 @@ impl App {
                             right: r.left + ((i as i32) + 1) * seg - 2,
                             bottom: r.bottom - 2,
                         };
-                        g.fill_round(sr, 6, t.card);
-                        if !t.dark {
-                            g.stroke_round(sr, 6, t.border, 1.0);
-                        }
+                        let sel_bg = if t.dark {
+                            mix_argb(t.card, 0xFFFFFFFF, 0.12)
+                        } else {
+                            t.card
+                        };
+                        g.fill_round(sr, R_CTRL - 2, sel_bg);
+                        g.stroke_round(
+                            sr,
+                            R_CTRL - 2,
+                            if t.dark { t.field_border } else { t.border },
+                            1.0,
+                        );
                     }
                 }
             }
@@ -993,14 +1130,20 @@ impl App {
                 g.fill_round(r, R_CTRL, if hot { t.hover } else { t.field });
                 g.stroke_round(r, R_CTRL, if hot { t.accent } else { t.field_border }, 1.0);
             }
-            let tr = RECT { left: r.left + 12, top: r.top, right: r.right - 26, bottom: r.bottom };
-            text(dc, tr, value, self.font, t.text, DT_LEFT, true);
+            let tr = RECT { left: r.left + self.s(12), top: r.top, right: r.right - self.s(34), bottom: r.bottom };
+            text_ellipsis(dc, tr, value, self.font, t.text, DT_LEFT);
             // 展开箭头
-            let (cx, cy) = (r.right - 16, (r.top + r.bottom) / 2);
-            if let Some(g) = Gfx::new(dc) {
-                let mut path: *mut GpPath = std::ptr::null_mut();
-                gdi_polyline(dc, &[(cx - 5, cy - 2), (cx, cy + 3), (cx + 5, cy - 2)], t.text3, 2);
-            }
+            let (cx, cy) = (r.right - self.s(16), (r.top + r.bottom) / 2);
+            gdi_polyline(
+                dc,
+                &[
+                    (cx - self.s(5), cy - self.s(2)),
+                    (cx, cy + self.s(3)),
+                    (cx + self.s(5), cy - self.s(2)),
+                ],
+                t.text3,
+                self.s(2).max(1),
+            );
         }
         self.push_hit(id, r);
     }
@@ -1012,6 +1155,28 @@ impl App {
     /// 危险操作（删除 / 清空）：中性底 + 红色文字，别用大红色实心块抢视线。
     fn button_danger(&mut self, dc: HDC, id: Id, r: RECT, label: &str) {
         self.button_ex(dc, id, r, label, false, true)
+    }
+
+    /// 轻量强调按钮：浅色强调底 + 强调色文字。用于"快捷预设"这类次要入口，
+    /// 一页里既有主按钮又有它时，不会像三颗实心蓝按钮那样抢视线。
+    fn button_soft(&mut self, dc: HDC, id: Id, r: RECT, label: &str) {
+        let t = self.theme.clone();
+        let hot = self.hover == Some(id);
+        let down = self.pressed == Some(id);
+        unsafe {
+            if let Some(g) = Gfx::new(dc) {
+                let bg = if down {
+                    mix_argb(t.accent_soft, t.accent, 0.18)
+                } else if hot {
+                    mix_argb(t.accent_soft, t.accent, 0.10)
+                } else {
+                    t.accent_soft
+                };
+                g.fill_round(r, R_CTRL, bg);
+            }
+            text(dc, r, label, self.font, t.accent, DT_CENTER, true);
+        }
+        self.push_hit(id, r);
     }
 
     fn button_ex(&mut self, dc: HDC, id: Id, r: RECT, label: &str, primary: bool, danger: bool) {
@@ -1122,7 +1287,7 @@ impl App {
                 g.fill_round(r, R_CTRL, t.field);
                 g.stroke_round(r, R_CTRL, if focused { t.accent } else { t.field_border }, 1.0);
             }
-            let tr = RECT { left: r.left + 10, top: r.top, right: r.right - 8, bottom: r.bottom };
+            let tr = RECT { left: r.left + self.s(10), top: r.top, right: r.right - self.s(8), bottom: r.bottom };
             if value.is_empty() && !focused {
                 text(dc, tr, placeholder, self.font_small, t.text3, DT_LEFT, true);
             } else {
@@ -1132,7 +1297,7 @@ impl App {
                     let w = App::text_width_of(dc, value, self.font);
                     let cx = tr.left + w + 1;
                     if let Some(g) = Gfx::new(dc) {
-                        let cr = RECT { left: cx, top: r.top + 5, right: cx + self.s(2), bottom: r.bottom - 5 };
+                        let cr = RECT { left: cx, top: r.top + self.s(5), right: cx + self.s(2), bottom: r.bottom - self.s(5) };
                         g.fill_round(cr, 1, t.accent);
                     }
                 }
@@ -1150,7 +1315,7 @@ impl App {
             }
         }
         if items.is_empty() {
-            let er = RECT { left: r.left + 12, top: r.top, right: r.right - 12, bottom: r.bottom };
+            let er = RECT { left: r.left + self.s(12), top: r.top, right: r.right - self.s(12), bottom: r.bottom };
             unsafe {
                 text(dc, er, empty, self.font_small, t.text3, DT_LEFT, true);
             }
@@ -1158,23 +1323,23 @@ impl App {
         }
         let row_h = self.s(26);
         for (i, it) in items.iter().enumerate() {
-            let top = r.top + 4 + (i as i32) * row_h;
-            if top + row_h > r.bottom - 4 {
+            let top = r.top + self.s(4) + (i as i32) * row_h;
+            if top + row_h > r.bottom - self.s(4) {
                 break;
             }
-            let rr = RECT { left: r.left + 4, top, right: r.right - 4, bottom: top + row_h };
+            let rr = RECT { left: r.left + self.s(4), top, right: r.right - self.s(4), bottom: top + row_h };
             let rid = id_of_row(i);
             let is_sel = selected == Some(i);
             let hot = self.hover == Some(rid);
             unsafe {
                 if let Some(g) = Gfx::new(dc) {
                     if is_sel {
-                        g.fill_round(rr, 6, t.accent_soft);
+                        g.fill_round(rr, R_ROW, t.accent_soft);
                     } else if hot {
-                        g.fill_round(rr, 6, t.hover);
+                        g.fill_round(rr, R_ROW, t.hover);
                     }
                 }
-                let tr = RECT { left: rr.left + 8, top: rr.top, right: rr.right - 8, bottom: rr.bottom };
+                let tr = RECT { left: rr.left + self.s(8), top: rr.top, right: rr.right - self.s(8), bottom: rr.bottom };
                 text(dc, tr, it, self.font_small, if is_sel { t.accent } else { t.text }, DT_LEFT, true);
             }
             self.push_hit(rid, rr);
@@ -1221,6 +1386,67 @@ unsafe fn font_face_name(font: &HFONT) -> String {
         ((v as f32) * (self.dpi as f32 / 96.0)).round() as i32
     }
 
+    /// `n` 个标准设置行的卡片高度（标题 + 行 + 底部留白）。
+    fn card_h(&self, rows: i32) -> i32 {
+        self.s(CARD_TITLE_H + rows * ROW_H + CARD_PAD_B)
+    }
+
+    /// 按当前内容区宽度决定单栏还是两栏。阈值取 780 逻辑像素：
+    /// 默认 1160 宽窗口（150% 下内容区约 890）是两栏，缩到最小（约 690）自动单栏。
+    fn cols(&self, x: i32, y: i32, w: i32) -> Cols {
+        Cols::new(x, y, w, self.s(COL_GAP), w < self.s(780))
+    }
+
+    /// 内容不是标准行时：卡片高度 = 标题 + 自定义内容高 + 底部留白。
+    fn card_h_inner(&self, inner: i32) -> i32 {
+        self.s(CARD_TITLE_H) + inner + self.s(CARD_PAD_B)
+    }
+
+    /// 设置行右侧控件区（下拉 / 分段 / 开关列统一右对齐、同高）。
+    /// 以前每张卡片各写一个宽度（160 / 230 / 全宽），右边缘对不齐，看着就散。
+    fn row_ctl(&self, r: RECT, w: i32) -> RECT {
+        RECT {
+            left: r.right - self.s(w),
+            top: r.top + self.s(4),
+            right: r.right,
+            bottom: r.top + self.s(4) + self.s(CTRL_H),
+        }
+    }
+
+    /// 分段控件比下拉略矮，底边与下拉对齐。
+    fn ctl_seg(&self, r: RECT) -> RECT {
+        RECT {
+            left: r.right - self.s(CTRL_W),
+            top: r.top + self.s(6),
+            right: r.right,
+            bottom: r.top + self.s(6) + self.s(CTRL_H),
+        }
+    }
+
+    /// 滑块：从行中段开始，右侧留出数值文字的宽度。
+    fn ctl_slider(&self, r: RECT) -> RECT {
+        RECT {
+            left: r.left,
+            top: r.top + self.s(6),
+            right: r.right - self.s(82),
+            bottom: r.top + self.s(6) + self.s(22),
+        }
+    }
+
+    /// 一行内等宽按钮的位置（从左到右）。
+    fn btn_row(&self, x: i32, y: i32, w: i32, n: i32, h: i32) -> Vec<RECT> {
+        let gap = self.s(8);
+        let bw = (w - gap * (n - 1)) / n;
+        (0..n)
+            .map(|i| RECT {
+                left: x + i * (bw + gap),
+                top: y,
+                right: x + i * (bw + gap) + bw,
+                bottom: y + self.s(h),
+            })
+            .collect()
+    }
+
     fn rebuild_fonts(&mut self) {
         unsafe {
             for f in [
@@ -1235,7 +1461,6 @@ unsafe fn font_face_name(font: &HFONT) -> String {
                     let _ = DeleteObject(HGDIOBJ(f.0));
                 }
             }
-            let name = wide("Microsoft YaHei UI");
             let mk_family = |family: &str, px: i32, weight: i32| {
                 let fam = wide(family);
                 CreateFontW(
@@ -1430,6 +1655,8 @@ fn set_color(app: &mut App, i: usize, v: u32) {
         5 => a.comment = hex,
         _ => a.border = hex,
     }
+    // 任何一项手动改色都算自定义配色：否则「浅色」预设还亮着，但实际颜色已经不同
+    a.theme = "custom".into();
     app.theme = theme_from(&app.cfg, app.theme.dark);
 }
 
@@ -1470,7 +1697,19 @@ fn apply_theme(app: &mut App, which: usize) {
     app.theme = theme_from(&app.cfg, app.theme.dark);
 }
 
-/// 系统是否偏好深色（AppsUseLightTheme = 0 即深色）。
+/// 当前配色是否就是某个预设（用来把选中预设画成实心按钮）。
+fn theme_preset_active(app: &App, i: usize) -> bool {
+    let a = &app.cfg.appearance;
+    match i {
+        0 => a.theme == "light",
+        1 => a.theme == "dark",
+        _ => {
+            a.theme == "custom"
+                && a.bg.eq_ignore_ascii_case("#F4F8F1")
+                && a.accent.eq_ignore_ascii_case("#3E8E41")
+        }
+    }
+}
 fn system_prefers_dark() -> bool {
     use windows::Win32::System::Registry::{
         RegCloseKey, RegOpenKeyExW, RegQueryValueExW, HKEY_CURRENT_USER, KEY_READ,
@@ -1499,6 +1738,22 @@ fn system_prefers_dark() -> bool {
         ok && data == 0
     }
 }
+
+/// 深色模式下把标题栏也切成深色：否则内容是全黑、标题栏还是白的，很割裂。
+/// Win10 1809 用的属性号是 19，之后的系统是 20，先试 20 再退回 19。
+fn set_dark_title_bar(hwnd: HWND, dark: bool) {
+    use windows::Win32::Graphics::Dwm::{
+        DwmSetWindowAttribute, DWMWINDOWATTRIBUTE, DWMWA_USE_IMMERSIVE_DARK_MODE,
+    };
+    let value = windows::core::BOOL::from(dark);
+    let ptr = &value as *const _ as *const core::ffi::c_void;
+    let cb = size_of::<windows::core::BOOL>() as u32;
+    unsafe {
+        if DwmSetWindowAttribute(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, ptr, cb).is_err() {
+            let _ = DwmSetWindowAttribute(hwnd, DWMWINDOWATTRIBUTE(19), ptr, cb);
+        }
+    }
+}
 // ---------------- 预览 / 下拉浮层 / 交互 ----------------
 
 impl App {
@@ -1506,7 +1761,11 @@ impl App {
         self.punct_sel
     }
 
-    /// 候选窗预览：桌面底 + 圆角候选窗（首条高亮）。尺寸固定，字号大时少显示几行。
+    /// 候选窗预览：桌面底 + 圆角候选窗（首条高亮）。
+    ///
+    /// 这里尽量用**真实配置**画：字号、字体族、圆角、左右/上下内边距、序号、
+    /// 注释、横排/竖排都跟着设置走 —— 用户拖一下滑块就能看到差别，而不是看一张
+    /// 永远不变的示意图。
     fn draw_candidate_preview(&self, dc: HDC, r: RECT) {
         let a = &self.cfg.appearance;
         let t = &self.theme;
@@ -1514,68 +1773,158 @@ impl App {
         let dpi_scale = self.dpi as f32 / 96.0;
         let text_px = ((a.font_size as f32) * 4.0 / 3.0 * dpi_scale).round() as i32;
         let row_h = (text_px + s(14)).max(s(24));
+        let radius = a.corner_radius.clamp(0, 24) as i32;
+        let pad_x = self.s(a.cand_pad_x.min(40) as i32);
+        let pad_y = self.s(a.cand_pad_y.min(24) as i32);
         unsafe {
             if let Some(g) = Gfx::new(dc) {
                 g.fill_round(r, 10, if t.dark { 0xFF1B1D22 } else { 0xFFF0F2F6 });
             }
-            let w = (r.right - r.left - s(36)).clamp(s(160), s(360));
-            let box_h = (r.bottom - r.top - s(24)).max(s(80));
-            let max_rows = (((box_h - s(12)) / row_h).max(1)).min(5);
-            let h = row_h * max_rows + s(12);
-            let l = r.left + (r.right - r.left - w) / 2;
-            let top0 = r.top + (r.bottom - r.top - h) / 2;
-            let rr = RECT { left: l, top: top0, right: l + w, bottom: top0 + h };
-            if let Some(g) = Gfx::new(dc) {
-                g.fill_round(rr, a.corner_radius.min(16) as i32, hex_argb(&a.bg, 0xFFFFFFFF));
-                g.stroke_round(rr, a.corner_radius.min(16) as i32, hex_argb(&a.border, 0xFFD8DCE3), 1.0);
-            }
-            let name = wide("Microsoft YaHei UI");
-            let mk = |px: i32| {
+            let avail_w = (r.right - r.left - s(36)).max(s(160));
+            let w = avail_w
+                .min(s(420))
+                .max(self.s(a.cand_min_width.min(320) as i32));
+            let inner_w = (w - pad_x * 2).max(s(40));
+            let chars = ["你", "您", "牛", "鸟", "捏"];
+
+            // 字体族用真实配置（以前写死微软雅黑，换字体预览不变）
+            let family = if a.font_family.trim().is_empty() {
+                "Microsoft YaHei UI"
+            } else {
+                a.font_family.as_str()
+            };
+            let fam = wide(family);
+            let mk = |px: i32, bold: bool| {
                 CreateFontW(
                     -px.max(9),
                     0, 0, 0,
-                    FW_NORMAL.0 as i32,
+                    if bold { FW_SEMIBOLD.0 as i32 } else { FW_NORMAL.0 as i32 },
                     0, 0, 0,
                     DEFAULT_CHARSET,
                     OUT_TT_PRECIS,
                     CLIP_DEFAULT_PRECIS,
                     CLEARTYPE_QUALITY,
                     (DEFAULT_PITCH.0 | FF_DONTCARE.0) as u32,
-                    PCWSTR(name.as_ptr()),
+                    PCWSTR(fam.as_ptr()),
                 )
             };
-            let font = mk(text_px);
-            let idx_font = mk((text_px * 4 / 5).max(9));
-            let rgn = CreateRoundRectRgn(rr.left + 1, rr.top + 1, rr.right, rr.bottom, s(10), s(10));
-            let _ = SelectClipRgn(dc, Some(rgn));
-            for (i, label) in ["你", "您", "牛", "鸟", "捏"].iter().take(max_rows as usize).enumerate() {
-                let top = rr.top + s(6) + (i as i32) * row_h;
-                if i == 0 {
-                    if let Some(g) = Gfx::new(dc) {
-                        g.fill_round(
-                            RECT { left: rr.left + 1, top, right: rr.right - 1, bottom: top + row_h },
-                            0,
+            let font = mk(text_px, false);
+            let small = mk((text_px * 4 / 5).max(9), false);
+            let idx_font = mk((text_px * 4 / 5).max(9), false);
+
+            let rr;
+            if a.layout == "horizontal" {
+                // 横排：单行，项间距取配置的候选间距
+                let gap = s(a.cand_gap.min(48) as i32).clamp(s(6), s(30));
+                let mut n = 5i32;
+                while n > 1 && (inner_w - gap * (n - 1)) / n < s(46) {
+                    n -= 1;
+                }
+                let cell_w = ((inner_w - gap * (n - 1)) / n).max(s(36));
+                let h = row_h + pad_y * 2;
+                let l = r.left + (r.right - r.left - w) / 2;
+                let top0 = r.top + (r.bottom - r.top - h) / 2;
+                rr = RECT { left: l, top: top0, right: l + w, bottom: top0 + h };
+                if let Some(g) = Gfx::new(dc) {
+                    g.fill_round(rr, radius, hex_argb(&a.bg, 0xFFFFFFFF));
+                    g.stroke_round(rr, radius, hex_argb(&a.border, 0xFFD8DCE3), 1.0);
+                }
+                let rgn = CreateRoundRectRgn(rr.left + 1, rr.top + 1, rr.right, rr.bottom, (radius * 2).max(1), (radius * 2).max(1));
+                let _ = SelectClipRgn(dc, Some(rgn));
+                for i in 0..n {
+                    let left = rr.left + pad_x + i * (cell_w + gap);
+                    let cell = RECT { left, top: rr.top + pad_y, right: left + cell_w, bottom: rr.top + pad_y + row_h };
+                    if i == 0 {
+                        if let Some(g) = Gfx::new(dc) {
+                            g.fill_round(cell, 4, hex_argb(&a.selected_bg, 0xFF2A6FDB));
+                        }
+                    }
+                    let color = if i == 0 {
+                        hex_argb(&a.selected_text, 0xFFFFFFFF)
+                    } else {
+                        hex_argb(&a.text, 0xFF222222)
+                    };
+                    let label = if a.show_index {
+                        format!("{}.{}", i + 1, chars[i as usize])
+                    } else {
+                        chars[i as usize].to_string()
+                    };
+                    text(dc, cell, &label, font, color, DT_CENTER, true);
+                }
+                let _ = SelectClipRgn(dc, None);
+                let _ = DeleteObject(HGDIOBJ(rgn.0));
+            } else {
+                // 竖排：高度按字号与内边距算，最多 5 行
+                let box_h = (r.bottom - r.top - s(24)).max(s(80));
+                let max_rows = (((box_h - pad_y * 2) / row_h).max(1)).min(5);
+                let h = row_h * max_rows + pad_y * 2;
+                let l = r.left + (r.right - r.left - w) / 2;
+                let top0 = r.top + (r.bottom - r.top - h) / 2;
+                rr = RECT { left: l, top: top0, right: l + w, bottom: top0 + h };
+                if let Some(g) = Gfx::new(dc) {
+                    g.fill_round(rr, radius, hex_argb(&a.bg, 0xFFFFFFFF));
+                    g.stroke_round(rr, radius, hex_argb(&a.border, 0xFFD8DCE3), 1.0);
+                }
+                let rgn = CreateRoundRectRgn(rr.left + 1, rr.top + 1, rr.right, rr.bottom, (radius * 2).max(1), (radius * 2).max(1));
+                let _ = SelectClipRgn(dc, Some(rgn));
+                for (i, label) in chars.iter().take(max_rows as usize).enumerate() {
+                    let top = rr.top + pad_y + (i as i32) * row_h;
+                    if i == 0 {
+                        if let Some(g) = Gfx::new(dc) {
+                            g.fill_round(
+                                RECT { left: rr.left + 1, top, right: rr.right - 1, bottom: top + row_h },
+                                0,
+                                hex_argb(&a.selected_bg, 0xFF2A6FDB),
+                            );
+                        }
+                    }
+                    let color = if i == 0 {
+                        hex_argb(&a.selected_text, 0xFFFFFFFF)
+                    } else {
+                        hex_argb(&a.text, 0xFF222222)
+                    };
+                    let comment_color = if i == 0 {
+                        mix_argb(
+                            hex_argb(&a.selected_text, 0xFFFFFFFF),
                             hex_argb(&a.selected_bg, 0xFF2A6FDB),
-                        );
+                            0.28,
+                        )
+                    } else {
+                        hex_argb(&a.comment, 0xFF999999)
+                    };
+                    let mut xt = rr.left + pad_x;
+                    if a.show_index {
+                        let ir = RECT { left: xt, top, right: xt + s(24), bottom: top + row_h };
+                        let idx_color = if i == 0 {
+                            mix_argb(
+                                hex_argb(&a.selected_text, 0xFFFFFFFF),
+                                hex_argb(&a.selected_bg, 0xFF2A6FDB),
+                                0.35,
+                            )
+                        } else {
+                            hex_argb(&a.comment, 0xFF999999)
+                        };
+                        text(dc, ir, &format!("{}.", i + 1), idx_font, idx_color, DT_LEFT, true);
+                        xt += s(22);
+                    }
+                    let tr = RECT { left: xt, top, right: rr.right - pad_x, bottom: top + row_h };
+                    text(dc, tr, label, font, color, DT_LEFT, true);
+                    if a.show_comment {
+                        let tw = Self::text_width_of(dc, label, font);
+                        let cr = RECT {
+                            left: xt + tw + s(10),
+                            top,
+                            right: rr.right - pad_x,
+                            bottom: top + row_h,
+                        };
+                        text_ellipsis(dc, cr, "nǐ", small, comment_color, DT_LEFT);
                     }
                 }
-                let color = if i == 0 {
-                    hex_argb(&a.selected_text, 0xFFFFFFFF)
-                } else {
-                    hex_argb(&a.text, 0xFF222222)
-                };
-                let mut xt = rr.left + s(12);
-                if a.show_index {
-                    let ir = RECT { left: xt, top, right: xt + s(26), bottom: top + row_h };
-                    text(dc, ir, &format!("{}.", i + 1), idx_font, argb_to_colorref(hex_argb(&a.comment, 0xFF999999)), DT_LEFT, true);
-                    xt += s(24);
-                }
-                let tr = RECT { left: xt, top, right: rr.right - s(8), bottom: top + row_h };
-                text(dc, tr, label, font, argb_to_colorref(color), DT_LEFT, true);
+                let _ = SelectClipRgn(dc, None);
+                let _ = DeleteObject(HGDIOBJ(rgn.0));
             }
-            let _ = SelectClipRgn(dc, None);
-            let _ = DeleteObject(HGDIOBJ(rgn.0));
             let _ = DeleteObject(HGDIOBJ(font.0));
+            let _ = DeleteObject(HGDIOBJ(small.0));
             let _ = DeleteObject(HGDIOBJ(idx_font.0));
         }
     }
@@ -1590,11 +1939,22 @@ impl App {
         let t = self.theme.clone();
         let row_h = self.s(30);
         let h = row_h * items.len() as i32 + self.s(10);
+        // 靠近窗口底部时向上展开：否则下拉会被窗口裁掉一半（以前只能凭感觉滚动页面）
+        let mut client = RECT::default();
+        unsafe {
+            let _ = GetClientRect(self.hwnd, &mut client);
+        }
+        let below = anchor.bottom + self.s(4);
+        let top = if below + h > client.bottom - self.s(8) {
+            (anchor.top - self.s(4) - h).max(self.s(8))
+        } else {
+            below
+        };
         let r = RECT {
             left: anchor.left,
-            top: anchor.bottom + self.s(4),
+            top,
             right: anchor.right,
-            bottom: anchor.bottom + self.s(4) + h,
+            bottom: top + h,
         };
         unsafe {
             if let Some(g) = Gfx::new(dc) {
@@ -1684,12 +2044,33 @@ impl App {
 
     /// 选中项激活（按钮、复选、下拉项、导航……）。
     fn activate(&mut self, id: Id) {
+        // 点到任何非文本框的控件，都先把输入焦点收掉，否则会继续往看不见的框里打字
+        if !matches!(
+            id,
+            Id::PunctKey
+                | Id::PunctOut
+                | Id::PhraseQuery
+                | Id::PhraseCode
+                | Id::PhraseText
+                | Id::PhraseWeight
+        ) {
+            self.focus = Focus::None;
+        }
         match id {
             Id::Nav(i) => {
                 self.page = i;
                 self.scroll = 0;
+                self.combo_open = None;
+                self.focus = Focus::None;
             }
-            Id::SchemaCombo | Id::EnterCombo | Id::ToggleCombo | Id::SepCombo => {
+            // 所有下拉都在这里登记：以前漏了「删词键」和「字体」，
+            // 点上去毫无反应（下拉项都在，就是打不开）。
+            Id::SchemaCombo
+            | Id::EnterCombo
+            | Id::ToggleCombo
+            | Id::SepCombo
+            | Id::DeleteKeyCombo
+            | Id::FontCombo => {
                 self.combo_open = if self.combo_open == Some(id) { None } else { Some(id) };
             }
             Id::ComboItem(i) => {
@@ -1804,6 +2185,30 @@ impl App {
                 }
                 self.mark_dirty();
             }
+            Id::FuzzyPreset(kind) => {
+                let preset: &[&str] = match kind {
+                    0 => &["zh_z", "ch_c", "sh_s", "n_l"],
+                    1 => &["an_ang", "en_eng", "in_ing"],
+                    2 => &[
+                        "zh_z", "ch_c", "sh_s", "n_l", "f_h", "r_l", "an_ang", "en_eng", "in_ing",
+                        "ian_iang", "uan_uang",
+                    ],
+                    _ => &[],
+                };
+                if kind == 3 {
+                    self.cfg.input.fuzzy.clear();
+                    self.toast("已清空模糊音");
+                } else {
+                    // 预设是"并集"：不会把用户已经勾的组挤掉，只会补上没勾的
+                    for g in preset {
+                        if !self.cfg.input.fuzzy.iter().any(|f| f == g) {
+                            self.cfg.input.fuzzy.push((*g).to_string());
+                        }
+                    }
+                    self.toast(&format!("已启用模糊音（共 {} 组）", self.cfg.input.fuzzy.len()));
+                }
+                self.mark_dirty();
+            }
             Id::PunctKey => self.focus = Focus::PunctKey,
             Id::PunctOut => self.focus = Focus::PunctOut,
             Id::PunctRow(i) => self.punct_sel = Some(i),
@@ -1908,6 +2313,7 @@ impl App {
                     match self.core.import_skin(&path) {
                         Ok(cfg) => {
                             self.cfg = cfg;
+                            self.saved = self.cfg.clone();
                             self.theme = theme_from(&self.cfg, self.theme.dark);
                             self.mark_dirty();
                             self.toast("皮肤已套用");
@@ -1999,6 +2405,7 @@ impl App {
                     match self.core.import_config(&path) {
                         Ok(cfg) => {
                             self.cfg = cfg;
+                            self.saved = self.cfg.clone();
                             self.theme = theme_from(&self.cfg, self.theme.dark);
                             self.stats = self.core.dict_stats();
                             self.toast("配置已导入（输入法会自动重载）");
@@ -2012,7 +2419,11 @@ impl App {
                 Err(e) => self.toast(&format!("检查更新失败：{e}")),
             },
             Id::SkinRestore => match self.core.restore_builtin_skin() {
-                Ok(msg) => self.toast(&msg),
+                Ok(msg) => {
+                    // 皮肤中心的缩略图/来源标记要跟着回到「内置」
+                    self.skins = self.core.skin_assets();
+                    self.toast(&msg);
+                }
                 Err(e) => self.toast(&format!("恢复失败：{e}")),
             },
             Id::SkinPackExport => match self.core.export_skin_pack() {
@@ -2071,17 +2482,8 @@ impl App {
                 Ok(msg) => self.toast(&msg),
                 Err(e) => self.toast(&format!("更新失败：{e}")),
             },
-            Id::DictUpdateCheck => match self.core.check_dict_update() {
-                Ok(msg) => self.toast(&msg),
-                Err(e) => self.toast(&format!("检查失败：{e}")),
-            },
             Id::DictRollback => self.spawn_dict_task(3),
             Id::DictUpdateOne => self.spawn_dict_task(4),
-            Id::DictOpenDir => {
-                if let Err(e) = self.core.open_dict_update_dir() {
-                    self.toast(&format!("打开失败：{e}"));
-                }
-            }
             Id::BackupNow => match self.core.backup_user_dict() {
                 Ok(p) => {
                     self.backups = self.core.list_backups();
@@ -2123,6 +2525,8 @@ impl App {
             Id::ReloadConfig => {
                 // 通知所有正在运行的应用重载配置（不用重启，像小狼毫的重新部署）
                 let ok = xunyin_rime::reload::mark(xunyin_rime::reload::REQUEST_RELOAD);
+                // 皮肤文件可能在外部改过，顺手刷新缩略图/来源标记
+                self.skins = self.core.skin_assets();
                 self.toast(if ok {
                     "已通知输入法重载配置（正在输入的应用会立刻生效）"
                 } else {
@@ -2135,6 +2539,7 @@ impl App {
             }
             Id::ResetAll => {
                 self.cfg = self.core.reset_config();
+                self.saved = self.cfg.clone();
                 self.theme = theme_from(&self.cfg, self.theme.dark);
                 self.toast("已恢复默认设置（正在重建索引）");
             }
@@ -2325,6 +2730,16 @@ fn point(lparam: LPARAM) -> POINT {
     }
 }
 
+/// 拖动滚动条：按鼠标 y 把滑块中心移到指针处，再换算成滚动位置。
+fn drag_scroll(app: &mut App, y: i32) {
+    let Some((top, track_h, thumb_h)) = app.scroll_geom else {
+        return;
+    };
+    let span = (track_h - thumb_h).max(1);
+    let frac = ((y - top - thumb_h / 2) as f32 / span as f32).clamp(0.0, 1.0);
+    app.scroll = (frac * app.scroll_max.max(0) as f32).round() as i32;
+}
+
 /// 拖动滑块：按 x 反算取值。
 fn drag_slider(app: &mut App, id: Id, x: i32) {
     let Some(rect) = app.hits.iter().find(|h| h.id == id).map(|h| h.rect) else {
@@ -2347,6 +2762,36 @@ fn drag_slider(app: &mut App, id: Id, x: i32) {
         Id::Opacity => {
             let v = 30 + (frac * (100 - 30) as f32).round() as i32;
             app.cfg.appearance.opacity = v.clamp(30, 100) as u8;
+            app.mark_dirty();
+        }
+        Id::CornerRadius => {
+            let v = (frac * 24.0).round() as i32;
+            app.cfg.appearance.corner_radius = v.clamp(0, 24) as u32;
+            app.mark_dirty();
+        }
+        Id::PadX => {
+            let v = (frac * 30.0).round() as i32;
+            app.cfg.appearance.cand_pad_x = v.clamp(0, 30) as u32;
+            app.mark_dirty();
+        }
+        Id::PadY => {
+            let v = (frac * 16.0).round() as i32;
+            app.cfg.appearance.cand_pad_y = v.clamp(0, 16) as u32;
+            app.mark_dirty();
+        }
+        Id::MinWidth => {
+            let v = 60 + (frac * 240.0 / 10.0).round() as i32 * 10;
+            app.cfg.appearance.cand_min_width = v.clamp(60, 300) as u32;
+            app.mark_dirty();
+        }
+        Id::CandGap => {
+            let v = (frac * 48.0).round() as i32;
+            app.cfg.appearance.cand_gap = v.clamp(0, 48) as u32;
+            app.mark_dirty();
+        }
+        Id::BarMargin => {
+            let v = (frac * 40.0).round() as i32;
+            app.cfg.appearance.bar_margin = v.clamp(0, 40) as u32;
             app.mark_dirty();
         }
         _ => {}
@@ -2392,6 +2837,11 @@ extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM
                 if let Some(app) = main_of(hwnd) {
                     let pt = point(lparam);
                     app.mouse = pt;
+                    if app.dragging_scroll {
+                        drag_scroll(app, pt.y);
+                        let _ = InvalidateRect(Some(hwnd), None, false);
+                        return LRESULT(0);
+                    }
                     if let Some(id) = app.dragging_slider {
                         drag_slider(app, id, pt.x);
                         let _ = InvalidateRect(Some(hwnd), None, false);
@@ -2411,11 +2861,23 @@ extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM
                     let hit = app.hit_test(pt.x, pt.y);
                     app.pressed = hit;
                     match hit {
-                        Some(Id::PageSize) | Some(Id::FontSize) | Some(Id::Opacity) => {
-                            app.dragging_slider = hit;
-                            if let Some(id) = hit {
-                                drag_slider(app, id, pt.x);
-                            }
+                        Some(Id::ScrollBar) => {
+                            app.dragging_scroll = true;
+                            drag_scroll(app, pt.y);
+                        }
+                        Some(
+                            id @ (Id::PageSize
+                            | Id::FontSize
+                            | Id::Opacity
+                            | Id::CornerRadius
+                            | Id::PadX
+                            | Id::PadY
+                            | Id::MinWidth
+                            | Id::CandGap
+                            | Id::BarMargin),
+                        ) => {
+                            app.dragging_slider = Some(id);
+                            drag_slider(app, id, pt.x);
                         }
                         _ => {}
                     }
@@ -2429,15 +2891,18 @@ extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM
                     let hit = app.hit_test(pt.x, pt.y);
                     let pressed = app.pressed;
                     app.pressed = None;
-                    if app.dragging_slider.is_some() {
+                    if app.dragging_scroll {
+                        app.dragging_scroll = false;
+                    } else if app.dragging_slider.is_some() {
                         app.dragging_slider = None;
                     } else if let Some(id) = pressed {
                         if Some(id) == hit {
                             app.activate(id);
                         }
-                    } else if app.combo_open.is_some() {
-                        // 点空白处收起下拉
+                    } else {
+                        // 点空白处：收起下拉、取消文本焦点
                         app.combo_open = None;
+                        app.focus = Focus::None;
                     }
                     let _ = InvalidateRect(Some(hwnd), None, false);
                 }
@@ -2447,6 +2912,8 @@ extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM
                 if let Some(app) = main_of(hwnd) {
                     let delta = (((wparam.0 >> 16) & 0xFFFF) as i16 as i32) / 120;
                     app.scroll = (app.scroll - delta * app.s(64)).clamp(0, app.scroll_max.max(0));
+                    // 下拉是跟着控件矩形画的，滚动后位置就错了，直接收起
+                    app.combo_open = None;
                     let _ = InvalidateRect(Some(hwnd), None, false);
                 }
                 LRESULT(0)
@@ -2540,7 +3007,7 @@ extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM
                     // 顺带刷新输入统计：只在"关于与维护"页开着时读一次小文件，
                     // 这样窗口开着打字，数字也会跟着涨
                     if let Some(app) = main_of(hwnd) {
-                        if app.page == 3 {
+                        if app.page == 8 {
                             let fresh = app.core.input_stats();
                             if fresh != app.input_stats {
                                 app.input_stats = fresh;
@@ -2666,6 +3133,22 @@ pub fn run() {
         if hwnd.0.is_null() {
             return;
         }
+        // 深色模式下让标题栏跟着深色（内容区是自绘的，DWM 不知道）
+        if system_prefers_dark() {
+            set_dark_title_bar(hwnd, true);
+        }
+        // 初始窗口按 DPI 放大，并留出任务栏/屏幕边缘：以前写死 1020×700 物理像素，
+        // 150% 缩放下只有 680×467 逻辑像素，比最小尺寸还小，一打开就挤成一团。
+        {
+            let dpi = GetDpiForWindow(hwnd).max(96) as i32;
+            let sw = GetSystemMetrics(SM_CXSCREEN).max(640);
+            let sh = GetSystemMetrics(SM_CYSCREEN).max(480);
+            let ww = (1160 * dpi / 96).min(sw - 24).max(760 * dpi / 96);
+            let wh = (780 * dpi / 96).min(sh - 80).max(560 * dpi / 96);
+            let wx = ((sw - ww) / 2).max(0);
+            let wy = ((sh - wh) / 2).max(0);
+            let _ = SetWindowPos(hwnd, None, wx, wy, ww, wh, SWP_NOZORDER);
+        }
         let _ = ShowWindow(hwnd, SW_SHOW);
         let _ = UpdateWindow(hwnd);
         let _ = SetForegroundWindow(hwnd);
@@ -2704,13 +3187,16 @@ fn paint(app: &mut App) {
         let bmp = CreateCompatibleBitmap(hdc, w, h);
         let old_bmp = SelectObject(mem, HGDIOBJ(bmp.0));
         app.hits.clear();
+        // 卡片矩形每帧重算（以前只在启动时清空，悬停重绘会一直往 Vec 里追加 ——
+        // 既是内存泄漏，也让 XUNYIN_UI_DUMP 的布局检查混进上一帧的旧卡片）
+        app.cards.clear();
         let t = app.theme.clone();
 
         if let Some(g) = Gfx::new(mem) {
             g.fill_round(RECT { left: 0, top: 0, right: w, bottom: h }, 0, t.bg);
         }
         // 侧栏
-        let side_w = app.s(212);
+        let side_w = app.s(SIDE_W);
         if let Some(g) = Gfx::new(mem) {
             g.fill_round(RECT { left: 0, top: 0, right: side_w, bottom: h }, 0, t.sidebar);
             g.fill_round(
@@ -2720,14 +3206,31 @@ fn paint(app: &mut App) {
             );
         }
         {
-            let lr = RECT { left: app.s(20), top: app.s(20), right: side_w - app.s(12), bottom: app.s(48) };
+            let lr = RECT { left: app.s(20), top: app.s(16), right: side_w - app.s(12), bottom: app.s(44) };
             text(mem, lr, "迅音输入法", app.font_title, t.text, DT_LEFT, true);
-            let sr = RECT { left: app.s(21), top: app.s(46), right: side_w - app.s(12), bottom: app.s(66) };
+            let sr = RECT { left: app.s(21), top: app.s(43), right: side_w - app.s(12), bottom: app.s(61) };
             text(mem, sr, "设置中心", app.font_small, t.text3, DT_LEFT, true);
         }
-        for (i, (icon, name, _)) in PAGES.iter().enumerate() {
-            let top = app.s(84 + (i as i32) * 46);
-            let r = RECT { left: app.s(12), top, right: side_w - app.s(12), bottom: top + app.s(40) };
+        // 分组导航：组名是小号浅色字，条目 34px 高；9 页 + 4 个组名在最小窗口里也放得下
+        let mut ny = app.s(78);
+        let mut last_group = "";
+        let nav_h = app.s(34);
+        for (i, page) in PAGES.iter().enumerate() {
+            if page.group != last_group {
+                if !last_group.is_empty() {
+                    ny += app.s(6);
+                }
+                let gr = RECT {
+                    left: app.s(22),
+                    top: ny,
+                    right: side_w - app.s(12),
+                    bottom: ny + app.s(20),
+                };
+                text(mem, gr, page.group, app.font_small, t.text3, DT_LEFT, true);
+                ny += app.s(22);
+                last_group = page.group;
+            }
+            let r = RECT { left: app.s(12), top: ny, right: side_w - app.s(12), bottom: ny + nav_h };
             let id = Id::Nav(i);
             let sel = app.page == i;
             let hot = app.hover == Some(id);
@@ -2745,9 +3248,9 @@ fn paint(app: &mut App) {
                     g.fill_round(
                         RECT {
                             left: app.s(6),
-                            top: cy - app.s(10),
+                            top: cy - app.s(9),
                             right: app.s(10),
-                            bottom: cy + app.s(10),
+                            bottom: cy + app.s(9),
                         },
                         app.s(2),
                         t.accent,
@@ -2755,52 +3258,60 @@ fn paint(app: &mut App) {
                 }
             }
             let (glyph, ifont) = if app.icon_font_ok {
-                (*icon, app.font_icon)
+                (page.icon, app.font_icon)
             } else {
                 (PAGES_EMOJI[i], app.font)
             };
-            let ir = RECT { left: r.left + app.s(12), top: r.top, right: r.left + app.s(38), bottom: r.bottom };
+            let ir = RECT { left: r.left + app.s(12), top: r.top, right: r.left + app.s(34), bottom: r.bottom };
             text(mem, ir, glyph, ifont, if sel { t.accent } else { t.text2 }, DT_LEFT, true);
-            let nr = RECT { left: r.left + app.s(42), top: r.top, right: r.right - app.s(8), bottom: r.bottom };
+            let nr = RECT { left: r.left + app.s(38), top: r.top, right: r.right - app.s(6), bottom: r.bottom };
             text(
                 mem,
                 nr,
-                name,
+                page.title,
                 if sel { app.font_bold } else { app.font },
                 t.text,
                 DT_LEFT,
                 true,
             );
             app.hits.push(Hit { id, rect: r });
+            ny += nav_h;
         }
         {
-            // 页脚（版本 + 一句提示）上方加一条细分隔线，把导航和说明分开
+            // 页脚（版本 + 自动保存提示）上方加一条细分隔线，把导航和说明分开
             if let Some(g) = Gfx::new(mem) {
                 g.fill_round(
                     RECT {
                         left: app.s(20),
-                        top: h - app.s(66),
+                        top: h - app.s(62),
                         right: side_w - app.s(20),
-                        bottom: h - app.s(65),
+                        bottom: h - app.s(61),
                     },
                     0,
                     t.divider,
                 );
             }
-            let br = RECT { left: app.s(20), top: h - app.s(56), right: side_w - app.s(12), bottom: h - app.s(34) };
+            let br = RECT { left: app.s(20), top: h - app.s(54), right: side_w - app.s(12), bottom: h - app.s(32) };
             text(mem, br, &format!("版本 {}", env!("CARGO_PKG_VERSION")), app.font_small, t.text3, DT_LEFT, true);
+            let hr = RECT { left: app.s(20), top: h - app.s(32), right: side_w - app.s(12), bottom: h - app.s(12) };
+            text(mem, hr, "所有更改自动保存", app.font_small, t.text3, DT_LEFT, true);
         }
 
-        // 内容区（滚动 + 裁剪）
+        // 内容区（滚动 + 裁剪）。右侧留 12px 给滚动条，卡片右边缘不会和它打架。
         let cx = side_w + app.s(20);
-        let cw = (w - cx - app.s(20)).max(app.s(520));
+        let cw = (w - cx - app.s(24)).max(app.s(520));
         let cy0 = app.s(20);
         let clip = CreateRectRgn(cx, cy0, w, h);
         let _ = SelectClipRgn(mem, Some(clip));
         let used = match app.page {
             0 => draw_input(app, mem, cx, cy0 - app.scroll, cw),
-            1 => draw_appearance(app, mem, cx, cy0 - app.scroll, cw),
-            2 => draw_dict(app, mem, cx, cy0 - app.scroll, cw),
+            1 => draw_keys(app, mem, cx, cy0 - app.scroll, cw),
+            2 => draw_fuzzy(app, mem, cx, cy0 - app.scroll, cw),
+            3 => draw_appearance(app, mem, cx, cy0 - app.scroll, cw),
+            4 => draw_candidate(app, mem, cx, cy0 - app.scroll, cw),
+            5 => draw_status(app, mem, cx, cy0 - app.scroll, cw),
+            6 => draw_dict(app, mem, cx, cy0 - app.scroll, cw),
+            7 => draw_phrases(app, mem, cx, cy0 - app.scroll, cw),
             _ => draw_about(app, mem, cx, cy0 - app.scroll, cw),
         };
         // 注意：绘制时已经减去了 scroll，所以这里要先加回来才是真正的内容高度。
@@ -2808,6 +3319,10 @@ fn paint(app: &mut App) {
         // 每帧的边界都不一样，表现为抖动。
         let content_h = used - (cy0 - app.scroll);
         app.scroll_max = (content_h + cy0 - (h - app.s(12))).max(0);
+        // 窗口变大 / 页面内容变短后，旧的滚动位置可能已经越界，钳一下
+        if app.scroll > app.scroll_max {
+            app.scroll = app.scroll_max;
+        }
         // 调试导出（仅当设置 XUNYIN_UI_DUMP 时）：供自动化检查布局越界与滚动稳定性
         if let Ok(dir) = std::env::var("XUNYIN_UI_DUMP") {
             use std::io::Write;
@@ -2845,8 +3360,61 @@ fn paint(app: &mut App) {
         let _ = SelectClipRgn(mem, None);
         let _ = DeleteObject(HGDIOBJ(clip.0));
 
+        // 滚动条：内容超出窗口时显示。没有它时用户只能靠滚轮猜"下面还有没有"。
+        // 页面切换/内容变短后 scroll_max 归零，这里自然把滚动条收掉。
+        app.scroll_geom = None;
+        if app.scroll_max > 0 {
+            let track_top = cy0 + app.s(2);
+            let track_bot = h - app.s(14);
+            let track_h = (track_bot - track_top).max(1);
+            let visible = (h - cy0 - app.s(10)).max(1) as f32;
+            let ratio = (visible / content_h.max(1) as f32).clamp(0.0, 1.0);
+            let thumb_h = ((track_h as f32 * ratio).round() as i32).clamp(app.s(36), track_h);
+            let frac = (app.scroll as f32 / app.scroll_max.max(1) as f32).clamp(0.0, 1.0);
+            let thumb_top = track_top + ((track_h - thumb_h) as f32 * frac).round() as i32;
+            let tx = w - app.s(12);
+            let hot = app.dragging_scroll || app.hover == Some(Id::ScrollBar);
+            if let Some(g) = Gfx::new(mem) {
+                g.fill_round(
+                    RECT { left: tx, top: track_top, right: tx + app.s(6), bottom: track_bot },
+                    app.s(3),
+                    argb(t.text, if t.dark { 0.10 } else { 0.05 }),
+                );
+                g.fill_round(
+                    RECT {
+                        left: tx,
+                        top: thumb_top,
+                        right: tx + app.s(6),
+                        bottom: thumb_top + thumb_h,
+                    },
+                    app.s(3),
+                    argb(t.text2, if hot { 0.55 } else { 0.30 }),
+                );
+            }
+            // 命中区比滑块宽：6px 的细条不好抓
+            app.hits.push(Hit {
+                id: Id::ScrollBar,
+                rect: RECT { left: w - app.s(20), top: track_top, right: w - app.s(2), bottom: track_bot },
+            });
+            app.scroll_geom = Some((track_top, track_h, thumb_h));
+        }
+
         // 下拉浮层
         app.draw_combo_popup(mem);
+
+        // 调试：浮层画完后再导出一份完整命中区（含下拉项/滚动条），
+        // 自动化点击测试用它找 ComboItem；布局检查仍用上面那份（不含浮层）。
+        if let Ok(dir) = std::env::var("XUNYIN_UI_DUMP") {
+            let mut lines = String::new();
+            for hh in &app.hits {
+                let r = hh.rect;
+                lines.push_str(&format!(
+                    "{:?} {} {} {} {}\n",
+                    hh.id, r.left, r.top, r.right, r.bottom
+                ));
+            }
+            let _ = std::fs::write(std::path::Path::new(&dir).join("hits-all.txt"), lines);
+        }
 
         // 悬停提示（皮肤中心的每一项、按钮等给一句话说明）
         // 悬停提示：(标题, 说明, 操作提示) 三行
@@ -2855,7 +3423,7 @@ fn paint(app: &mut App) {
                 (
                     format!("{} · {}", a.label, a.name),
                     a.desc.to_string(),
-                    "点一下：导出到皮肤目录并定位文件；改完点「重载配置」即时生效".to_string(),
+                    "点一下导出并定位文件；改完重载配置生效".to_string(),
                 )
             }),
             Some(Id::DictRollback) => Some((
@@ -2898,20 +3466,18 @@ fn paint(app: &mut App) {
                     g.fill_round(tr, R_CARD, t.card);
                     g.stroke_round(tr, R_CARD, t.field_border, 1.0);
                 }
-                unsafe {
-                    for (i, l) in lines.iter().enumerate() {
-                        let top = tr.top + app.s(6) + (i as i32) * app.s(24);
-                        let color = if i == 0 { t.text } else { t.text3 };
-                        text(
-                            mem,
-                            RECT { left: tr.left + app.s(12), top, right: tr.right - app.s(12), bottom: top + app.s(22) },
-                            l,
-                            app.font_small,
-                            color,
-                            DT_LEFT,
-                            true,
-                        );
-                    }
+                for (i, l) in lines.iter().enumerate() {
+                    let top = tr.top + app.s(6) + (i as i32) * app.s(24);
+                    let color = if i == 0 { t.text } else { t.text3 };
+                    text(
+                        mem,
+                        RECT { left: tr.left + app.s(12), top, right: tr.right - app.s(12), bottom: top + app.s(22) },
+                        l,
+                        app.font_small,
+                        color,
+                        DT_LEFT,
+                        true,
+                    );
                 }
             }
         }
@@ -2939,120 +3505,123 @@ fn paint(app: &mut App) {
 }
 
 fn draw_input(app: &mut App, dc: HDC, x0: i32, y0: i32, w: i32) -> i32 {
-    let gap = app.s(16);
-    let t = app.theme.clone();
-    // 页头 + 两栏自动配平（高的卡片先分栏，两栏尾部自然对齐）
-    let y0 = page_header(app, dc, x0, y0, w, "输入设置");
-    let hs = [
-        app.s(92),          // 默认输入方案
-        app.s(226),         // 输入模式（3 个分段 + 1 个开关，行内不再有小字注释）
-        app.s(96),          // 候选窗（每页候选数）
-        app.s(330),         // 按键行为：4 个下拉 + 2 个开关（行距 46，不再有注释行）
-        app.s(212),         // 模糊音 + 自学习
-        app.s(268),         // 标点自定义
-    ];
-    let slots = balance(&hs, x0, y0, w, gap);
+    let y0 = page_header(app, dc, x0, y0, w);
+    let mut cols = app.cols(x0, y0, w);
 
-    let (x, cy0, col_w) = slots[0];
-    let cy = app.card(dc, x, cy0, col_w, app.s(92), "默认输入方案", "");
+    // 左栏：输入方案 + 输入模式；右栏：候选来源 + 学习与快捷。
+    // 两栏各 2 张卡片、总高相同（144+236 / 190+190），底部自然对齐。
+    let (x, cy0, col_w) = cols.put(0, app.card_h(2));
+    let cy = app.card(dc, x, cy0, col_w, app.card_h(2), "输入方案与候选", "");
     let schema_name = app
         .schemas
         .iter()
         .find(|(id, _)| *id == app.cfg.input.schema)
         .map(|(_, n)| n.clone())
         .unwrap_or_else(|| app.cfg.input.schema.clone());
-    let combo = RECT { left: x + app.s(18), top: cy, right: x + col_w - app.s(18), bottom: cy + app.s(34) };
-    app.combo(dc, Id::SchemaCombo, combo, &schema_name);
+    let inner = col_w - app.s(36);
+    app.row_combo(dc, x + app.s(18), cy, inner, "默认输入方案", "决定键位与词库", Id::SchemaCombo, &schema_name);
+    app.row_slider(
+        dc,
+        x + app.s(18),
+        cy + app.s(ROW_H),
+        inner,
+        "每页候选数",
+        "竖排时一屏显示几个",
+        Id::PageSize,
+        app.cfg.input.page_size as i32,
+        3,
+        10,
+        " 个",
+    );
 
-    let (x, cy0, col_w) = slots[1];
-    let mode_h = app.s(226);
-    let cy = app.card(dc, x, cy0, col_w, mode_h, "输入模式", "");
-    let mut ry = cy;
-    // 这几行不给小字注释：标签 + 右边的分段值已经说明了一切，注释是多余的
-    for (label, id, names, sel) in [
-        ("全角 / 半角", Id::SegFull, ["半角", "全角"], if app.cfg.input.full_shape { 1 } else { 0 }),
-        ("中英标点", Id::SegPunct, ["中文", "英文"], if app.cfg.input.ascii_punct { 1 } else { 0 }),
-        ("默认中英模式", Id::SegAscii, ["中文", "英文"], if app.cfg.input.ascii_mode { 1 } else { 0 }),
-    ] {
-        let r = app.row(dc, x + app.s(18), ry, col_w - app.s(36), label, "");
-        // 控件宽度与下拉统一（160），这样各卡片右侧控件左边缘对齐
-        let seg = RECT { left: r.right - app.s(160), top: r.top + app.s(6), right: r.right, bottom: r.top + app.s(36) };
-        app.segmented(dc, id, seg, &names, sel);
-        ry += app.s(46);
-    }
-    // 中英状态按应用记（输入逻辑搬进服务后，所有应用原本会共用同一个中英状态）
+    let mode = app.card_h(4);
+    let (x, cy0, col_w) = cols.put(0, mode);
+    let cy = app.card(dc, x, cy0, col_w, mode, "输入模式", "");
+    let inner = col_w - app.s(36);
+    let lx = x + app.s(18);
+    app.row_seg(
+        dc, lx, cy, inner,
+        "全角 / 半角", "标点与空格全宽",
+        Id::SegFull, &["半角", "全角"], if app.cfg.input.full_shape { 1 } else { 0 },
+    );
+    app.row_seg(
+        dc, lx, cy + app.s(ROW_H), inner,
+        "中英标点", "Ctrl + . 可临时切换",
+        Id::SegPunct, &["中文", "英文"], if app.cfg.input.ascii_punct { 1 } else { 0 },
+    );
+    app.row_seg(
+        dc, lx, cy + app.s(ROW_H) * 2, inner,
+        "默认中英模式", "新应用启动时的状态",
+        Id::SegAscii, &["中文", "英文"], if app.cfg.input.ascii_mode { 1 } else { 0 },
+    );
+    app.row_toggle(
+        dc, lx, cy + app.s(ROW_H) * 3, inner,
+        "中英状态按应用记忆", "关闭后所有应用统一",
+        Id::SwitchPerApp, app.cfg.input.per_app_mode,
+    );
+
+    let src = app.card_h(3);
+    let (x, cy0, col_w) = cols.put(1, src);
+    let cy = app.card(dc, x, cy0, col_w, src, "候选来源", "关闭后不再出现该类候选");
+    let inner = col_w - app.s(36);
+    let lx = x + app.s(18);
+    for (i, (label, desc, id, on)) in [
+        ("Emoji 候选", "附带表情候选", Id::SwitchEmoji, app.cfg.input.enable_emoji),
+        ("英文单词", "中英混输，如 hello", Id::SwitchEnglish, app.cfg.input.enable_english),
+        ("自定义短语", "短语表里的词优先", Id::SwitchPhrase, app.cfg.input.enable_custom_phrase),
+    ]
+    .into_iter()
+    .enumerate()
     {
-        let r = app.row(
-            dc,
-            x + app.s(18),
-            ry,
-            col_w - app.s(36),
-            "中英状态按应用记忆",
-            "",
-        );
-        app.toggle_switch(dc, Id::SwitchPerApp, r, app.cfg.input.per_app_mode);
+        app.row_toggle(dc, lx, cy + app.s(ROW_H) * i as i32, inner, label, desc, id, on);
     }
 
-    let (x, cy0, col_w) = slots[2];
-    let cy = app.card(dc, x, cy0, col_w, app.s(96), "候选窗", "");
-    let r = app.row(dc, x + app.s(18), cy, col_w - app.s(36), "每页候选数", "");
-    let sl = RECT { left: r.left, top: r.top + app.s(4), right: r.right - app.s(78), bottom: r.top + app.s(32) };
-    app.slider(dc, Id::PageSize, sl, app.cfg.input.page_size as i32, 3, 10, " 个");
+    let assist = app.card_h(3);
+    let (x, cy0, col_w) = cols.put(1, assist);
+    let cy = app.card(dc, x, cy0, col_w, assist, "学习与快捷", "");
+    let inner = col_w - app.s(36);
+    let lx = x + app.s(18);
+    for (i, (label, desc, id, on)) in [
+        ("用户词典自学习", "记住新词与词频", Id::SwitchLearn, app.cfg.input.enable_user_dict),
+        ("词语联想", "上屏后提示下一个词", Id::SwitchAssoc, app.cfg.input.enable_assoc),
+        ("快捷输入", "rq / sj / v 算式", Id::SwitchQuick, app.cfg.input.enable_quick_input),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        app.row_toggle(dc, lx, cy + app.s(ROW_H) * i as i32, inner, label, desc, id, on);
+    }
 
-    let (x, cy0, col_w) = slots[3];
-    // 4 个下拉（回车/中英切换/分隔符/删词）+ 2 个开关（联想/快捷输入）
-    let keys_h = app.s(330);
+    cols.bottom() + app.s(10)
+}
+
+fn draw_keys(app: &mut App, dc: HDC, x0: i32, y0: i32, w: i32) -> i32 {
+    let y0 = page_header(app, dc, x0, y0, w);
+    let mut cols = app.cols(x0, y0, w);
+
+    let keys_h = app.card_h(4);
+    let (x, cy0, col_w) = cols.put(0, keys_h);
     let cy = app.card(dc, x, cy0, col_w, keys_h, "按键行为", "");
-    let mut ry = cy;
-    for (label, id, shown) in [
-        ("回车键", Id::EnterCombo, enter_text(app)),
-        ("中英切换键", Id::ToggleCombo, toggle_text(app)),
-        ("拼音分隔符", Id::SepCombo, sep_text(app)),
-        ("删词键", Id::DeleteKeyCombo, find_label(&DELETE_ITEMS, &app.cfg.input.delete_key)),
-    ] {
-        let r = app.row(dc, x + app.s(18), ry, col_w - app.s(36), label, "");
-        // 下拉宽度收窄：以前 230 宽右对齐，左边缘会压到左侧标签文字上
-        let cb = RECT { left: r.right - app.s(160), top: r.top + app.s(4), right: r.right, bottom: r.top + app.s(36) };
-        app.combo(dc, id, cb, &shown);
-        ry += app.s(46);
+    let inner = col_w - app.s(36);
+    let lx = x + app.s(18);
+    let rows = [
+        ("回车键", "组合中按回车的处理", Id::EnterCombo, enter_text(app)),
+        ("中英切换键", "裸按 Shift 或 Ctrl+空格", Id::ToggleCombo, toggle_text(app)),
+        ("拼音分隔符", "音节之间显示什么", Id::SepCombo, sep_text(app)),
+        ("删词键", "删掉当前页第 N 个候选", Id::DeleteKeyCombo, find_label(&DELETE_ITEMS, &app.cfg.input.delete_key)),
+    ];
+    for (i, (label, desc, id, shown)) in rows.into_iter().enumerate() {
+        app.row_combo(dc, lx, cy + app.s(ROW_H) * i as i32, inner, label, desc, id, &shown);
     }
-    let r = app.row(dc, x + app.s(18), ry, col_w - app.s(36), "词语联想", "");
-    app.toggle_switch(dc, Id::SwitchAssoc, r, app.cfg.input.enable_assoc);
-    ry += app.s(46);
-    let r = app.row(dc, x + app.s(18), ry, col_w - app.s(36), "快捷输入", "");
-    app.toggle_switch(dc, Id::SwitchQuick, r, app.cfg.input.enable_quick_input);
-    ry += app.s(46);
 
-    let (rx, cy0, col_w) = slots[4];
-    let fuzzy_h = app.s(212);
-    let cy = app.card(dc, rx, cy0, col_w, fuzzy_h, "模糊音", "");
-    let cell_w = (col_w - app.s(36)) / 3;
-    for row in 0..4i32 {
-        for col in 0..3i32 {
-            let i = (row * 3 + col) as usize;
-            if i >= FUZZY_LABELS.len() {
-                break;
-            }
-            let (gid, label) = FUZZY_LABELS[i];
-            let r = RECT {
-                left: rx + app.s(18) + col * cell_w,
-                top: cy + row * app.s(28),
-                right: rx + app.s(18) + (col + 1) * cell_w - app.s(6),
-                bottom: cy + row * app.s(28) + app.s(26),
-            };
-            let on = app.cfg.input.fuzzy.iter().any(|f| f == gid);
-            app.checkbox(dc, Id::Fuzzy(i), r, label, on);
-        }
-    }
-    let mut fy = cy + 4 * app.s(28) + app.s(4);
-    let r = app.row(dc, rx + app.s(18), fy, col_w - app.s(36), "用户词典自学习", "");
-    app.toggle_switch(dc, Id::SwitchLearn, r, app.cfg.input.enable_user_dict);
-    let _ = fy;
-
-    let (rx, cy0, col_w) = slots[5];
-    let punct_h = app.s(268);
-    let cy = app.card(dc, rx, cy0, col_w, punct_h, "标点自定义", "");
-    let list_rect = RECT { left: rx + app.s(18), top: cy, right: rx + col_w - app.s(18), bottom: cy + app.s(140) };
+    // 自定义标点：列表 + 两个输入框 + 添加/删除。两条输入行比硬塞一行好读。
+    let punct_inner = app.s(160 + 12 + 32 + 10 + 34);
+    let punct_h = app.card_h_inner(punct_inner);
+    let (x, cy0, col_w) = cols.put(1, punct_h);
+    let cy = app.card(dc, x, cy0, col_w, punct_h, "自定义标点", "留空则沿用内置标点表");
+    let inner = col_w - app.s(36);
+    let lx = x + app.s(18);
+    let list_rect = RECT { left: lx, top: cy, right: lx + inner, bottom: cy + app.s(160) };
     let items: Vec<String> = app
         .cfg
         .input
@@ -3063,146 +3632,320 @@ fn draw_input(app: &mut App, dc: HDC, x0: i32, y0: i32, w: i32) -> i32 {
     let selected = app.punct_sel();
     app.list(dc, Id::PunctRow, list_rect, &items, selected, "暂无自定义（使用内置标点表）");
     let fy = list_rect.bottom + app.s(12);
-    let inner = col_w - app.s(36);
-    let kw = (inner - app.s(16)) / 4;
-    let kr = RECT { left: rx + app.s(18), top: fy, right: rx + app.s(18) + kw, bottom: fy + app.s(32) };
-    let ov = RECT { left: kr.right + app.s(8), top: fy, right: kr.right + app.s(8) + kw * 2, bottom: fy + app.s(32) };
-    app.text_field(dc, Id::PunctKey, kr, &app.punct_key.clone(), "按键");
-    app.text_field(dc, Id::PunctOut, ov, &app.punct_out.clone(), "上屏文本");
-    let add = RECT { left: ov.right + app.s(8), top: fy, right: ov.right + app.s(8) + kw / 2, bottom: fy + app.s(32) };
-    let del = RECT { left: add.right + app.s(6), top: fy, right: rx + col_w - app.s(18), bottom: fy + app.s(32) };
-    app.button(dc, Id::PunctAdd, add, "添加", true);
-    app.button_danger(dc, Id::PunctDel, del, "删除");
-    let bottom = slots
-        .iter()
-        .zip(hs.iter())
-        .map(|((_, y, _), h)| y + h)
-        .max()
-        .unwrap_or(y0);
-    bottom + app.s(10)
+    let key_w = app.s(96);
+    let kr = RECT { left: lx, top: fy, right: lx + key_w, bottom: fy + app.s(32) };
+    let ov = RECT { left: kr.right + app.s(8), top: fy, right: lx + inner, bottom: fy + app.s(32) };
+    app.text_field(dc, Id::PunctKey, kr, &app.punct_key.clone(), "按键，如 ，");
+    app.text_field(dc, Id::PunctOut, ov, &app.punct_out.clone(), "上屏文本，如 ……");
+    let fy = fy + app.s(42);
+    let btns = app.btn_row(lx, fy, inner, 2, 34);
+    app.button(dc, Id::PunctAdd, btns[0], "添加", true);
+    app.button_danger(dc, Id::PunctDel, btns[1], "删除所选");
+
+    cols.bottom() + app.s(10)
+}
+
+fn draw_fuzzy(app: &mut App, dc: HDC, x0: i32, y0: i32, w: i32) -> i32 {
+    let t = app.theme.clone();
+    let y0 = page_header(app, dc, x0, y0, w);
+
+    // 模糊音组：整行 4 列勾选，下面一排快速预设。
+    let card_h = app.card_h_inner(app.s(3 * 30 + 12 + 34));
+    let cy = app.card(dc, x0, y0, w, card_h, "模糊音组", "勾选后自动重建索引，几秒后生效");
+    let inner = w - app.s(36);
+    let lx = x0 + app.s(18);
+    let grid_gap = app.s(8);
+    let cell_w = (inner - grid_gap * 3) / 4;
+    for i in 0..FUZZY_LABELS.len() {
+        let (gid, label) = FUZZY_LABELS[i];
+        let col = (i % 4) as i32;
+        let row = (i / 4) as i32;
+        let r = RECT {
+            left: lx + col * (cell_w + grid_gap),
+            top: cy + row * app.s(30),
+            right: lx + col * (cell_w + grid_gap) + cell_w - app.s(6),
+            bottom: cy + row * app.s(30) + app.s(26),
+        };
+        let on = app.cfg.input.fuzzy.iter().any(|f| f == gid);
+        app.checkbox(dc, Id::Fuzzy(i), r, label, on);
+    }
+    let py = cy + app.s(3 * 30) + app.s(12);
+    let presets = app.btn_row(lx, py, inner, 4, 34);
+    for (i, label) in ["南方口音常用", "前后鼻音", "全部开启", "清空"].iter().enumerate() {
+        if i == 3 {
+            app.button_danger(dc, Id::FuzzyPreset(i), presets[i], label);
+        } else {
+            app.button_soft(dc, Id::FuzzyPreset(i), presets[i], label);
+        }
+    }
+
+    // 说明卡：三列小字，比一大段段落好扫。
+    let iy = y0 + card_h + app.s(COL_GAP);
+    let ih = app.card_h_inner(app.s(64));
+    let cy = app.card(dc, x0, iy, w, ih, "模糊音怎么工作", "");
+    let inner = w - app.s(36);
+    let lx = x0 + app.s(18);
+    let col_w = (inner - app.s(24) * 2) / 3;
+    let notes = [
+        ("双向派生", "开启「zh ↔ z」后，zhu 与 zu 都能出「主」"),
+        ("保留标准音", "模糊音是在标准读音之外补充，不替换正确拼音"),
+        ("按需启用", "只勾你分不清的组；勾太多会让候选变杂"),
+    ];
+    for (i, (title, desc)) in notes.iter().enumerate() {
+        let bx = lx + i as i32 * (col_w + app.s(24));
+        unsafe {
+            text(
+                dc,
+                RECT { left: bx, top: cy, right: bx + col_w, bottom: cy + app.s(22) },
+                title,
+                app.font_bold,
+                t.text,
+                DT_LEFT,
+                true,
+            );
+            text(
+                dc,
+                RECT { left: bx, top: cy + app.s(24), right: bx + col_w, bottom: cy + app.s(64) },
+                desc,
+                app.font_small,
+                t.text3,
+                DT_LEFT,
+                false,
+            );
+        }
+    }
+
+    iy + ih + app.s(10)
 }
 
 fn draw_appearance(app: &mut App, dc: HDC, x0: i32, y0: i32, w: i32) -> i32 {
-    let gap = app.s(16);
-    let y0 = page_header(app, dc, x0, y0, w, "外观主题");
-    let theme_h = app.s(126);
-    let hs = [
-        app.s(232),                                  // 候选窗预览
-        theme_h,                                     // 主题与配色
-        app.s(236),                                  // 候选窗选项（2 个分段 + 字体 + 注释开关）
-        app.s(46 + 40 * 7),                          // 自定义颜色
-        app.s(236),                                  // 显示（2 个滑块 + 2 个开关）
-    ];
-    let slots = balance(&hs, x0, y0, w, gap);
+    let y0 = page_header(app, dc, x0, y0, w);
+    let mut cols = app.cols(x0, y0, w);
 
-    let (x, cy0, col_w) = slots[0];
-    let cy = app.card(dc, x, cy0, col_w, app.s(232), "候选窗预览", "");
+    // 左栏：预览 + 主题预设；右栏：逐项配色。
+    let preview_h = app.card_h_inner(app.s(186));
+    let (x, cy0, col_w) = cols.put(0, preview_h);
+    let cy = app.card(dc, x, cy0, col_w, preview_h, "候选窗预览", "跟随下面的设置实时变化");
     let pr = RECT { left: x + app.s(18), top: cy, right: x + col_w - app.s(18), bottom: cy + app.s(186) };
     app.draw_candidate_preview(dc, pr);
 
-    let (x, cy0, col_w) = slots[1];
-    let cy = app.card(dc, x, cy0, col_w, theme_h, "主题与配色", "");
-    let bw = (col_w - app.s(36) - app.s(16)) / 3;
+    let preset_h = app.card_h_inner(app.s(34 + 8 + 34));
+    let (x, cy0, col_w) = cols.put(0, preset_h);
+    let cy = app.card(dc, x, cy0, col_w, preset_h, "主题与配色", "");
+    let inner = col_w - app.s(36);
+    let lx = x + app.s(18);
+    let presets = app.btn_row(lx, cy, inner, 3, 34);
     for (i, name) in ["浅色", "深色", "护眼"].iter().enumerate() {
-        let r = RECT {
-            left: x + app.s(18) + (i as i32) * (bw + app.s(8)),
-            top: cy,
-            right: x + app.s(18) + (i as i32) * (bw + app.s(8)) + bw,
-            bottom: cy + app.s(34),
-        };
-        app.button(dc, Id::ThemePreset(i), r, name, false);
+        app.button(dc, Id::ThemePreset(i), presets[i], name, theme_preset_active(app, i));
     }
-    let bw2 = (col_w - app.s(36) - app.s(8)) / 2;
-    app.button(dc, Id::SkinExport, RECT { left: x + app.s(18), top: cy + app.s(42), right: x + app.s(18) + bw2, bottom: cy + app.s(76) }, "导出配色", false);
-    app.button(dc, Id::SkinImport, RECT { left: x + app.s(18) + bw2 + app.s(8), top: cy + app.s(42), right: x + app.s(18) + bw2 * 2 + app.s(8), bottom: cy + app.s(76) }, "导入配色", false);
+    let files = app.btn_row(lx, cy + app.s(42), inner, 2, 34);
+    app.button(dc, Id::SkinExport, files[0], "导出配色文件…", false);
+    app.button(dc, Id::SkinImport, files[1], "导入配色文件…", false);
 
-    let (x, cy0, col_w) = slots[2];
-    // 候选窗：排列 / 位置 / 字体 / 注释（这几项都由输入法实时读取，热生效）
-    let cw_h = app.s(236);
-    let cy = app.card(dc, x, cy0, col_w, cw_h, "候选窗", "");
-    let mut fy = cy;
-    for (label, desc, id, names, sel) in [
-        ("排列", "", Id::SegLayout, ["竖排", "横排"], if app.cfg.appearance.layout == "horizontal" { 1 } else { 0 }),
-        ("位置", "", Id::SegFollow, ["跟随光标", "固定右下"], if app.cfg.appearance.follow_mode == "fixed" { 1 } else { 0 }),
-    ] {
-        let r = app.row(dc, x + app.s(18), fy, col_w - app.s(36), label, desc);
-        let seg = RECT { left: r.right - app.s(160), top: r.top + app.s(6), right: r.right, bottom: r.top + app.s(36) };
-        app.segmented(dc, id, seg, &names, sel);
-        fy += app.s(46);
-    }
-    let r = app.row(dc, x + app.s(18), fy, col_w - app.s(36), "字体", "");
-    let shown = find_label(&FONT_ITEMS, &app.cfg.appearance.font_family);
-    let cb = RECT { left: r.right - app.s(160), top: r.top + app.s(4), right: r.right, bottom: r.top + app.s(36) };
-    app.combo(dc, Id::FontCombo, cb, &shown);
-    fy += app.s(46);
-    let r = app.row(dc, x + app.s(18), fy, col_w - app.s(36), "显示候选注释", "");
-    app.toggle_switch(dc, Id::SwitchComment, r, app.cfg.appearance.show_comment);
-
-    let (rx, cy0, col_w) = slots[3];
-    let ch = app.s(46 + 40 * 7);
-    let cy = app.card(dc, rx, cy0, col_w, ch, "自定义颜色", "");
+    let color_h = app.card_h_inner(app.s(40 * 7));
+    let (x, cy0, col_w) = cols.put(1, color_h);
+    let cy = app.card(dc, x, cy0, col_w, color_h, "自定义颜色", "点色块或「选择…」调色");
     let mut fy = cy;
     for (i, label) in COLOR_LABELS.iter().enumerate() {
         let color = color_of(app, i);
-        let lr = RECT { left: rx + app.s(18), top: fy + app.s(4), right: rx + app.s(110), bottom: fy + app.s(28) };
+        let lr = RECT { left: x + app.s(18), top: fy + app.s(6), right: x + app.s(112), bottom: fy + app.s(28) };
         unsafe {
             text(dc, lr, label, app.font, app.theme.text, DT_LEFT, true);
         }
-        let cr = RECT { left: rx + app.s(116), top: fy + app.s(5), right: rx + app.s(164), bottom: fy + app.s(27) };
+        let cr = RECT { left: x + app.s(116), top: fy + app.s(6), right: x + app.s(164), bottom: fy + app.s(28) };
         app.chip(dc, Id::ColorPick(i), cr, color);
         let hex = argb_hex(color);
-        let hr = RECT { left: cr.right + app.s(10), top: fy, right: cr.right + app.s(120), bottom: fy + app.s(32) };
+        let hr = RECT { left: cr.right + app.s(10), top: fy, right: cr.right + app.s(106), bottom: fy + app.s(34) };
         unsafe {
             text(dc, hr, &hex, app.font_small, app.theme.text2, DT_LEFT, true);
         }
-        let br = RECT { left: rx + col_w - app.s(96), top: fy + app.s(2), right: rx + col_w - app.s(18), bottom: fy + app.s(32) };
+        let br = RECT { left: x + col_w - app.s(96), top: fy + app.s(2), right: x + col_w - app.s(18), bottom: fy + app.s(32) };
         app.button(dc, Id::ColorPick(i), br, "选择…", false);
         fy += app.s(40);
     }
 
-    let (rx, cy0, col_w) = slots[4];
-    let dh = app.s(236);
-    let cy = app.card(dc, rx, cy0, col_w, dh, "显示", "");
-    let mut fy = cy;
-    let r = app.row(dc, rx + app.s(18), fy, col_w - app.s(36), "字体大小", "");
-    app.slider(dc, Id::FontSize, RECT { left: r.left, top: r.top + app.s(4), right: r.right - app.s(90), bottom: r.top + app.s(32) }, app.cfg.appearance.font_size as i32, 9, 26, " pt");
-    fy += app.s(46);
-    let r = app.row(dc, rx + app.s(18), fy, col_w - app.s(36), "窗口不透明度", "");
-    app.slider(dc, Id::Opacity, RECT { left: r.left, top: r.top + app.s(4), right: r.right - app.s(90), bottom: r.top + app.s(32) }, app.cfg.appearance.opacity as i32, 30, 100, " %");
-    fy += app.s(46);
-    let r = app.row(dc, rx + app.s(18), fy, col_w - app.s(36), "显示候选序号", "");
-    app.toggle_switch(dc, Id::SwitchIndex, r, app.cfg.appearance.show_index);
-    fy += app.s(46);
-    let r = app.row(dc, rx + app.s(18), fy, col_w - app.s(36), "显示右下角状态栏", "");
-    app.toggle_switch(dc, Id::SwitchStatus, r, app.cfg.appearance.show_status_bar);
-    let _ = (fy, dh);
-    slots
-        .iter()
-        .zip(hs.iter())
-        .map(|((_, y, _), h)| y + h)
-        .max()
-        .unwrap_or(y0)
-        + app.s(10)
+    cols.bottom() + app.s(10)
+}
+
+fn draw_candidate(app: &mut App, dc: HDC, x0: i32, y0: i32, w: i32) -> i32 {
+    let y0 = page_header(app, dc, x0, y0, w);
+    let mut cols = app.cols(x0, y0, w);
+
+    // 左：布局与字体、文字与外观；右：显示内容、内边距与间距。
+    let layout_h = app.card_h(3);
+    let (x, cy0, col_w) = cols.put(0, layout_h);
+    let cy = app.card(dc, x, cy0, col_w, layout_h, "布局与字体", "");
+    let inner = col_w - app.s(36);
+    let lx = x + app.s(18);
+    app.row_seg(
+        dc, lx, cy, inner,
+        "排列", "竖排适合逐字挑选",
+        Id::SegLayout, &["竖排", "横排"], if app.cfg.appearance.layout == "horizontal" { 1 } else { 0 },
+    );
+    app.row_seg(
+        dc, lx, cy + app.s(ROW_H), inner,
+        "位置", "固定时贴在状态栏上方",
+        Id::SegFollow, &["跟随光标", "固定右下"], if app.cfg.appearance.follow_mode == "fixed" { 1 } else { 0 },
+    );
+    let shown = find_label(&FONT_ITEMS, &app.cfg.appearance.font_family);
+    app.row_combo(
+        dc, lx, cy + app.s(ROW_H) * 2, inner,
+        "字体", "候选文字使用的字体",
+        Id::FontCombo, &shown,
+    );
+
+    let text_h = app.card_h(3);
+    let (x, cy0, col_w) = cols.put(0, text_h);
+    let cy = app.card(dc, x, cy0, col_w, text_h, "文字与外观", "");
+    let inner = col_w - app.s(36);
+    let lx = x + app.s(18);
+    app.row_slider(dc, lx, cy, inner, "字号", "单位 pt，随 DPI 缩放", Id::FontSize, app.cfg.appearance.font_size as i32, 9, 26, " pt");
+    app.row_slider(dc, lx, cy + app.s(ROW_H), inner, "不透明度", "100% 为完全不透明", Id::Opacity, app.cfg.appearance.opacity as i32, 30, 100, " %");
+    app.row_slider(dc, lx, cy + app.s(ROW_H) * 2, inner, "圆角", "0 为直角", Id::CornerRadius, app.cfg.appearance.corner_radius as i32, 0, 24, " px");
+
+    let show_h = app.card_h(2);
+    let (x, cy0, col_w) = cols.put(1, show_h);
+    let cy = app.card(dc, x, cy0, col_w, show_h, "显示内容", "");
+    let inner = col_w - app.s(36);
+    let lx = x + app.s(18);
+    app.row_toggle(dc, lx, cy, inner, "显示候选序号", "1. 2. 3. …", Id::SwitchIndex, app.cfg.appearance.show_index);
+    app.row_toggle(dc, lx, cy + app.s(ROW_H), inner, "显示候选注释", "拼音或来源提示", Id::SwitchComment, app.cfg.appearance.show_comment);
+
+    let space_h = app.card_h(4);
+    let (x, cy0, col_w) = cols.put(1, space_h);
+    let cy = app.card(dc, x, cy0, col_w, space_h, "内边距与间距", "数值按显示器 DPI 缩放");
+    let inner = col_w - app.s(36);
+    let lx = x + app.s(18);
+    app.row_slider(dc, lx, cy, inner, "左右内边距", "", Id::PadX, app.cfg.appearance.cand_pad_x as i32, 0, 30, " px");
+    app.row_slider(dc, lx, cy + app.s(ROW_H), inner, "上下内边距", "", Id::PadY, app.cfg.appearance.cand_pad_y as i32, 0, 16, " px");
+    app.row_slider(dc, lx, cy + app.s(ROW_H) * 2, inner, "最小宽度", "", Id::MinWidth, app.cfg.appearance.cand_min_width as i32, 60, 300, " px");
+    app.row_slider(dc, lx, cy + app.s(ROW_H) * 3, inner, "横排间距", "仅横排排列时生效", Id::CandGap, app.cfg.appearance.cand_gap as i32, 0, 48, " px");
+
+    cols.bottom() + app.s(10)
+}
+
+fn draw_status(app: &mut App, dc: HDC, x0: i32, y0: i32, w: i32) -> i32 {
+    let t = app.theme.clone();
+    let gap = app.s(COL_GAP);
+    let y0 = page_header(app, dc, x0, y0, w);
+    let mut cols = app.cols(x0, y0, w);
+
+    // 状态栏开关 + 边距
+    let status_h = app.card_h(2);
+    let (x, cy0, col_w) = cols.put(0, status_h);
+    let cy = app.card(dc, x, cy0, col_w, status_h, "状态栏", "贴在屏幕右下角的那一条");
+    let inner = col_w - app.s(36);
+    let lx = x + app.s(18);
+    app.row_toggle(dc, lx, cy, inner, "显示状态栏", "关闭后只能靠快捷键切换", Id::SwitchStatus, app.cfg.appearance.show_status_bar);
+    app.row_slider(dc, lx, cy + app.s(ROW_H), inner, "距右下角边距", "", Id::BarMargin, app.cfg.appearance.bar_margin as i32, 0, 40, " px");
+
+    // 皮肤资源说明（点击资源卡片会导出到皮肤目录）
+    let help_h = app.card_h_inner(app.s(84));
+    let (x, cy0, col_w) = cols.put(1, help_h);
+    let cy = app.card(dc, x, cy0, col_w, help_h, "皮肤资源", "点任意一项导出并打开文件");
+    let lx = x + app.s(18);
+    let lines = [
+        "资源是 *.bin：8 字节头 + BGRA 像素。",
+        "图标只用 alpha 通道，按主题色着色。",
+        "改完点「关于与维护 → 重载配置」即时生效。",
+    ];
+    for (i, line) in lines.iter().enumerate() {
+        unsafe {
+            text(
+                dc,
+                RECT { left: lx, top: cy + i as i32 * app.s(26), right: x + col_w - app.s(18), bottom: cy + i as i32 * app.s(26) + app.s(24) },
+                line,
+                app.font_small,
+                t.text3,
+                DT_LEFT,
+                true,
+            );
+        }
+    }
+
+    // 皮肤中心：整行 6 列缩略图（11 份资源 = 2 行），下面一排操作。
+    let skin_inner = app.s(2 * 96 + 8 + 12 + 34);
+    let skin_h = app.card_h_inner(skin_inner);
+    let sy = cols.bottom() + gap;
+    let cy = app.card(dc, x0, sy, w, skin_h, "皮肤中心", "点击资源导出到皮肤目录");
+    let inner = w - app.s(36);
+    let lx = x0 + app.s(18);
+    let cols_n = 6;
+    let cell_gap = app.s(8);
+    let cell_w = (inner - cell_gap * (cols_n - 1)) / cols_n;
+    let cell_h = app.s(96);
+    for i in 0..app.skins.len() {
+        let col = (i % cols_n as usize) as i32;
+        let row = (i / cols_n as usize) as i32;
+        let left = lx + col * (cell_w + cell_gap);
+        let top = cy + row * (cell_h + cell_gap);
+        let cell = RECT { left, top, right: left + cell_w, bottom: top + cell_h };
+        let hot = app.hover == Some(Id::SkinItem(i));
+        if let Some(g) = unsafe { Gfx::new(dc) } {
+            if hot {
+                unsafe { g.fill_round(cell, R_ROW, t.hover) };
+            }
+        }
+        let a = &app.skins[i];
+        let (tw, th) = if a.name == "bar_bg.bin" {
+            (app.s(92), app.s(30))
+        } else {
+            (app.s(48), app.s(48))
+        };
+        let thumb = RECT {
+            left: cell.left + (cell_w - tw) / 2,
+            top: cell.top + app.s(6) + (app.s(48) - th) / 2,
+            right: cell.left + (cell_w - tw) / 2 + tw,
+            bottom: cell.top + app.s(6) + (app.s(48) - th) / 2 + th,
+        };
+        let tint = match a.name.as_str() {
+            "cell_active.bin" => t.accent,
+            // 悬停胶囊是白色蒙版，直接按文字色着色会变成一块黑方块
+            "cell_hover.bin" => mix_argb(t.text, t.card, 0.45),
+            _ => t.text,
+        };
+        unsafe { draw_skin_thumb(dc, thumb, a, tint, t.card) };
+        unsafe {
+            text(
+                dc,
+                RECT { left: cell.left + app.s(4), top: cell.top + app.s(58), right: cell.right - app.s(4), bottom: cell.top + app.s(78) },
+                &a.label,
+                app.font_small,
+                t.text,
+                DT_CENTER,
+                true,
+            );
+            text(
+                dc,
+                RECT { left: cell.left + app.s(4), top: cell.top + app.s(76), right: cell.right - app.s(4), bottom: cell.top + app.s(94) },
+                &a.source,
+                app.font_small,
+                t.text3,
+                DT_CENTER,
+                true,
+            );
+        }
+        app.hits.push(Hit { id: Id::SkinItem(i), rect: cell });
+    }
+    let by = cy + app.s(2 * 96 + 8 + 12);
+    let actions = app.btn_row(lx, by, inner, 4, 34);
+    app.button(dc, Id::SkinPackExport, actions[0], "导出皮肤包…", false);
+    app.button(dc, Id::SkinPackImport, actions[1], "导入皮肤包…", false);
+    app.button(dc, Id::SkinRestore, actions[2], "恢复内置皮肤", false);
+    app.button(dc, Id::OpenSkins, actions[3], "打开皮肤目录", false);
+
+    sy + skin_h + app.s(10)
 }
 fn draw_dict(app: &mut App, dc: HDC, x0: i32, y0: i32, w: i32) -> i32 {
-    let gap = app.s(16);
     let t = app.theme.clone();
-    let y0 = page_header(app, dc, x0, y0, w, "词库管理");
-    let cell_rows = app.cells.len().div_ceil(2).max(1) as i32;
-    let hs = [
-        app.s(152),                                  // 词库统计
-        app.s(124),                                  // 上游词库更新（状态一行 + 两颗按钮）
-        app.s(388),                                  // 自定义短语（查询 + 表格 + 新增/删除/导入导出）
-        app.s(46 * 3 + 46),                          // 候选来源
-        app.s(352),                                  // 用户词库备份/恢复（含导出/清空两行）
-        app.s(70) + cell_rows * app.s(28) + app.s(52), // 细胞词库
-        app.s(160),                                  // 导入词库（批量通道）
-    ];
-    let slots = balance(&hs, x0, y0, w, gap);
+    let gap = app.s(COL_GAP);
+    let y0 = page_header(app, dc, x0, y0, w);
+    let mut cols = app.cols(x0, y0, w);
 
-    let (x, cy0, col_w) = slots[0];
-    let sh = app.s(152);
-    let cy = app.card(dc, x, cy0, col_w, sh, "词库统计", "");
+    // 左栏：统计 → 上游更新 → 细胞词库
+    let stats_h = app.card_h_inner(app.s(3 * 36));
+    let (x, cy0, col_w) = cols.put(0, stats_h);
+    let cy = app.card(dc, x, cy0, col_w, stats_h, "词库统计", "");
     let rows = [
         ("自定义短语", format!("{} 条", app.stats.custom_phrase_count)),
         ("词库数据", format!("约 {:.0} MB", app.stats.table_size_mb)),
@@ -3219,199 +3962,50 @@ fn draw_dict(app: &mut App, dc: HDC, x0: i32, y0: i32, w: i32) -> i32 {
         fy += app.s(36);
     }
 
-    let (x, cy0, col_w) = slots[1];
     // 上游词库更新：一颗按钮走完（下载→校验→部署），校验不过不动本机词库；另留回滚
-    {
-        let uh2 = app.s(124);
-        let cy = app.card(dc, x, cy0, col_w, uh2, "上游词库更新", "");
-        let st = &app.dict_state;
-        let line = format!(
-            "本机词库 {} · 上次部署备份 {}",
-            if st.bundled.is_empty() { "未记录" } else { &st.bundled },
-            if st.backup.is_empty() { "无" } else { "有" }
-        );
-        unsafe {
-            text(dc, RECT { left: x + app.s(18), top: cy, right: x + col_w - app.s(18), bottom: cy + app.s(24) }, &line, app.font_small, t.text2, DT_LEFT, true);
-        }
-        let inner = col_w - app.s(36);
-        let bh2 = (inner - app.s(8)) / 2;
-        app.button(dc, Id::DictUpdateOne, RECT { left: x + app.s(18), top: cy + app.s(34), right: x + app.s(18) + bh2, bottom: cy + app.s(68) }, "更新词库", true);
-        app.button(dc, Id::DictRollback, RECT { left: x + app.s(18) + bh2 + app.s(8), top: cy + app.s(34), right: x + app.s(18) + bh2 * 2 + app.s(8), bottom: cy + app.s(68) }, "回滚上次", false);
+    let up_h = app.card_h_inner(app.s(24 + 10 + 34));
+    let (x, cy0, col_w) = cols.put(0, up_h);
+    let cy = app.card(dc, x, cy0, col_w, up_h, "上游词库更新", "");
+    let st = &app.dict_state;
+    let line = format!(
+        "本机词库 {} · 上次部署备份 {}",
+        if st.bundled.is_empty() { "未记录" } else { &st.bundled },
+        if st.backup.is_empty() { "无" } else { "有" }
+    );
+    unsafe {
+        text(dc, RECT { left: x + app.s(18), top: cy, right: x + col_w - app.s(18), bottom: cy + app.s(24) }, &line, app.font_small, t.text2, DT_LEFT, true);
     }
+    let inner = col_w - app.s(36);
+    let btns = app.btn_row(x + app.s(18), cy + app.s(34), inner, 2, 34);
+    app.button(dc, Id::DictUpdateOne, btns[0], "更新词库", true);
+    app.button(dc, Id::DictRollback, btns[1], "回滚上次", false);
 
-    let (x, cy0, col_w) = slots[2];
-    // 自定义短语：查询 + 表格 + 新增/删除（文件就是 Rime 的 custom_phrase.txt，
-    // 服务侧命中即作为候选插到最前，所以**加完立刻能用**，不用重新部署）
-    let ih = app.s(388);
-    let cy = app.card(dc, x, cy0, col_w, ih, "自定义短语", "");
+    // 用户词库管理：导出学习记录 / 清空（清空会重建索引，单独提示）
+    let user_h = app.card_h(1);
+    let (x, cy0, col_w) = cols.put(0, user_h);
+    let cy = app.card(dc, x, cy0, col_w, user_h, "用户词库", "导出学习记录，或清空重新学习");
     let inner = col_w - app.s(36);
     let lx = x + app.s(18);
-    let lw = inner;
-    let view = app.phrase_view();
-    let total = app.phrase_count();
-    {
-        // 查询框（按编码或词条过滤）
-        let qr = RECT { left: lx, top: cy, right: lx + lw - app.s(96), bottom: cy + app.s(32) };
-        app.text_field(dc, Id::PhraseQuery, qr, &app.phrase_query.clone(), "按编码或词条筛选，如 nh");
-        let hint = format!("{} / {total} 条", view.len());
-        let hr = RECT { left: qr.right + app.s(8), top: cy, right: lx + lw, bottom: cy + app.s(32) };
-        unsafe {
-            text(dc, hr, &hint, app.font_small, t.text3, DT_RIGHT, true);
-        }
-    }
-    // 表格：编码 → 词条（权重）
-    let rows_text: Vec<String> = view
-        .iter()
-        .map(|&i| match &app.phrase_rows[i] {
-            xunyin_rime::phrases::Row::Entry(e) => {
-                // 权重不进列表行（列表里不需要方括号），点中这一行会在下面的
-                // 「权重」输入框里回填，改完点"添加 / 更新"即生效
-                format!("{}   →   {}", e.codes, e.text)
-            }
-            xunyin_rime::phrases::Row::Comment(c) => c.clone(),
-        })
-        .collect();
-    let list_rect = RECT { left: lx, top: cy + app.s(42), right: lx + lw, bottom: cy + app.s(202) };
-    let sel_row = app
-        .phrase_sel
-        .and_then(|i| view.iter().position(|&v| v == i));
-    app.list(
-        dc,
-        Id::PhraseRow,
-        list_rect,
-        &rows_text,
-        sel_row,
-        "还没有短语",
-    );
-    // 新增：编码 / 词条 / 权重
-    let fw = (lw - app.s(16)) / 3;
-    let fy = cy + app.s(214);
-    let cr = RECT { left: lx, top: fy, right: lx + fw, bottom: fy + app.s(32) };
-    let tr2 = RECT { left: cr.right + app.s(8), top: fy, right: cr.right + app.s(8) + fw, bottom: fy + app.s(32) };
-    let wr = RECT { left: tr2.right + app.s(8), top: fy, right: lx + lw, bottom: fy + app.s(32) };
-    app.text_field(dc, Id::PhraseCode, cr, &app.phrase_code.clone(), "编码");
-    app.text_field(dc, Id::PhraseText, tr2, &app.phrase_text.clone(), "词条");
-    app.text_field(dc, Id::PhraseWeight, wr, &app.phrase_weight.clone(), "权重(可空)");
-    let by = fy + app.s(42);
-    let bw = (lw - app.s(8)) / 2;
-    app.button(dc, Id::PhraseAdd, RECT { left: lx, top: by, right: lx + bw, bottom: by + app.s(34) }, "添加 / 更新", true);
-    app.button_danger(dc, Id::PhraseDel, RECT { left: lx + bw + app.s(8), top: by, right: lx + lw, bottom: by + app.s(34) }, "删除所选");
-    let by2 = by + app.s(42);
-    app.button(dc, Id::PhraseImport, RECT { left: lx, top: by2, right: lx + bw, bottom: by2 + app.s(34) }, "导入短语（txt）…", false);
-    app.button(dc, Id::DictExport, RECT { left: lx + bw + app.s(8), top: by2, right: lx + lw, bottom: by2 + app.s(34) }, "导出短语文件", false);
-    // 只在导入/保存有结果时给一行反馈（不再常驻一句说明）
-    if !app.stats.last_import.is_empty() {
-        let hr = RECT { left: lx, top: by2 + app.s(40), right: lx + lw, bottom: by2 + app.s(64) };
-        let msg = app.stats.last_import.clone();
-        unsafe {
-            text(dc, hr, &msg, app.font_small, t.text3, DT_LEFT, true);
-        }
-    }
+    let btns = app.btn_row(lx, cy, inner, 2, 34);
+    app.button(dc, Id::ExportUserDict, btns[0], "导出用户词库", false);
+    app.button_danger(dc, Id::ClearUserDict, btns[1], "清空用户词库");
 
-    let (x, cy0, col_w) = slots[3];
-    // 候选来源：关掉某个翻译器即不再出该类候选（走方案补丁，保存后自动重建）
-    let srch = app.s(46 * 3 + 46);
-    let cy = app.card(dc, x, cy0, col_w, srch, "候选来源", "");
-    let mut fy = cy;
-    for (label, id, on) in [
-        ("Emoji", Id::SwitchEmoji, app.cfg.input.enable_emoji),
-        ("英文单词", Id::SwitchEnglish, app.cfg.input.enable_english),
-        ("自定义短语", Id::SwitchPhrase, app.cfg.input.enable_custom_phrase),
-    ] {
-        let r = app.row(dc, x + app.s(18), fy, col_w - app.s(36), label, "");
-        app.toggle_switch(dc, id, r, on);
-        fy += app.s(46);
-    }
-
-    let (rx, ry, col_w) = slots[4];
-    let bh = app.s(352);
-    let cy = app.card(dc, rx, ry, col_w, bh, "用户词库备份 / 恢复", "");
-    // 两行按钮：三颗横排在高 DPI 下会顶出卡片右边缘（实测越界）
-    let binner = col_w - app.s(36);
-    let bhalf = (binner - app.s(8)) / 2;
-    app.button(dc, Id::BackupNow, RECT { left: rx + app.s(18), top: cy, right: rx + app.s(18) + bhalf, bottom: cy + app.s(34) }, "立即备份", true);
-    app.button(dc, Id::ExportUserDict, RECT { left: rx + app.s(18) + bhalf + app.s(8), top: cy, right: rx + app.s(18) + bhalf * 2 + app.s(8), bottom: cy + app.s(34) }, "导出用户词库", false);
-    app.button_danger(dc, Id::ClearUserDict, RECT { left: rx + app.s(18), top: cy + app.s(42), right: rx + app.s(18) + bhalf, bottom: cy + app.s(76) }, "清空用户词库");
-    let lr = RECT { left: rx + app.s(18), top: cy + app.s(88), right: rx + col_w - app.s(18), bottom: cy + app.s(248) };
-    let items: Vec<String> = app
-        .backups
-        .iter()
-        .map(|b| b.file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default())
-        .collect();
-    let sel = Some(app.backup_sel);
-    app.list(dc, Id::BackupRow, lr, &items, sel, "还没有备份");
-    app.button(dc, Id::Restore, RECT { left: rx + app.s(18), top: cy + app.s(262), right: rx + app.s(18) + app.s(140), bottom: cy + app.s(296) }, "恢复所选备份", false);
-    let (rx, ry, col_w) = slots[5];
-    // 细胞词库（专业词库）：勾选后重建索引生效（词库大，重建要分钟级）
-    {
-        let rows = app.cells.len().div_ceil(2).max(1) as i32;
-        let ch2 = app.s(70) + rows * app.s(28) + app.s(52);
-        let cy = app.card(dc, rx, ry, col_w, ch2, "细胞词库（专业词库）", "");
-        let inner = col_w - app.s(36);
-        let half = inner / 2;
-        // 先取出 (标签, 勾选) 快照，避免遍历 app.cells 的同时可变借用 app
-        let items: Vec<(String, bool)> = app.cells.iter().map(|c| (c.label.clone(), c.enabled)).collect();
-        for (i, (label, on)) in items.iter().enumerate() {
-            let bx = rx + app.s(18) + (i as i32 % 2) * half;
-            let by = cy + (i as i32 / 2) * app.s(28);
-            app.checkbox(
-                dc,
-                Id::CellDict(i),
-                RECT { left: bx, top: by, right: bx + half - app.s(6), bottom: by + app.s(24) },
-                label,
-                *on,
-            );
-        }
-        let mut by = cy + app.s(6) + rows * app.s(28) + app.s(8);
-        // 只在"勾选有改动"时提示代价（静态说明不再常驻）
-        if app.cell_dirty {
-            let hint = "有改动：点「应用」会重建词库索引（约 1~3 分钟）";
-            unsafe {
-                text(dc, RECT { left: rx + app.s(18), top: by, right: rx + col_w - app.s(18), bottom: by + app.s(22) }, hint, app.font_small, t.text3, DT_LEFT, true);
-            }
-        }
-        by += app.s(24);
-        app.button(dc, Id::CellApply, RECT { left: rx + app.s(18), top: by, right: rx + app.s(18) + app.s(120), bottom: by + app.s(34) }, "应用", true);
-    }
-
-    // ── 导入词库（批量通道，低优先级）────────────────────────────────
-    //
-    // 和「自定义短语」刻意分成两条通道：短语表里是用户手写的少量词，排最前；
-    // 整本导入的词库（搜狗细胞词库动辄几万条）只作补充，排在普通候选之后。
-    let (x, cy0, col_w) = slots[6];
-    let ih2 = app.s(160);
-    let cy = app.card(dc, x, cy0, col_w, ih2, "导入词库", "");
+    // 右栏：导入词库（批量通道，低优先级）
+    let import_h = app.card_h_inner(app.s(34 + 8 + 34 + 10));
+    let (x, cy0, col_w) = cols.put(1, import_h);
+    let cy = app.card(dc, x, cy0, col_w, import_h, "导入词库", "支持 txt / 搜狗 .scel，低优先级");
     let inner = col_w - app.s(36);
     let lx = x + app.s(18);
-    let bw = (inner - app.s(8)) / 2;
-    app.button(
-        dc,
-        Id::DictImport,
-        RECT { left: lx, top: cy, right: lx + bw, bottom: cy + app.s(34) },
-        "导入词库（txt/scel）…",
-        true,
-    );
-    app.button(
-        dc,
-        Id::DictImportDir,
-        RECT { left: lx + bw + app.s(8), top: cy, right: lx + inner, bottom: cy + app.s(34) },
-        "导入整个文件夹…",
-        false,
-    );
+    let btns = app.btn_row(lx, cy, inner, 2, 34);
+    app.button(dc, Id::DictImport, btns[0], "导入词库（txt/scel）…", true);
+    app.button(dc, Id::DictImportDir, btns[1], "导入整个文件夹…", false);
     let by = cy + app.s(42);
-    app.button(
-        dc,
-        Id::ImportDictExport,
-        RECT { left: lx, top: by, right: lx + bw, bottom: by + app.s(34) },
-        "导出已导入词库",
-        false,
-    );
-    // 右侧显示"已导入多少条" —— 导入有没有生效一眼能看到
+    app.button(dc, Id::ImportDictExport, RECT { left: lx, top: by, right: lx + (inner - app.s(8)) / 2, bottom: by + app.s(34) }, "导出已导入词库", false);
     unsafe {
         let info = format!("已导入 {} 条（低优先级）", app.stats.imported_count);
         text(
             dc,
-            RECT { left: lx + bw + app.s(8), top: by, right: lx + inner, bottom: by + app.s(34) },
+            RECT { left: lx + (inner - app.s(8)) / 2 + app.s(8), top: by, right: lx + inner, bottom: by + app.s(34) },
             &info,
             app.font_small,
             t.text3,
@@ -3420,37 +4014,210 @@ fn draw_dict(app: &mut App, dc: HDC, x0: i32, y0: i32, w: i32) -> i32 {
         );
     }
 
-    slots
+    // 用户词库备份 / 恢复：备份列表单独一张卡，别和导入混在一起
+    let backup_inner = app.s(34 + 8 + 160);
+    let backup_h = app.card_h_inner(backup_inner);
+    let (x, cy0, col_w) = cols.put(1, backup_h);
+    let cy = app.card(dc, x, cy0, col_w, backup_h, "用户词库备份 / 恢复", "备份保存在数据目录的 backups 里");
+    let inner = col_w - app.s(36);
+    let lx = x + app.s(18);
+    let btns = app.btn_row(lx, cy, inner, 2, 34);
+    app.button(dc, Id::BackupNow, btns[0], "立即备份", true);
+    app.button(dc, Id::Restore, btns[1], "恢复所选备份", false);
+    let lr = RECT { left: lx, top: cy + app.s(42), right: lx + inner, bottom: cy + app.s(202) };
+    let items: Vec<String> = app
+        .backups
         .iter()
-        .zip(hs.iter())
-        .map(|((_, y, _), h)| y + h)
-        .max()
-        .unwrap_or(y0)
-        + app.s(10)
+        .map(|b| b.file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default())
+        .collect();
+    let sel = Some(app.backup_sel);
+    app.list(dc, Id::BackupRow, lr, &items, sel, "还没有备份");
+
+    // 细胞词库：整行 6 列（26 项 = 5 行），比挤在半栏里少滚一屏
+    let cell_cols = 6i32;
+    let rows = ((app.cells.len() as i32 + cell_cols - 1) / cell_cols).max(1);
+    let cell_h = app.card_h_inner(app.s(rows * 28 + 8 + 34));
+    let cell_top = cols.bottom() + gap;
+    let cell_desc = if app.cell_dirty {
+        "有改动：点「应用」重建索引（约 1~3 分钟）"
+    } else {
+        "专业词库，按需勾选后点「应用」"
+    };
+    let cy = app.card(dc, x0, cell_top, w, cell_h, "细胞词库", cell_desc);
+    let inner = w - app.s(36);
+    let lx = x0 + app.s(18);
+    let cell_gap = app.s(8);
+    let cw = (inner - cell_gap * (cell_cols - 1)) / cell_cols;
+    let items: Vec<(String, bool)> = app.cells.iter().map(|c| (c.label.clone(), c.enabled)).collect();
+    for (i, (label, on)) in items.iter().enumerate() {
+        let bx = lx + (i as i32 % cell_cols) * (cw + cell_gap);
+        let by = cy + (i as i32 / cell_cols) * app.s(28);
+        app.checkbox(
+            dc,
+            Id::CellDict(i),
+            RECT { left: bx, top: by, right: bx + cw - app.s(6), bottom: by + app.s(24) },
+            label,
+            *on,
+        );
+    }
+    let by = cy + app.s(rows * 28 + 8);
+    app.button(dc, Id::CellApply, RECT { left: lx, top: by, right: lx + app.s(120), bottom: by + app.s(34) }, "应用", true);
+
+    cell_top + cell_h + app.s(10)
+}
+
+fn draw_phrases(app: &mut App, dc: HDC, x0: i32, y0: i32, w: i32) -> i32 {
+    let t = app.theme.clone();
+    let y0 = page_header(app, dc, x0, y0, w);
+    let inner = w - app.s(36);
+    let lx = x0 + app.s(18);
+    let card_h = app.card_h_inner(app.s(32 + 10 + 178 + 10 + 32 + 10 + 34 + 10 + 22));
+    let cy = app.card(dc, x0, y0, w, card_h, "短语表", "添加后立即生效，不用重新部署");
+
+    // 查询
+    let qr = RECT { left: lx, top: cy, right: lx + inner - app.s(140), bottom: cy + app.s(32) };
+    app.text_field(dc, Id::PhraseQuery, qr, &app.phrase_query.clone(), "按编码或词条筛选，如 nh");
+    let view = app.phrase_view();
+    let total = app.phrase_count();
+    let shown_n = view.len().min(5);
+    unsafe {
+        text(
+            dc,
+            RECT { left: qr.right + app.s(10), top: cy, right: lx + inner, bottom: cy + app.s(32) },
+            &format!("显示 {shown_n} / {total} 条"),
+            app.font_small,
+            t.text3,
+            DT_RIGHT,
+            true,
+        );
+    }
+
+    // 表格：表头 + 5 行。整页只有这一张卡，宽度够，编码/词条/权重可以分列对齐。
+    let table = RECT { left: lx, top: cy + app.s(42), right: lx + inner, bottom: cy + app.s(42 + 178) };
+    if let Some(g) = unsafe { Gfx::new(dc) } {
+        unsafe {
+            g.fill_round(table, R_CTRL, t.field);
+            g.stroke_round(table, R_CTRL, t.field_border, 1.0);
+        }
+    }
+    let x_code = table.left + app.s(12);
+    let x_text = table.left + (inner as f32 * 0.30) as i32;
+    let x_weight = table.right - app.s(110);
+    let header_h = app.s(26);
+    unsafe {
+        text(dc, RECT { left: x_code, top: table.top, right: x_text - app.s(8), bottom: table.top + header_h }, "编码", app.font_small, t.text3, DT_LEFT, true);
+        text(dc, RECT { left: x_text, top: table.top, right: x_weight - app.s(8), bottom: table.top + header_h }, "词条", app.font_small, t.text3, DT_LEFT, true);
+        text(dc, RECT { left: x_weight, top: table.top, right: table.right - app.s(12), bottom: table.top + header_h }, "权重", app.font_small, t.text3, DT_RIGHT, true);
+    }
+    if let Some(g) = unsafe { Gfx::new(dc) } {
+        unsafe {
+            g.fill_round(
+                RECT { left: table.left + app.s(8), top: table.top + header_h, right: table.right - app.s(8), bottom: table.top + header_h + 1 },
+                0,
+                t.divider,
+            );
+        }
+    }
+    let row_h = app.s(30);
+    let shown = view.iter().take(5).enumerate();
+    let mut shown_any = false;
+    for (vi, &ri) in shown {
+        shown_any = true;
+        let top = table.top + header_h + app.s(2) + vi as i32 * row_h;
+        let rr = RECT { left: table.left + app.s(4), top, right: table.right - app.s(4), bottom: top + row_h };
+        let is_sel = app.phrase_sel == Some(ri);
+        let hot = app.hover == Some(Id::PhraseRow(vi));
+        if let Some(g) = unsafe { Gfx::new(dc) } {
+            unsafe {
+                if is_sel {
+                    g.fill_round(rr, 6, t.accent_soft);
+                } else if hot {
+                    g.fill_round(rr, 6, t.hover);
+                }
+            }
+        }
+        let (code, body, weight) = match &app.phrase_rows[ri] {
+            xunyin_rime::phrases::Row::Entry(e) => (
+                e.codes.clone(),
+                e.text.clone(),
+                e.weight.map(|w| w.to_string()).unwrap_or_else(|| "—".into()),
+            ),
+            xunyin_rime::phrases::Row::Comment(c) => (String::new(), c.clone(), String::new()),
+        };
+        let color = if is_sel { t.accent } else { t.text };
+        unsafe {
+            text(dc, RECT { left: x_code, top: rr.top, right: x_text - app.s(8), bottom: rr.bottom }, &code, app.font_bold, color, DT_LEFT, true);
+            text_ellipsis(dc, RECT { left: x_text, top: rr.top, right: x_weight - app.s(8), bottom: rr.bottom }, &body, app.font, color, DT_LEFT);
+            text(dc, RECT { left: x_weight, top: rr.top, right: table.right - app.s(12), bottom: rr.bottom }, &weight, app.font_small, t.text3, DT_RIGHT, true);
+        }
+        app.hits.push(Hit { id: Id::PhraseRow(vi), rect: rr });
+    }
+    if !shown_any {
+        unsafe {
+            text(
+                dc,
+                RECT { left: table.left + app.s(12), top: table.top + header_h, right: table.right - app.s(12), bottom: table.bottom },
+                if app.phrase_query.trim().is_empty() { "还没有短语" } else { "没有匹配的短语" },
+                app.font_small,
+                t.text3,
+                DT_LEFT,
+                true,
+            );
+        }
+    }
+    // 新增 / 修改
+    let fy = table.bottom + app.s(10);
+    let code_w = app.s(170);
+    let weight_w = app.s(110);
+    let cr = RECT { left: lx, top: fy, right: lx + code_w, bottom: fy + app.s(32) };
+    let tr = RECT { left: cr.right + app.s(8), top: fy, right: lx + inner - weight_w - app.s(8), bottom: fy + app.s(32) };
+    let wr = RECT { left: lx + inner - weight_w, top: fy, right: lx + inner, bottom: fy + app.s(32) };
+    app.text_field(dc, Id::PhraseCode, cr, &app.phrase_code.clone(), "编码，如 nh");
+    app.text_field(dc, Id::PhraseText, tr, &app.phrase_text.clone(), "词条，如 你好");
+    app.text_field(dc, Id::PhraseWeight, wr, &app.phrase_weight.clone(), "权重（可空）");
+
+    let by = fy + app.s(42);
+    let btns = app.btn_row(lx, by, inner, 4, 34);
+    app.button(dc, Id::PhraseAdd, btns[0], "添加 / 更新", true);
+    app.button_danger(dc, Id::PhraseDel, btns[1], "删除所选");
+    app.button(dc, Id::PhraseImport, btns[2], "导入短语（txt）…", false);
+    app.button(dc, Id::DictExport, btns[3], "导出短语文件", false);
+
+    let hint = if app.stats.last_import.is_empty() {
+        "格式：每行「词条 + 制表符 + 编码 +（可选）权重」，点中一行可回填修改".to_string()
+    } else {
+        app.stats.last_import.clone()
+    };
+    unsafe {
+        text(
+            dc,
+            RECT { left: lx, top: by + app.s(42), right: lx + inner, bottom: by + app.s(64) },
+            &hint,
+            app.font_small,
+            t.text3,
+            DT_LEFT,
+            true,
+        );
+    }
+
+    y0 + card_h + app.s(10)
 }
 
 fn draw_about(app: &mut App, dc: HDC, x0: i32, y0: i32, w: i32) -> i32 {
-    let gap = app.s(16);
     let t = app.theme.clone();
-    let y0 = page_header(app, dc, x0, y0, w, "关于与维护");
-    let hs = [
-        app.s(216),            // 维护（2 列 × 4 行按钮）
-        app.s(132),            // 备份与诊断（2 列 × 2 行按钮）
-        app.s(136),            // 更新
-        app.s(492),            // 快捷键（13 行）
-        app.s(178),            // 输入统计
-    ];
-    let slots = balance(&hs, x0, y0, w, gap);
+    let gap = app.s(COL_GAP);
+    let y0 = page_header(app, dc, x0, y0, w);
+    let mut cols = app.cols(x0, y0, w);
 
-    let (x, cy0, col_w) = slots[0];
-    let mh = app.s(216);
-    // 「维护」只做"打开 / 清理 / 重置 / 重载"这类本机操作；
-    // 导出导入、诊断包在旁边的「备份与诊断」卡里 —— 两张卡从前都叫"诊断"，
-    // 名字重了也看不出分工，现在各归其位并加了说明。
-    let cy = app.card(dc, x, cy0, col_w, mh, "维护", "打开目录 · 清空日志 · 重载与部署");
-    // 两列两行排（以前一列横排三个，第三颗会溢出卡片右边缘）
+    // 左栏：维护 → 备份与诊断 → 更新；右栏：快捷键。两栏高度接近。
+    let mcols = if cols.w > app.s(400) { 3 } else { 2 };
+    let mrows = (7 + mcols - 1) / mcols;
+    let mh = app.card_h_inner(app.s(mrows * 42 - 8));
+    let (x, cy0, col_w) = cols.put(0, mh);
+    let engine = if app.engine_ready { "引擎就绪" } else { "引擎加载中" };
+    let cy = app.card(dc, x, cy0, col_w, mh, "维护", engine);
     let inner = col_w - app.s(36);
-    let bw = (inner - app.s(8)) / 2;
+    let bw = (inner - app.s(8) * (mcols - 1)) / mcols;
     for (i, (id, label)) in [
         (Id::OpenData, "打开数据目录"),
         (Id::OpenLogs, "打开日志目录"),
@@ -3463,9 +4230,11 @@ fn draw_about(app: &mut App, dc: HDC, x0: i32, y0: i32, w: i32) -> i32 {
     .iter()
     .enumerate()
     {
-        let bx = x + app.s(18) + ((i as i32) % 2) * (bw + app.s(8));
-        let by = cy + ((i as i32) / 2) * app.s(42);
-        let r = RECT { left: bx, top: by, right: bx + bw, bottom: by + app.s(34) };
+        let bx = x + app.s(18) + ((i as i32) % mcols) * (bw + app.s(8));
+        let by = cy + ((i as i32) / mcols) * app.s(42);
+        // 最后一颗「重新部署」跨满整行：7 个按钮按 3 列排会剩一个孤儿，拉通更整齐
+        let right = if i == 6 { x + col_w - app.s(18) } else { bx + bw };
+        let r = RECT { left: bx, top: by, right, bottom: by + app.s(34) };
         // 清空日志 / 恢复默认设置是"会丢东西"的操作，用危险样式（中性底 + 红字）
         if matches!(id, Id::ClearLogs | Id::ResetAll) {
             app.button_danger(dc, *id, r, label);
@@ -3474,12 +4243,11 @@ fn draw_about(app: &mut App, dc: HDC, x0: i32, y0: i32, w: i32) -> i32 {
         }
     }
 
-    let (x, cy0, col_w) = slots[1];
-    // 备份与诊断：一键打包现场（日志+配置+环境），以及整套设置的导入导出
-    let dh = app.s(132);
+    let dh = app.card_h_inner(app.s(2 * 42 - 8));
+    let (x, cy0, col_w) = cols.put(0, dh);
     let cy = app.card(dc, x, cy0, col_w, dh, "备份与诊断", "导出诊断包与设置 · 恢复皮肤");
-    let inner2 = col_w - app.s(36);
-    let bw2 = (inner2 - app.s(8)) / 2;
+    let inner = col_w - app.s(36);
+    let btns = app.btn_row(x + app.s(18), cy, inner, 2, 34);
     for (i, (id, label)) in [
         (Id::DiagExport, "导出诊断包"),
         (Id::ConfigExport, "导出全部设置"),
@@ -3489,20 +4257,25 @@ fn draw_about(app: &mut App, dc: HDC, x0: i32, y0: i32, w: i32) -> i32 {
     .iter()
     .enumerate()
     {
-        let bx = x + app.s(18) + ((i as i32) % 2) * (bw2 + app.s(8));
-        let by = cy + ((i as i32) / 2) * app.s(42);
-        app.button(dc, *id, RECT { left: bx, top: by, right: bx + bw2, bottom: by + app.s(34) }, label, false);
+        let r = btns[i % 2];
+        let r = RECT { top: r.top + ((i as i32) / 2) * app.s(42), bottom: r.bottom + ((i as i32) / 2) * app.s(42), ..r };
+        app.button(dc, *id, r, label, false);
     }
 
-    let (x, cy0, col_w) = slots[2];
-    let uh = app.s(136);
+    let uh = app.card_h_inner(app.s(2 * 42 - 8));
+    let (x, cy0, col_w) = cols.put(0, uh);
     let cy = app.card(dc, x, cy0, col_w, uh, "更新", "检查新版本 · 下载安装");
-    app.button(dc, Id::UpdateCheck, RECT { left: x + app.s(18), top: cy, right: x + app.s(18) + app.s(140), bottom: cy + app.s(34) }, "检查更新", true);
-    app.button(dc, Id::Update, RECT { left: x + app.s(166), top: cy, right: x + app.s(166) + app.s(140), bottom: cy + app.s(34) }, "打开下载页", false);
-    app.button(dc, Id::UpdateInstall, RECT { left: x + app.s(18), top: cy + app.s(46), right: x + app.s(18) + app.s(140), bottom: cy + app.s(80) }, "下载并安装", false);
+    let inner = col_w - app.s(36);
+    let btns = app.btn_row(x + app.s(18), cy, inner, 2, 34);
+    app.button(dc, Id::UpdateCheck, btns[0], "检查更新", true);
+    app.button(dc, Id::Update, btns[1], "打开下载页", false);
+    app.button(dc, Id::UpdateInstall, RECT { left: btns[0].left, top: cy + app.s(42), right: btns[0].right, bottom: cy + app.s(76) }, "下载并安装", false);
 
-    let (rx, ry, col_w) = slots[3];
-    let kh = app.s(492);
+    // 快捷键：宽卡分两列（7 + 6 行），窄卡单列 13 行
+    let wide_keys = cols.w > app.s(600);
+    let key_rows = if wide_keys { 7 } else { 13 };
+    let kh = app.card_h_inner(app.s(key_rows * 34));
+    let (rx, ry, col_w) = cols.put(1, kh);
     let cy = app.card(dc, rx, ry, col_w, kh, "快捷键", "");
     let lines = [
         ("Shift", "组合中出拼音"),
@@ -3519,22 +4292,31 @@ fn draw_about(app: &mut App, dc: HDC, x0: i32, y0: i32, w: i32) -> i32 {
         ("右键状态栏", "开关菜单"),
         ("状态栏齿轮", "打开本设置中心"),
     ];
-    let mut fy = cy;
-    for (k, v) in lines {
-        let kr = RECT { left: rx + app.s(18), top: fy, right: rx + app.s(150), bottom: fy + app.s(28) };
-        let vr = RECT { left: rx + app.s(150), top: fy, right: rx + col_w - app.s(18), bottom: fy + app.s(28) };
+    let key_inner = col_w - app.s(36);
+    let half = (key_inner - app.s(24)) / 2;
+    for (i, (k, v)) in lines.iter().enumerate() {
+        let col = if wide_keys { (i / 7) as i32 } else { 0 };
+        let row = if wide_keys { (i % 7) as i32 } else { i as i32 };
+        let bx = rx + app.s(18) + col * (half + app.s(24));
+        let fy = cy + row * app.s(34);
+        let kw = if wide_keys { app.s(108) } else { app.s(132) };
+        let kr = RECT { left: bx, top: fy, right: bx + kw, bottom: fy + app.s(28) };
+        let vr = RECT {
+            left: bx + kw,
+            top: fy,
+            right: if wide_keys { bx + half } else { rx + col_w - app.s(18) },
+            bottom: fy + app.s(28),
+        };
         unsafe {
             text(dc, kr, k, app.font_bold, t.text, DT_LEFT, true);
             text(dc, vr, v, app.font_small, t.text2, DT_LEFT, true);
         }
-        fy += app.s(34);
     }
-    let _ = (fy, kh);
 
-    // ── 输入统计（计数点在常驻服务里：统计的是"真正上屏了多少字"）────────
-    let (x, cy0, col_w) = slots[4];
-    let sh = app.s(178);
-    let cy = app.card(dc, x, cy0, col_w, sh, "输入统计", "只统计真正上屏的字");
+    // 输入统计：整行 6 项 + 右侧清零按钮（放两列卡片下面太挤，铺满一行反而清爽）
+    let sy = cols.bottom() + gap;
+    let sh = app.card_h_inner(app.s(46));
+    let cy = app.card(dc, x0, sy, w, sh, "输入统计", "只统计真正上屏的字");
     let st = app.input_stats.clone();
     let speed = match st.today_speed_cpm() {
         Some(v) => format!("{v} 字/分"),
@@ -3548,15 +4330,13 @@ fn draw_about(app: &mut App, dc: HDC, x0: i32, y0: i32, w: i32) -> i32 {
         ("累计字数", format!("{} 字", st.total_chars)),
         ("使用天数", format!("{} 天", st.days)),
     ];
-    let inner = col_w - app.s(36);
+    let reset_w = app.s(110);
+    let metrics_w = w - app.s(36) - reset_w - app.s(12);
+    let cw = metrics_w / 6;
     for (i, (k, v)) in rows.iter().enumerate() {
-        let col = (i % 3) as i32;
-        let row = (i / 3) as i32;
-        let cw = inner / 3;
-        let bx = x + app.s(18) + col * cw;
-        let by = cy + row * app.s(46);
-        let kr = RECT { left: bx, top: by, right: bx + cw - app.s(6), bottom: by + app.s(20) };
-        let vr = RECT { left: bx, top: by + app.s(18), right: bx + cw - app.s(6), bottom: by + app.s(42) };
+        let bx = x0 + app.s(18) + i as i32 * cw;
+        let kr = RECT { left: bx, top: cy, right: bx + cw - app.s(8), bottom: cy + app.s(20) };
+        let vr = RECT { left: bx, top: cy + app.s(18), right: bx + cw - app.s(8), bottom: cy + app.s(44) };
         unsafe {
             text(dc, kr, k, app.font_small, t.text3, DT_LEFT, true);
             text(dc, vr, v, app.font_bold, t.text, DT_LEFT, true);
@@ -3565,16 +4345,41 @@ fn draw_about(app: &mut App, dc: HDC, x0: i32, y0: i32, w: i32) -> i32 {
     app.button(
         dc,
         Id::StatsReset,
-        RECT { left: x + app.s(18), top: cy + app.s(118), right: x + app.s(18) + app.s(110), bottom: cy + app.s(152) },
+        RECT { left: x0 + w - app.s(18) - reset_w, top: cy + app.s(4), right: x0 + w - app.s(18), bottom: cy + app.s(38) },
         "清零统计",
         false,
     );
 
-    slots
-        .iter()
-        .zip(hs.iter())
-        .map(|((_, y, _), h)| y + h)
-        .max()
-        .unwrap_or(y0)
-        + app.s(10)
+    sy + sh + app.s(10)
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 主题色是 0xAARRGGBB，GDI 的 COLORREF 是 0x00BBGGRR：R/B 必须对调。
+    /// 这个方向搞反时，强调色文字会变橙、危险红会变蓝（灰度文字看不出，很容易漏）。
+    #[test]
+    fn colorref_swaps_red_and_blue() {
+        assert_eq!(argb_to_colorref(0xFF2A6FDB), 0x00DB_6F2A);
+        assert_eq!(argb_to_colorref(0xFFB4_2318), 0x0018_23B4);
+        assert_eq!(argb_to_colorref(0xFFFF_FFFF), 0x00FF_FFFF);
+    }
+
+    /// 窄窗单栏时，put(1, ..) 也要落到唯一一栏，并使用整行宽度。
+    #[test]
+    fn single_column_uses_full_width() {
+        let mut c = Cols::new(100, 50, 1200, 16, true);
+        let (x, y, w) = c.put(1, 100);
+        assert_eq!((x, y, w), (100, 50, 1200));
+        let (_, y2, _) = c.put(0, 40);
+        assert_eq!(y2, 50 + 100 + 16);
+    }
+
+    /// 两栏时第二栏的起点 = 第一栏宽度 + 间距。
+    #[test]
+    fn two_columns_place_second_column_right() {
+        let c = Cols::new(0, 0, 1000, 20, false);
+        assert_eq!(c.w, 490);
+        assert_eq!(c.x, [0, 510]);
+    }
 }

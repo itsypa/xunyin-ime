@@ -281,6 +281,8 @@ pub struct CandidateWindow {
     font_pt: Cell<u32>,
     /// 当前字体所用的显示器 DPI（跟随候选窗所在屏，多屏不同缩放各自适配）。
     dpi: Cell<i32>,
+    /// 当前字体族（换字体时也要重建 HFONT；以前只比字号/DPI，换字体不生效）。
+    font_family: std::cell::RefCell<String>,
 }
 
 // 候选窗只由 TSF 线程创建与访问（静态互斥锁串行化），
@@ -305,7 +307,8 @@ impl CandidateWindow {
                 96
             }
         };
-        let (font, row_h) = create_font(font_pt, dpi, &cfg().appearance.font_family);
+        let family = cfg().appearance.font_family;
+        let (font, row_h) = create_font(font_pt, dpi, &family);
         Self {
             shared: Mutex::new(Some(shared)),
             hwnd,
@@ -326,14 +329,25 @@ impl CandidateWindow {
             above: Cell::new(false),
             font_pt: Cell::new(font_pt),
             dpi: Cell::new(dpi),
+            font_family: RefCell::new(family),
         }
     }
 
     /// 按候选窗落点所在显示器重建字体/行高（字号或显示器 DPI 变化时）。
+    /// 内边距/间距也在这里刷新：它们只依赖 DPI，不必等字号变化。
     fn ensure_font_for(&mut self, origin: (i32, i32)) {
-        let font_pt = cfg().appearance.font_size.max(8);
+        let cfg_now = cfg();
+        let a = &cfg_now.appearance;
         let dpi = dpi_for_point(origin.0, origin.1);
-        if font_pt == self.font_pt.get() && dpi == self.dpi.get() {
+        let sc = |v: u32| (v.max(1) as i32 * dpi / 96).max(1);
+        self.pad_x = sc(a.cand_pad_x);
+        self.pad_y = sc(a.cand_pad_y);
+        self.min_w = sc(a.cand_min_width);
+        self.gap = sc(a.cand_gap);
+
+        let font_pt = a.font_size.max(8);
+        let family_changed = *self.font_family.borrow() != a.font_family;
+        if font_pt == self.font_pt.get() && dpi == self.dpi.get() && !family_changed {
             return;
         }
         if !self.font.0.is_null() {
@@ -341,16 +355,10 @@ impl CandidateWindow {
                 DeleteObject(HGDIOBJ(self.font.0));
             }
         }
-        let (font, row_h) = create_font(font_pt, dpi, &cfg().appearance.font_family);
+        let (font, row_h) = create_font(font_pt, dpi, &a.font_family);
         self.font = font;
         self.row_h = row_h;
-        // 内边距等也从配置读，改 config.json 后重载即生效（不用重编 DLL）
-        let a = &cfg().appearance;
-        let sc = |v: u32| (v.max(1) as i32 * dpi / 96).max(1);
-        self.pad_x = sc(a.cand_pad_x);
-        self.pad_y = sc(a.cand_pad_y);
-        self.min_w = sc(a.cand_min_width);
-        self.gap = sc(a.cand_gap);
+        *self.font_family.borrow_mut() = a.font_family.clone();
         self.font_pt.set(font_pt);
         self.dpi.set(dpi);
     }

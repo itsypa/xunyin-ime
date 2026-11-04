@@ -43,7 +43,7 @@ public static class Msg
 $exe = (Resolve-Path $Exe).Path
 $dump = (Resolve-Path $Dump).Path
 $env:XUNYIN_UI_DUMP = $dump
-$env:XUNYIN_UI_PAGE = "2"
+$env:XUNYIN_UI_PAGE = "7"   # 自定义短语页（拆页后从 2 变成 7）
 
 Get-Process xunyin-ime -ErrorAction SilentlyContinue | Stop-Process -Force
 Remove-Item (Join-Path $dump "hits.txt") -ErrorAction SilentlyContinue
