@@ -22,11 +22,22 @@ pub fn path() -> PathBuf {
     crate::config::user_data_dir().join("assoc.txt")
 }
 
+/// 联想只针对“词”：至少含一个字母、数字或汉字。
+///
+/// 纯标点/符号/空格不能当联想的前词或后词 —— 否则会学出
+/// `。 -> ‘`、`一下 -> ，` 这类垃圾，打标点时服务会把联想候选一起返回，
+/// 候选窗先闪一下（随后因为组合已结束又隐藏），看起来像“标点没有直接上屏”。
+pub fn is_wordish(s: &str) -> bool {
+    s.chars().any(|c| c.is_alphanumeric())
+}
+
 /// 是否值得学习这条关系：太长的不学（句子级联想噪声大）。
 fn learnable(prev: &str, next: &str) -> bool {
     !prev.is_empty()
         && !next.is_empty()
         && prev != next
+        && is_wordish(prev)
+        && is_wordish(next)
         && prev.chars().count() <= 8
         && next.chars().count() <= 8
         && next.chars().all(|c| !c.is_whitespace())
@@ -43,6 +54,10 @@ fn parse(text: &str) -> Table {
             continue;
         };
         if prev.is_empty() || next.is_empty() {
+            continue;
+        }
+        // 旧版可能把标点当词学进来；加载时直接丢掉，下次 save 会顺手清理文件
+        if !is_wordish(prev) || !is_wordish(next) {
             continue;
         }
         t.entry(prev.to_string()).or_default().push((next.to_string(), cnt));
@@ -88,14 +103,23 @@ pub fn learn(prev: &str, next: &str) -> bool {
 }
 
 /// 取前词的联想候选（按次数降序）。
+///
+/// 旧版本可能已经把标点学进 `assoc.txt`（`。 -> ‘` 之类）；这里在展示时
+/// 一并过滤掉，升级后不必手工清表也不会再冒出标点候选。
 pub fn followers(prev: &str) -> Vec<String> {
-    if prev.is_empty() {
+    // 前词本身不是“词”（标点/符号）就不该有联想 —— 旧版 assoc.txt 里可能还留着
+    // `， -> 包括` 这样的记录，直接在入口挡掉。
+    if prev.is_empty() || !is_wordish(prev) {
         return Vec::new();
     }
     with_table(|t| {
         let mut v = t.get(prev).cloned().unwrap_or_default();
         v.sort_by(|a, b| b.1.cmp(&a.1));
-        v.into_iter().take(SHOW_MAX).map(|(w, _)| w).collect()
+        v.into_iter()
+            .map(|(w, _)| w)
+            .filter(|w| is_wordish(w))
+            .take(SHOW_MAX)
+            .collect()
     })
 }
 
@@ -175,11 +199,50 @@ mod tests {
         assert_eq!(back.get("C").unwrap()[0], ("D".to_string(), 1));
     }
 
+    /// 旧文件里的「标点 -> 词」记录在加载时就被丢弃（下次 save 会清理磁盘）。
+    #[test]
+    fn parse_drops_punctuation_rows() {
+        let t = parse("，\t包括\t9\n。\t‘\t2\n你好\t世界\t3\n");
+        assert!(!t.contains_key("，"));
+        assert!(!t.contains_key("。"));
+        assert_eq!(t.get("你好").unwrap()[0], ("世界".to_string(), 3));
+    }
+
     #[test]
     fn rejects_noise() {
         assert!(!learnable("", "x"));
         assert!(!learnable("abc", ""));
         assert!(!learnable("word", "word"));
         assert!(!learnable("x", "a b")); // 带空格不学
+    }
+
+    /// 标点不是“词”：既不学习，也不作为联想候选返回。
+    #[test]
+    fn punctuation_is_not_associable() {
+        assert!(!is_wordish("，"));
+        assert!(!is_wordish("。"));
+        assert!(!is_wordish("……"));
+        assert!(!is_wordish("😀"));
+        assert!(is_wordish("你好"));
+        assert!(is_wordish("hello"));
+        assert!(is_wordish("123"));
+
+        assert!(!learnable("，", "。"));
+        assert!(!learnable("你好", "，"));
+        assert!(learnable("你好", "世界"));
+
+        // 旧数据里以标点为前词的记录也不能再产生联想
+        assert!(followers("，").is_empty());
+        assert!(followers("。").is_empty());
+
+        // 模拟旧版 assoc.txt 里的脏数据：展示时必须把标点过滤掉
+        let prev = "测试键_标点过滤zzq";
+        with_table(|t| {
+            t.insert(
+                prev.to_string(),
+                vec![("，".to_string(), 9), ("世界".to_string(), 1)],
+            );
+        });
+        assert_eq!(followers(prev), vec!["世界".to_string()]);
     }
 }
