@@ -223,7 +223,7 @@ impl Logic {
             // 移动后重新取一次上下文：组合串与候选都照旧，只有光标变了
             let commit = String::new();
             let snapshot = self.engine().and_then(|e| e.get_context());
-            self.after_key(commit, snapshot, &cfg, &mut out);
+            self.after_key(commit, snapshot, &cfg, &mut out, true);
             out.consume = true;
             out.caret = moved;
             return out;
@@ -307,7 +307,7 @@ impl Logic {
                 .clone();
             (commit, e.get_context())
         };
-        self.after_key(commit, snapshot, &cfg, &mut out);
+        self.after_key(commit, snapshot, &cfg, &mut out, vk != 0x20);
         self.remember_current_mode(&cfg);
         out
     }
@@ -613,7 +613,7 @@ impl Logic {
         // 刷新候选
         let cfg = xunyin_rime::config::load_config();
         let snap = self.engine().and_then(|e| e.get_context());
-        self.after_key(String::new(), snap, &cfg, out);
+        self.after_key(String::new(), snap, &cfg, out, true);
     }
 
     /// 上屏之后：联想学习 + 准备联想候选，并汇总组合串/候选返回给 DLL。
@@ -623,6 +623,7 @@ impl Logic {
         snapshot: Option<xunyin_rime::RimeContextSnapshot>,
         cfg: &xunyin_rime::XunyinConfig,
         out: &mut Reply,
+        show_assoc: bool,
     ) {
         // 联想：学习「上一词 → 本词」，并取出本词之后的联想候选
         if !commit.is_empty() {
@@ -637,6 +638,10 @@ impl Logic {
                 self.assoc_followers.clear();
             }
             self.last_commit = Some((commit.clone(), std::time::Instant::now()));
+        }
+        // 空格选词后不再弹联想：用户按空格就是要立刻上屏，不该再被候选窗挡一下
+        if !show_assoc {
+            self.assoc_followers.clear();
         }
         // 组合串（按设置插音节分隔符）
         let sep = cfg.input.separator();

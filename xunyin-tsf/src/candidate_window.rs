@@ -35,6 +35,10 @@ const CELL_GAP_DEFAULT: i32 = 18;
 /// 组合期间光标追踪定时器（毫秒）。
 const CARET_TIMER_ID: usize = 1;
 const CARET_TIMER_MS: u32 = 80;
+/// 联想窗的自动收起定时器：上屏后没有组合串，光标跟随定时器会立刻隐藏它；
+/// 给联想候选一个独立的三秒停留时间，既能选中，也不会一直挂在屏幕上。
+const ASSOC_TIMER_ID: usize = 2;
+const ASSOC_TIMER_MS: u32 = 3000;
 
 /// 候选窗共享配置缓存（TSF 高频路径，最多 1 秒重读一次）。
 static CFG: OnceLock<xunyin_rime::config::CachedConfig> = OnceLock::new();
@@ -225,6 +229,8 @@ pub fn show_candidates(
     page: usize,
     page_size: usize,
     origin: Option<(i32, i32)>,
+    pinned: bool,
+    reposition: bool,
 ) {
     let mut g = match win().lock() {
         Ok(g) => g,
@@ -244,7 +250,7 @@ pub fn show_candidates(
         }
     }
     *w.shared.lock().unwrap_or_else(|e| e.into_inner()) = Some(shared);
-    w.update(items, comments, selected, page, page_size, origin);
+    w.update(items, comments, selected, page, page_size, origin, pinned, reposition);
 }
 
 /// 隐藏候选窗。
@@ -283,6 +289,8 @@ pub struct CandidateWindow {
     dpi: Cell<i32>,
     /// 当前字体族（换字体时也要重建 HFONT；以前只比字号/DPI，换字体不生效）。
     font_family: std::cell::RefCell<String>,
+    /// 上屏后展示的“联想候选”：没有组合串，但不能被光标跟随定时器立刻隐藏。
+    pinned: Cell<bool>,
 }
 
 // 候选窗只由 TSF 线程创建与访问（静态互斥锁串行化），
@@ -330,6 +338,7 @@ impl CandidateWindow {
             font_pt: Cell::new(font_pt),
             dpi: Cell::new(dpi),
             font_family: RefCell::new(family),
+            pinned: Cell::new(false),
         }
     }
 
@@ -371,10 +380,13 @@ impl CandidateWindow {
         page: usize,
         page_size: usize,
         origin: Option<(i32, i32)>,
+        pinned: bool,
+        reposition: bool,
     ) {
         if self.hwnd.0.is_null() {
             return;
         }
+        let was_shown = self.shown.get();
         *self.items.borrow_mut() = items;
         *self.comments.borrow_mut() = comments;
         self.selected.set(selected);
@@ -387,27 +399,63 @@ impl CandidateWindow {
         }
         // 字号或所在显示器 DPI 变化时重建字体与行高
         self.ensure_font_for(self.origin.get());
-        self.position_and_show();
+        self.pinned.set(pinned);
+        // 组合期间内容更新不抢位置：编辑会话的锚点会滞后，真正的逐字母
+        // 跟随交给 80ms 的光标跟随定时器。只有首次显示/上屏后的联想窗/
+        // 非组合状态才立即定位。
+        if pinned || reposition || !was_shown {
+            self.position_and_show();
+        } else {
+            // 内容（候选数量/最长词）变了就立刻按新尺寸重排，位置仍留给定时器。
+            self.resize_keep_position();
+            unsafe {
+                // 保证跟随定时器在跑（例如从联想窗回到新组合时）
+                SetTimer(Some(self.hwnd), CARET_TIMER_ID, CARET_TIMER_MS, None);
+            }
+        }
         unsafe {
+            if pinned {
+                SetTimer(Some(self.hwnd), ASSOC_TIMER_ID, ASSOC_TIMER_MS, None);
+            } else {
+                KillTimer(Some(self.hwnd), ASSOC_TIMER_ID);
+            }
             InvalidateRect(Some(self.hwnd), None, true);
+        }
+        if pinned {
+            crate::tsf_log!(
+                "candidate_window: pinned assoc window ({} 项, {} ms)",
+                self.items.borrow().len(),
+                ASSOC_TIMER_MS
+            );
         }
     }
 
     fn hide(&self) {
+        self.pinned.set(false);
         if self.hwnd.0.is_null() {
             return;
         }
         if self.shown.replace(false) {
             unsafe {
                 ShowWindow(self.hwnd, SW_HIDE);
-                KillTimer(Some(self.hwnd), CARET_TIMER_ID);
             }
+        }
+        unsafe {
+            KillTimer(Some(self.hwnd), CARET_TIMER_ID);
+            KillTimer(Some(self.hwnd), ASSOC_TIMER_ID);
         }
     }
 
     /// 组合期间定时重算光标位置并跟随（鼠标点击/方向键/滚动）。
     fn on_timer(&mut self) {
         if !self.shown.get() {
+            unsafe {
+                KillTimer(Some(self.hwnd), CARET_TIMER_ID);
+            }
+            return;
+        }
+        // 联想窗没有组合串，光标跟随无意义；交给 ASSOC_TIMER 收起。
+        if self.pinned.get() {
             unsafe {
                 KillTimer(Some(self.hwnd), CARET_TIMER_ID);
             }
@@ -451,7 +499,17 @@ impl CandidateWindow {
                 st.origin_caret == st.pending_caret,
             )
         };
+        // 按键刚更新过后 600ms 内，位置以编辑会话写入的锚点为准；
+        // 上面已经在 probe 之前挡掉了，这里只处理组合结束/联想窗。
         if !composing {
+            // 联想窗：没有组合串是正常的，交给独立的三秒定时器收起，
+            // 不能被 80ms 的光标跟随定时器立刻隐藏（那就是用户看到的“闪一下”）。
+            if self.pinned.get() {
+                unsafe {
+                    KillTimer(Some(self.hwnd), CARET_TIMER_ID);
+                }
+                return;
+            }
             // 组合已被应用结束（如鼠标点击提交/取消）：隐藏候选窗
             self.hide();
             return;
@@ -468,6 +526,42 @@ impl CandidateWindow {
             }
             }
         }
+    }
+
+    /// 只按当前候选重算宽高，保持窗口左上角不动。组合期间位置由跟随定时器
+    /// 推进，但内容宽度必须立刻更新，否则第一帧还是上一屏的宽度，80ms 后才变宽。
+    fn resize_keep_position(&self) {
+        let (w, h) = self.measure();
+        if w <= 0 || h <= 0 {
+            return;
+        }
+        let mut cur = RECT::default();
+        unsafe {
+            if GetWindowRect(self.hwnd, &mut cur).is_err() {
+                return;
+            }
+            let _ = SetWindowPos(
+                self.hwnd,
+                Some(HWND_TOPMOST),
+                cur.left,
+                cur.top,
+                w,
+                h,
+                SWP_NOACTIVATE | SWP_SHOWWINDOW,
+            );
+            let radius = cfg().appearance.corner_radius.clamp(0, 24) as i32;
+            if radius > 0 {
+                let rgn = CreateRoundRectRgn(0, 0, w + 1, h + 1, radius * 2, radius * 2);
+                if !rgn.0.is_null() {
+                    SetWindowRgn(self.hwnd, Some(rgn), true);
+                }
+            } else {
+                SetWindowRgn(self.hwnd, None, true);
+            }
+            let alpha = (cfg().appearance.opacity.clamp(0, 100) as u32) * 255 / 100;
+            SetLayeredWindowAttributes(self.hwnd, COLORREF(0), alpha as u8, LWA_ALPHA);
+        }
+        crate::tsf_log!("candidate_resize: size=({w},{h}) keep=({},{})", cur.left, cur.top);
     }
 
     /// 计算窗口尺寸并定位显示（锚定组合光标下方，越界自动翻转/收拢）。
@@ -1027,6 +1121,10 @@ extern "system" fn wnd_proc(
             WM_TIMER => {
                 if wparam.0 as usize == CARET_TIMER_ID {
                     this.on_timer();
+                } else if wparam.0 as usize == ASSOC_TIMER_ID {
+                    // 联想窗停留 3 秒后自动收起
+                    crate::tsf_log!("candidate_window: assoc timer hide");
+                    this.hide();
                 }
                 LRESULT(0)
             }

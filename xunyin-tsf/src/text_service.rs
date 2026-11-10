@@ -244,12 +244,15 @@ impl TextService_Impl {
             st.overlay = r.candidates[..n_overlay].to_vec();
             st.cand_map = (n_overlay..r.candidates.len()).collect();
         }
+        // 上屏后还带候选 = 联想窗：没有组合串，要让它在提交完成后继续停留一会儿。
+        let pinned = !commit.is_empty() && !r.candidates.is_empty();
         self.update_candidates(
             r.candidates.clone(),
             r.comments.clone(),
             r.selected,
             r.page,
             r.page_size.max(1),
+            pinned,
         );
         r.consume
     }
@@ -438,7 +441,7 @@ impl TextService_Impl {
         if let Ok(mut st) = self.shared.lock() {
             st.overlay = items.clone();
         }
-        self.update_candidates(items, comments, 0, 0, cached_cfg().input.page_size as usize);
+        self.update_candidates(items, comments, 0, 0, cached_cfg().input.page_size as usize, false);
     }
 
     fn v_mode_leave(&self) {
@@ -517,8 +520,9 @@ impl TextService_Impl {
         selected: usize,
         page: usize,
         page_size: usize,
+        pinned: bool,
     ) {
-        let (mut origin, shared, mut origin_fresh) = {
+        let (mut origin, shared, mut origin_fresh, composing) = {
             let st = match self.shared.lock() {
                 Ok(s) => s,
                 Err(_) => return,
@@ -537,6 +541,7 @@ impl TextService_Impl {
                 if fresh { st.caret_origin } else { None },
                 self.shared.clone(),
                 fresh,
+                st.composition.is_some(),
             )
         };
         // 锚点过期（异步会话滞后）时，先尽力同步刷新一次，
@@ -579,6 +584,8 @@ impl TextService_Impl {
             page,
             page_size,
             origin,
+            pinned,
+            !composing,
         );
         crate::tsf_log!("update_candidates: origin_fresh={origin_fresh}");
     }
@@ -921,7 +928,12 @@ impl TextService_Impl {
                         xunyin_rime::assoc::learn_and_maybe_save(&p, &commit);
                     }
                 }
-                let followers = xunyin_rime::assoc::followers(&commit);
+                let followers = if vk == 0x20 {
+                    // 空格选词后不弹联想：用户要的是立刻上屏
+                    Vec::new()
+                } else {
+                    xunyin_rime::assoc::followers(&commit)
+                };
                 if let Ok(mut st) = self.shared.lock() {
                     st.assoc = followers;
                 }
@@ -1073,7 +1085,8 @@ impl TextService_Impl {
             st.overlay = overlay;
             st.cand_map = cand_map;
         }
-        self.update_candidates(disp_candidates, disp_comments, disp_selected, page, page_size);
+        let pinned = !commit.is_empty() && !disp_candidates.is_empty();
+        self.update_candidates(disp_candidates, disp_comments, disp_selected, page, page_size, pinned);
         if log_input() {
             crate::tsf_log!(
                 "keydown: vk=0x{vk:02X} -> consumed, preedit={preedit:?} commit={commit:?} candidates={cand_count}"
@@ -1404,6 +1417,8 @@ impl ITfKeyEventSink_Impl for TextService_Impl {
             crate::status_bar::refresh_status_bar(&self.shared);
         } else {
             crate::status_bar::hide_status_bar();
+            // 失去前台焦点时联想窗也不该继续挂在新应用上面
+            crate::candidate_window::hide_candidates();
         }
         Ok(())
     }
