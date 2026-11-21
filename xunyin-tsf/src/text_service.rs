@@ -1681,10 +1681,10 @@ mod tests {
         assert_eq!(unknown.as_raw(), unknown2.as_raw());
 
         let tip: ITfTextInputProcessor = obj.cast().unwrap();
-        let tip_ex: ITfTextInputProcessorEx = obj.cast().unwrap();
+        let _tip_ex: ITfTextInputProcessorEx = obj.cast().unwrap();
         let key: ITfKeyEventSink = obj.cast().unwrap();
-        let tm: ITfThreadMgrEventSink = obj.cast().unwrap();
-        let da: ITfDisplayAttributeProvider = obj.cast().unwrap();
+        let _tm: ITfThreadMgrEventSink = obj.cast().unwrap();
+        let _da: ITfDisplayAttributeProvider = obj.cast().unwrap();
         let cs: ITfCompositionSink = obj.cast().unwrap();
 
         // 各接口的 IUnknown QI 也应成功

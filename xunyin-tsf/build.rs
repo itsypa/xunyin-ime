@@ -24,8 +24,19 @@ fn main() {
     let dll_src = rime_dir.join("rime.dll");
     let dll_dst = profile_dir.join("rime.dll");
     if dll_src.exists() {
-        std::fs::create_dir_all(dll_dst.parent().unwrap()).ok();
-        let _ = std::fs::copy(&dll_src, &dll_dst);
+        // 运行时 DLL 搜索只认 exe 所在目录 / PATH，不会去父目录找：
+        //  - target/debug            -> xunyin_tsf.dll 及设置中心
+        //  - target/debug/deps       -> 本地 cargo test 的测试 exe
+        //  - OUT_DIR                 -> CI 上 cargo test 的测试 exe 所在目录
+        // 三处都放一份，否则测试进程会以 STATUS_DLL_NOT_FOUND (0xc0000135) 退出。
+        for dst_dir in [
+            profile_dir.clone(),
+            profile_dir.join("deps"),
+            std::path::PathBuf::from(&out_dir),
+        ] {
+            std::fs::create_dir_all(&dst_dir).ok();
+            let _ = std::fs::copy(&dll_src, dst_dir.join("rime.dll"));
+        }
         println!("cargo:rerun-if-changed={}", dll_src.display());
     }
     println!("cargo:rerun-if-changed={}", dll_dst.display());

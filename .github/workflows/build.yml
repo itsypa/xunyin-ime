@@ -54,6 +54,7 @@ jobs:
         shell: powershell
         run: |
           cd xunyin-tsf
+          $env:PATH = "$PWD\..\xunyin-ime\rime;$PWD\..\xunyin-ime\rime-x86;$env:PATH"
           cargo test
           if ($LASTEXITCODE -ne 0) { throw "xunyin-tsf tests failed" }
           cd ../xunyin-rime
