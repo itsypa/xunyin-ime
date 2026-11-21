@@ -76,20 +76,27 @@ fn read_word_lines(path: &Path) -> Result<(Vec<String>, usize), String> {
     Ok((lines, skipped))
 }
 
-/// 把用户数据目录里的某个表导出到 `导出` 目录。
-fn export_table(file_name: &str, tag: &str) -> Result<PathBuf, String> {
-    let dir = user_data_dir();
-    let src = dir.join(file_name);
+/// 把用户数据目录里的某个表写到指定文件（导出对话框选中的位置）。
+fn export_table_to(file_name: &str, dst: &Path) -> Result<PathBuf, String> {
+    let src = user_data_dir().join(file_name);
     if !src.is_file() {
         return Err(format!("还没有可导出的内容（{file_name} 不存在）"));
     }
-    let export_dir = dir.join("export");
+    if let Some(parent) = dst.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    let content = std::fs::read_to_string(&src).unwrap_or_default();
+    std::fs::write(dst, content).map_err(|e| e.to_string())?;
+    Ok(dst.to_path_buf())
+}
+
+/// 把用户数据目录里的某个表导出到 `导出` 目录。
+fn export_table(file_name: &str, tag: &str) -> Result<PathBuf, String> {
+    let export_dir = user_data_dir().join("export");
     std::fs::create_dir_all(&export_dir).map_err(|e| e.to_string())?;
     let stem = file_name.trim_end_matches(".txt");
     let dst = export_dir.join(format!("{stem}_{tag}_{}.txt", stamp()));
-    let content = std::fs::read_to_string(&src).unwrap_or_default();
-    std::fs::write(&dst, content).map_err(|e| e.to_string())?;
-    Ok(dst)
+    export_table_to(file_name, &dst)
 }
 
 /// 一位界面资源（皮肤中心用）。
@@ -522,6 +529,29 @@ impl Core {
         export_table("import_dict.txt", "import_dict")
     }
 
+    /// “导出词库”对话框的默认文件位置：优先桌面，其次数据目录。
+    pub fn imported_dict_export_default(&self) -> PathBuf {
+        let name = format!("导入词库_{}.txt", stamp());
+        if let Some(home) = std::env::var_os("USERPROFILE") {
+            let desktop = PathBuf::from(home).join("Desktop");
+            if desktop.is_dir() {
+                return desktop.join(&name);
+            }
+        }
+        if let Some(one_drive) = std::env::var_os("OneDrive") {
+            let desktop = PathBuf::from(one_drive).join("Desktop");
+            if desktop.is_dir() {
+                return desktop.join(&name);
+            }
+        }
+        user_data_dir().join("export").join(name)
+    }
+
+    /// 把“导入词库”那份表导出到用户选定的位置。
+    pub fn export_imported_dict_to(&self, dst: &Path) -> Result<PathBuf, String> {
+        export_table_to("import_dict.txt", dst)
+    }
+
     /// 导出自定义短语表。
     pub fn export_dict(&self) -> Result<PathBuf, String> {
         export_table("custom_phrase.txt", "custom_phrase")
@@ -893,15 +923,7 @@ impl Core {
 
     /// 检查更新：读 GitHub Release 的最新 tag，与当前版本比较。
     pub fn check_update(&self) -> Result<String, String> {
-        let url = "https://api.github.com/repos/itsypa/xunyin-ime/releases/latest";
-        let body = http_get(url)?;
-        let Some(tag) = json_string_field(&body, "tag_name") else {
-            // 仓库还没有 Release 时 GitHub 返回的是带 message 的错误对象
-            if let Some(msg) = json_string_field(&body, "message") {
-                return Err(format!("仓库暂时没有可用版本（{msg}）"));
-            }
-            return Err("无法解析服务器返回内容".into());
-        };
+        let tag = github_latest_tag("itsypa/xunyin-ime")?;
         let cur = env!("CARGO_PKG_VERSION");
         let latest = tag.trim_start_matches('v');
         if latest == cur {
@@ -913,21 +935,12 @@ impl Core {
 
     /// 最新版本的安装包下载地址（Release 资产里带 Setup 与 x64 的那个）。
     pub fn latest_installer_url(&self) -> Result<String, String> {
-        let body = http_get("https://api.github.com/repos/itsypa/xunyin-ime/releases/latest")?;
-        let mut hit: Option<String> = None;
-        let mut rest = body.as_str();
-        while let Some(i) = rest.find("\"browser_download_url\"") {
-            rest = &rest[i + 22..];
-            let Some(start) = rest.find('"') else { break };
-            let tail = &rest[start + 1..];
-            let Some(end) = tail.find('"') else { break };
-            let url = &tail[..end];
-            if url.contains("Setup") && url.contains("x64") && url.ends_with(".exe") {
-                hit = Some(url.to_string());
-                break;
-            }
-        }
-        hit.ok_or_else(|| "这个版本还没有 x64 安装包（可能是便携包）".to_string())
+        let tag = github_latest_tag("itsypa/xunyin-ime")?;
+        let expanded =
+            format!("https://github.com/itsypa/xunyin-ime/releases/expanded_assets/{tag}");
+        let html = http_get(&expanded)?;
+        release_exe_asset(&html)
+            .ok_or_else(|| "这个版本还没有 x64 安装包（可能是便携包）".to_string())
     }
 
     /// 下载并运行最新安装包（安装器会自己结束本程序/覆盖安装）。
@@ -1554,24 +1567,44 @@ fn bundled_frost_version(shared: &Path) -> String {
         .unwrap_or_default()
 }
 
-/// 上游最新词库版本 tag。优先 GitHub API；匿名 API 常被限流（403），
-/// 此时退回 release 网页，从 `/releases/tag/<tag>` 解析，不消耗 API 配额。
-fn frost_latest_tag() -> Result<String, String> {
-    let api = "https://api.github.com/repos/gaboolic/rime-frost/releases/latest";
-    let body = http_get(api).unwrap_or_default();
+/// 任意 GitHub 仓库的最新 release tag。优先 API；匿名 API 限流（403）时
+/// 退回 release 网页，避免“有版本却提示没有可用版本”。
+fn github_latest_tag(repo: &str) -> Result<String, String> {
+    let api = format!("https://api.github.com/repos/{repo}/releases/latest");
+    let body = http_get(&api).unwrap_or_default();
     if let Some(tag) = json_string_field(&body, "tag_name") {
         return Ok(tag);
     }
     let api_msg = json_string_field(&body, "message").unwrap_or_default();
     if !api_msg.is_empty() {
-        core_log(&format!("词库更新: GitHub API 不可用（{api_msg}），改用 release 网页"));
+        core_log(&format!(
+            "检查更新: GitHub API 不可用（{api_msg}），改用 release 网页"
+        ));
     }
-    let page = http_get("https://github.com/gaboolic/rime-frost/releases/latest")?;
-    release_tag_from_html(&page).ok_or_else(|| {
+    let page = http_get(&format!("https://github.com/{repo}/releases/latest")).unwrap_or_default();
+    if let Some(tag) = release_tag_from_html(&page) {
+        return Ok(tag);
+    }
+    // 全是预发布版本时 `/releases/latest` 会重定向到 releases 列表页，不含 tag；
+    // releases.atom 仍按时间列出，第一位就是最新版本（含预发布）。
+    let atom = http_get(&format!("https://github.com/{repo}/releases.atom"))?;
+    release_tag_from_html(&atom).ok_or_else(|| {
         if api_msg.is_empty() {
-            "无法解析上游 release 信息".to_string()
+            "仓库没有可用版本".to_string()
         } else {
-            format!("无法解析上游 release 信息（GitHub API：{api_msg}）")
+            format!("仓库没有可用版本（{api_msg}）")
+        }
+    })
+}
+
+/// 上游最新词库版本 tag。优先 GitHub API；匿名 API 常被限流（403），
+/// 此时退回 release 网页，从 `/releases/tag/<tag>` 解析，不消耗 API 配额。
+fn frost_latest_tag() -> Result<String, String> {
+    github_latest_tag("gaboolic/rime-frost").map_err(|e| {
+        if e.starts_with("仓库没有可用版本") {
+            format!("无法解析上游 release 信息（{e}）")
+        } else {
+            e
         }
     })
 }
@@ -1614,6 +1647,35 @@ fn release_zip_asset(html: &str) -> Option<String> {
             format!("https://github.com/{href}")
         };
         if url.contains("schemas") {
+            return Some(url);
+        }
+        if fallback.is_none() {
+            fallback = Some(url);
+        }
+    }
+    fallback
+}
+
+/// 在资产页里找安装包：优先名字同时带 Setup 与 x64 的 exe。
+fn release_exe_asset(html: &str) -> Option<String> {
+    let mut fallback: Option<String> = None;
+    let mut rest = html;
+    while let Some(i) = rest.find("href=\"") {
+        rest = &rest[i + 6..];
+        let Some(end) = rest.find('"') else { break };
+        let href = &rest[..end];
+        rest = &rest[end..];
+        if !href.ends_with(".exe") || !href.contains("/releases/download/") {
+            continue;
+        }
+        let url = if href.starts_with("http") {
+            href.to_string()
+        } else if href.starts_with('/') {
+            format!("https://github.com{href}")
+        } else {
+            format!("https://github.com/{href}")
+        };
+        if url.contains("Setup") && url.contains("x64") {
             return Some(url);
         }
         if fallback.is_none() {
@@ -1997,6 +2059,16 @@ mod tests {
         assert_eq!(
             release_zip_asset(html).as_deref(),
             Some("https://github.com/gaboolic/rime-frost/releases/download/1.0.4/rime-frost-schemas.zip")
+        );
+    }
+
+    #[test]
+    fn release_exe_prefers_setup_x64() {
+        let html = r#"<a href="/itsypa/xunyin-ime/releases/download/v0.1.91/portable.zip">便携</a>
+            <a href="/itsypa/xunyin-ime/releases/download/v0.1.91/XunyinIME-Setup-0.1.0-x64.exe">安装包</a>"#;
+        assert_eq!(
+            release_exe_asset(html).as_deref(),
+            Some("https://github.com/itsypa/xunyin-ime/releases/download/v0.1.91/XunyinIME-Setup-0.1.0-x64.exe")
         );
     }
 

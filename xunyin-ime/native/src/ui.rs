@@ -31,8 +31,9 @@ use windows::Win32::Graphics::GdiPlus::{
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::System::Threading::CreateMutexW;
 use windows::Win32::UI::Controls::Dialogs::{
-    ChooseColorW, GetOpenFileNameW, CHOOSECOLORW, OPENFILENAMEW, CC_FULLOPEN, CC_RGBINIT,
-    OFN_FILEMUSTEXIST, OFN_HIDEREADONLY, OFN_PATHMUSTEXIST,
+    ChooseColorW, GetOpenFileNameW, GetSaveFileNameW, CHOOSECOLORW, OPENFILENAMEW, CC_FULLOPEN,
+    CC_RGBINIT, OFN_FILEMUSTEXIST, OFN_HIDEREADONLY, OFN_NOCHANGEDIR, OFN_OVERWRITEPROMPT,
+    OFN_PATHMUSTEXIST,
 };
 use windows::Win32::UI::HiDpi::GetDpiForWindow;
 use windows::Win32::UI::Shell::ShellExecuteW;
@@ -2377,10 +2378,20 @@ impl App {
                 Ok(p) => self.toast(&format!("已导出：{}", p.display())),
                 Err(e) => self.toast(&format!("导出失败：{e}")),
             },
-            Id::ImportDictExport => match self.core.export_imported_dict() {
-                Ok(p) => self.toast(&format!("已导出：{}", p.display())),
-                Err(e) => self.toast(&format!("导出失败：{e}")),
-            },
+            Id::ImportDictExport => {
+                let default = self.core.imported_dict_export_default();
+                if let Some(path) = pick_save_file(
+                    self.hwnd,
+                    &default,
+                    &[("文本词表", "*.txt"), ("所有文件", "*.*")],
+                    "txt",
+                ) {
+                    match self.core.export_imported_dict_to(&path) {
+                        Ok(p) => self.toast(&format!("已导出：{}", p.display())),
+                        Err(e) => self.toast(&format!("导出失败：{e}")),
+                    }
+                }
+            }
             Id::ExportUserDict => match self.core.export_user_dict() {
                 Ok(p) => self.toast(&format!("用户词库已导出：{}", p.display())),
                 Err(e) => self.toast(&format!("导出失败：{e}")),
@@ -2681,6 +2692,60 @@ fn pick_file(hwnd: HWND, filter: &[(&str, &str)], def_ext: &str) -> Option<std::
         if GetOpenFileNameW(&mut ofn).as_bool() {
             let n = buf.iter().position(|c| *c == 0).unwrap_or(0);
             Some(std::path::PathBuf::from(String::from_utf16_lossy(&buf[..n])))
+        } else {
+            None
+        }
+    }
+}
+
+/// 另存为对话框：预填默认位置，用户可改目录/文件名。
+fn pick_save_file(
+    hwnd: HWND,
+    default_path: &std::path::Path,
+    filter: &[(&str, &str)],
+    def_ext: &str,
+) -> Option<std::path::PathBuf> {
+    unsafe {
+        if let Some(parent) = default_path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let mut f: Vec<u16> = Vec::new();
+        for (name, pat) in filter {
+            f.extend(name.encode_utf16());
+            f.push(0);
+            f.extend(pat.encode_utf16());
+            f.push(0);
+        }
+        f.push(0);
+        let ext = wide(def_ext);
+        let title = wide("导出词库");
+        let mut buf = [0u16; 1024];
+        let init: Vec<u16> = default_path
+            .to_string_lossy()
+            .encode_utf16()
+            .chain(std::iter::once(0))
+            .collect();
+        let n = init.len().min(buf.len());
+        buf[..n].copy_from_slice(&init[..n]);
+        let mut ofn = OPENFILENAMEW {
+            lStructSize: size_of::<OPENFILENAMEW>() as u32,
+            hwndOwner: hwnd,
+            lpstrFilter: PCWSTR(f.as_ptr()),
+            lpstrFile: windows::core::PWSTR(buf.as_mut_ptr()),
+            nMaxFile: buf.len() as u32,
+            lpstrTitle: PCWSTR(title.as_ptr()),
+            lpstrDefExt: PCWSTR(ext.as_ptr()),
+            Flags: OFN_OVERWRITEPROMPT
+                | OFN_PATHMUSTEXIST
+                | OFN_HIDEREADONLY
+                | OFN_NOCHANGEDIR,
+            ..Default::default()
+        };
+        if GetSaveFileNameW(&mut ofn).as_bool() {
+            let n = buf.iter().position(|c| *c == 0).unwrap_or(0);
+            Some(std::path::PathBuf::from(String::from_utf16_lossy(
+                &buf[..n],
+            )))
         } else {
             None
         }
@@ -3980,15 +4045,18 @@ fn draw_dict(app: &mut App, dc: HDC, x0: i32, y0: i32, w: i32) -> i32 {
     app.button(dc, Id::DictUpdateOne, btns[0], "更新词库", true);
     app.button(dc, Id::DictRollback, btns[1], "回滚上次", false);
 
-    // 用户词库管理：导出学习记录 / 清空（清空会重建索引，单独提示）
+    // 用户词库管理：清空学习记录（清空会重建索引，单独提示）
     let user_h = app.card_h(1);
     let (x, cy0, col_w) = cols.put(0, user_h);
-    let cy = app.card(dc, x, cy0, col_w, user_h, "用户词库", "导出学习记录，或清空重新学习");
+    let cy = app.card(dc, x, cy0, col_w, user_h, "用户词库", "清空学习记录，之后重新学习");
     let inner = col_w - app.s(36);
     let lx = x + app.s(18);
-    let btns = app.btn_row(lx, cy, inner, 2, 34);
-    app.button(dc, Id::ExportUserDict, btns[0], "导出用户词库", false);
-    app.button_danger(dc, Id::ClearUserDict, btns[1], "清空用户词库");
+    app.button_danger(
+        dc,
+        Id::ClearUserDict,
+        RECT { left: lx, top: cy, right: lx + inner, bottom: cy + app.s(34) },
+        "清空用户词库",
+    );
 
     // 右栏：导入词库（批量通道，低优先级）
     let import_h = app.card_h_inner(app.s(34 + 8 + 34 + 10));
@@ -3997,10 +4065,10 @@ fn draw_dict(app: &mut App, dc: HDC, x0: i32, y0: i32, w: i32) -> i32 {
     let inner = col_w - app.s(36);
     let lx = x + app.s(18);
     let btns = app.btn_row(lx, cy, inner, 2, 34);
-    app.button(dc, Id::DictImport, btns[0], "导入词库（txt/scel）…", true);
+    app.button(dc, Id::DictImport, btns[0], "导入词库…", true);
     app.button(dc, Id::DictImportDir, btns[1], "导入整个文件夹…", false);
     let by = cy + app.s(42);
-    app.button(dc, Id::ImportDictExport, RECT { left: lx, top: by, right: lx + (inner - app.s(8)) / 2, bottom: by + app.s(34) }, "导出已导入词库", false);
+    app.button(dc, Id::ImportDictExport, RECT { left: lx, top: by, right: lx + (inner - app.s(8)) / 2, bottom: by + app.s(34) }, "导出词库", false);
     unsafe {
         let info = format!("已导入 {} 条（低优先级）", app.stats.imported_count);
         text(
@@ -4014,24 +4082,7 @@ fn draw_dict(app: &mut App, dc: HDC, x0: i32, y0: i32, w: i32) -> i32 {
         );
     }
 
-    // 用户词库备份 / 恢复：备份列表单独一张卡，别和导入混在一起
-    let backup_inner = app.s(34 + 8 + 160);
-    let backup_h = app.card_h_inner(backup_inner);
-    let (x, cy0, col_w) = cols.put(1, backup_h);
-    let cy = app.card(dc, x, cy0, col_w, backup_h, "用户词库备份 / 恢复", "备份保存在数据目录的 backups 里");
-    let inner = col_w - app.s(36);
-    let lx = x + app.s(18);
-    let btns = app.btn_row(lx, cy, inner, 2, 34);
-    app.button(dc, Id::BackupNow, btns[0], "立即备份", true);
-    app.button(dc, Id::Restore, btns[1], "恢复所选备份", false);
-    let lr = RECT { left: lx, top: cy + app.s(42), right: lx + inner, bottom: cy + app.s(202) };
-    let items: Vec<String> = app
-        .backups
-        .iter()
-        .map(|b| b.file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default())
-        .collect();
-    let sel = Some(app.backup_sel);
-    app.list(dc, Id::BackupRow, lr, &items, sel, "还没有备份");
+    // 用户词库备份 / 恢复已并入“导入词库 / 导出词库”，不再单独提供一张卡。
 
     // 细胞词库：整行 6 列（26 项 = 5 行），比挤在半栏里少滚一屏
     let cell_cols = 6i32;
