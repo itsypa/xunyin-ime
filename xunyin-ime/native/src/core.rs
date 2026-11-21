@@ -956,9 +956,7 @@ impl Core {
                     .find(|l| l.contains("上游版本"))
                     .and_then(|l| l.split_whitespace().find_map(version_in))
             });
-        let body = http_get("https://api.github.com/repos/gaboolic/rime-frost/releases/latest")?;
-        let tag = json_string_field(&body, "tag_name")
-            .ok_or_else(|| "无法解析服务器返回内容".to_string())?;
+        let tag = frost_latest_tag()?;
         let latest = tag.trim_start_matches('v');
         let cur = bundled.as_deref().unwrap_or("");
         if cur == latest {
@@ -1400,6 +1398,7 @@ fn http_get_bytes(url: &str) -> Result<Vec<u8>, String> {
             total_len: u32,
             context: usize,
         ) -> i32;
+        fn WinHttpSetOption(handle: Handle, option: u32, buffer: *const c_void, len: u32) -> i32;
         fn WinHttpReceiveResponse(request: Handle, reserved: *mut c_void) -> i32;
         fn WinHttpReadData(request: Handle, buffer: *mut c_void, to_read: u32, read: *mut u32)
             -> i32;
@@ -1442,7 +1441,15 @@ fn http_get_bytes(url: &str) -> Result<Vec<u8>, String> {
             WinHttpCloseHandle(session);
             return Err("创建请求失败".into());
         }
-        let ua = wide("User-Agent: xunyin-ime\r\nAccept: application/vnd.github+json\r\n");
+        // 允许跟随 301/302：release 网页与资产下载都会跳转
+        let redirect_policy: u32 = 2; // WINHTTP_OPTION_REDIRECT_POLICY_ALWAYS
+        let _ = WinHttpSetOption(
+            req,
+            16, // WINHTTP_OPTION_REDIRECT_POLICY
+            &redirect_policy as *const u32 as *const c_void,
+            4,
+        );
+        let ua = wide("User-Agent: xunyin-ime\r\nAccept: */*\r\n");
         let sent = WinHttpSendRequest(req, ua.as_ptr(), ua.len() as u32 - 1, std::ptr::null(), 0, 0, 0);
         let ok = sent != 0 && WinHttpReceiveResponse(req, std::ptr::null_mut()) != 0;
         let mut body = Vec::new();
@@ -1547,29 +1554,91 @@ fn bundled_frost_version(shared: &Path) -> String {
         .unwrap_or_default()
 }
 
-/// 上游最新词库包：(tag, 下载地址)。优先 `rime-frost-schemas.zip`。
-fn frost_dict_asset_url() -> Result<(String, String), String> {
-    let body = http_get("https://api.github.com/repos/gaboolic/rime-frost/releases/latest")?;
-    let tag = json_string_field(&body, "tag_name")
-        .ok_or_else(|| "无法解析上游 release 信息".to_string())?;
+/// 上游最新词库版本 tag。优先 GitHub API；匿名 API 常被限流（403），
+/// 此时退回 release 网页，从 `/releases/tag/<tag>` 解析，不消耗 API 配额。
+fn frost_latest_tag() -> Result<String, String> {
+    let api = "https://api.github.com/repos/gaboolic/rime-frost/releases/latest";
+    let body = http_get(api).unwrap_or_default();
+    if let Some(tag) = json_string_field(&body, "tag_name") {
+        return Ok(tag);
+    }
+    let api_msg = json_string_field(&body, "message").unwrap_or_default();
+    if !api_msg.is_empty() {
+        core_log(&format!("词库更新: GitHub API 不可用（{api_msg}），改用 release 网页"));
+    }
+    let page = http_get("https://github.com/gaboolic/rime-frost/releases/latest")?;
+    release_tag_from_html(&page).ok_or_else(|| {
+        if api_msg.is_empty() {
+            "无法解析上游 release 信息".to_string()
+        } else {
+            format!("无法解析上游 release 信息（GitHub API：{api_msg}）")
+        }
+    })
+}
+
+/// 从 release 网页里取第一个 `/releases/tag/<tag>`。
+fn release_tag_from_html(html: &str) -> Option<String> {
+    const MARKER: &str = "/releases/tag/";
+    let mut rest = html;
+    while let Some(i) = rest.find(MARKER) {
+        rest = &rest[i + MARKER.len()..];
+        let end = rest
+            .find(|c: char| c == '"' || c == '\'' || c == '<' || c == '>' || c == '?' || c == ' ')
+            .unwrap_or(rest.len());
+        let tag = rest[..end].trim();
+        // 页面模板里还有 `releases/tag/*name` 这类占位符，跳过
+        if !tag.is_empty() && !tag.contains('*') && !tag.contains('%') {
+            return Some(tag.to_string());
+        }
+    }
+    None
+}
+
+/// 在 `releases/expanded_assets/<tag>` 里找词库 zip：优先名字带 schemas 的。
+fn release_zip_asset(html: &str) -> Option<String> {
     let mut fallback: Option<String> = None;
-    let mut rest = body.as_str();
-    while let Some(i) = rest.find("\"browser_download_url\"") {
-        rest = &rest[i + 22..];
-        let Some(start) = rest.find('"') else { break };
-        let tail = &rest[start + 1..];
-        let Some(end) = tail.find('"') else { break };
-        let url = &tail[..end];
-        if url.ends_with(".zip") {
-            if url.contains("schemas") {
-                return Ok((tag, url.to_string()));
-            }
-            fallback = Some(url.to_string());
+    let mut rest = html;
+    while let Some(i) = rest.find("href=\"") {
+        rest = &rest[i + 6..];
+        let Some(end) = rest.find('"') else { break };
+        let href = &rest[..end];
+        rest = &rest[end..];
+        if !href.ends_with(".zip") || !href.contains("/releases/download/") {
+            continue;
+        }
+        let url = if href.starts_with("http") {
+            href.to_string()
+        } else if href.starts_with('/') {
+            format!("https://github.com{href}")
+        } else {
+            format!("https://github.com/{href}")
+        };
+        if url.contains("schemas") {
+            return Some(url);
+        }
+        if fallback.is_none() {
+            fallback = Some(url);
         }
     }
     fallback
-        .map(|u| (tag, u))
-        .ok_or_else(|| "上游这个版本没有可用的词库压缩包".to_string())
+}
+
+/// 上游最新词库包：(tag, 下载地址)。优先 `rime-frost-schemas.zip`。
+fn frost_dict_asset_url() -> Result<(String, String), String> {
+    let tag = frost_latest_tag()?;
+    let expanded =
+        format!("https://github.com/gaboolic/rime-frost/releases/expanded_assets/{tag}");
+    let url = match http_get(&expanded) {
+        Ok(html) => release_zip_asset(&html),
+        Err(_) => None,
+    }
+    // 资产页取不到时退回上游稳定命名；下载失败会在调用方给出明确错误。
+    .unwrap_or_else(|| {
+        format!(
+            "https://github.com/gaboolic/rime-frost/releases/download/{tag}/rime-frost-schemas.zip"
+        )
+    });
+    Ok((tag, url))
 }
 
 /// 在解压出来的目录里找 `cn_dicts` 与 `cn_dicts_cell`（上游包可能多套一层目录）。
@@ -1915,6 +1984,23 @@ mod tests {
     }
 
     #[test]
+    fn release_tag_parser_skips_page_placeholder() {
+        let html = r#"<a href="/gaboolic/rime-frost/releases/tag/*name">模板</a>
+            <link rel="canonical" href="https://github.com/gaboolic/rime-frost/releases/tag/1.0.4">"#;
+        assert_eq!(release_tag_from_html(html).as_deref(), Some("1.0.4"));
+    }
+
+    #[test]
+    fn release_asset_prefers_schemas_zip() {
+        let html = r#"<a href="/gaboolic/rime-frost/releases/download/1.0.4/rime-frost.zip">源码</a>
+            <a href="/gaboolic/rime-frost/releases/download/1.0.4/rime-frost-schemas.zip">词库</a>"#;
+        assert_eq!(
+            release_zip_asset(html).as_deref(),
+            Some("https://github.com/gaboolic/rime-frost/releases/download/1.0.4/rime-frost-schemas.zip")
+        );
+    }
+
+    #[test]
     fn asset_validation() {
         let mut buf = Vec::new();
         buf.extend_from_slice(&60u32.to_le_bytes());
@@ -1958,6 +2044,7 @@ mod tests {
         println!("程序更新: {:?}", core.check_update());
         println!("安装包地址: {:?}", core.latest_installer_url());
         println!("词库更新: {:?}", core.check_dict_update());
+        println!("词库包: {:?}", frost_dict_asset_url());
     }
 
     /// 词库文件校验要能吃下"前面几十行注释头"的上游文件（41448.dict.yaml 就是这样）。
