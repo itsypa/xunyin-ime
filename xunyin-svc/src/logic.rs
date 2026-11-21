@@ -979,6 +979,12 @@ impl Logic {
         if !r.consume || r.commit.is_empty() {
             return None;
         }
+        // 空格选词后清掉 select() 刚摆好的联想，避免下一次空格/数字误选它。
+        if vk == 0x20 {
+            self.assoc_followers.clear();
+            self.overlay.clear();
+            self.overlay_comments.clear();
+        }
         out.commit = r.commit;
         out.candidates.clear();
         out.overlay_len = 0;

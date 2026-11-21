@@ -250,6 +250,16 @@ fn version_in(s: &str) -> Option<String> {
     }
 }
 
+/// 版本比较用的 (major, minor, patch)；非数字/缺段返回 None。
+fn version_tuple(s: &str) -> Option<(u64, u64, u64)> {
+    let s = s.trim_start_matches(['v', 'V']);
+    let mut it = s.split('.');
+    let a = it.next()?.parse().ok()?;
+    let b = it.next()?.parse().ok()?;
+    let c = it.next().unwrap_or("0").parse().ok()?;
+    Some((a, b, c))
+}
+
 impl Core {
     pub fn new() -> Self {
         let (shared, user) = resolve_data_dirs();
@@ -926,7 +936,11 @@ impl Core {
         let tag = github_latest_tag("itsypa/xunyin-ime")?;
         let cur = env!("CARGO_PKG_VERSION");
         let latest = tag.trim_start_matches('v');
-        if latest == cur {
+        let newer = match (version_tuple(latest), version_tuple(cur)) {
+            (Some(l), Some(c)) => l > c,
+            _ => latest != cur,
+        };
+        if !newer {
             Ok(format!("已是最新版本（v{cur}）"))
         } else {
             Ok(format!("发现新版本 v{latest}（当前 v{cur}）——点「打开下载页」更新"))
@@ -2070,6 +2084,13 @@ mod tests {
             release_exe_asset(html).as_deref(),
             Some("https://github.com/itsypa/xunyin-ime/releases/download/v0.1.91/XunyinIME-Setup-0.1.0-x64.exe")
         );
+    }
+
+    #[test]
+    fn version_tuple_orders_patch_versions() {
+        assert!(version_tuple("0.1.93") > version_tuple("0.1.91"));
+        assert_eq!(version_tuple("v0.1.93"), Some((0, 1, 93)));
+        assert_eq!(version_tuple("not-a-version"), None);
     }
 
     #[test]

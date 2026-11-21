@@ -185,6 +185,7 @@ impl TextService_Impl {
         &self,
         context: &ITfContext,
         r: &xunyin_rime::svc_proto::Reply,
+        suppress_assoc: bool,
     ) -> bool {
         // 模式状态（状态栏的中英/全半角/标点图标靠它）
         if let Ok(mut st) = self.shared.lock() {
@@ -238,17 +239,33 @@ impl TextService_Impl {
         if !unchanged {
             let _ = self.schedule_edit(context, &preedit, &commit, caret);
         }
-        // 候选：前 overlay_len 个是叠加候选（快捷输入/联想/v 模式），其余是 Rime 候选
-        let n_overlay = r.overlay_len.min(r.candidates.len());
+        // 候选：前 overlay_len 个是叠加候选（快捷输入/联想/v 模式），其余是 Rime 候选。
+        // 空格上屏在 DLL 层再兜一道：即使服务/旧版本仍返回联想候选，也绝不显示。
+        let suppress_assoc = suppress_assoc && !commit.is_empty();
+        let candidates: Vec<String> = if suppress_assoc {
+            Vec::new()
+        } else {
+            r.candidates.clone()
+        };
+        let comments: Vec<String> = if suppress_assoc {
+            Vec::new()
+        } else {
+            r.comments.clone()
+        };
+        let n_overlay = if suppress_assoc {
+            0
+        } else {
+            r.overlay_len.min(candidates.len())
+        };
         if let Ok(mut st) = self.shared.lock() {
-            st.overlay = r.candidates[..n_overlay].to_vec();
-            st.cand_map = (n_overlay..r.candidates.len()).collect();
+            st.overlay = candidates[..n_overlay].to_vec();
+            st.cand_map = (n_overlay..candidates.len()).collect();
         }
         // 上屏后还带候选 = 联想窗：没有组合串，要让它在提交完成后继续停留一会儿。
-        let pinned = !commit.is_empty() && !r.candidates.is_empty();
+        let pinned = !commit.is_empty() && !candidates.is_empty();
         self.update_candidates(
-            r.candidates.clone(),
-            r.comments.clone(),
+            candidates,
+            comments,
             r.selected,
             r.page,
             r.page_size.max(1),
@@ -610,7 +627,7 @@ impl TextService_Impl {
         if crate::svc::ready() {
             let shift_now = key::key_state_down(0x10);
             if let Some(reply) = crate::svc::key(vk, mask, shift_now) {
-                return self.apply_service_reply(context, &reply);
+                return self.apply_service_reply(context, &reply, vk == 0x20);
             }
             // 服务这条路暂时不通（超时/断开/服务侧报错）：**绝不能吞键**。
             // 吞了就是"切到输入法之后一个字都打不出来"（真实踩过这个坑：请求通道

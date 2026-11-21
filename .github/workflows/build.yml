@@ -86,17 +86,18 @@ jobs:
       - name: 注入构建版本号
         shell: powershell
         run: |
-          # NOTE: single quotes would keep $env: literal and write
-          # 'version = "0.1.$env:GITHUB_RUN_NUMBER"' into Cargo.toml, which makes
-          # cargo fail with a semver parse error. Use a double-quoted replacement.
+          # NOTE: the replacement below is double-quoted so $ver expands; single
+          # quotes would write the literal '$ver' and cargo would reject it.
           $conf = "xunyin-ime/native/Cargo.toml"
           if ($env:GITHUB_REF_TYPE -eq "tag") {
             $ver = $env:GITHUB_REF_NAME -replace "^v", ""
           } else {
-            $ver = "0.1.$env:GITHUB_RUN_NUMBER"
+            # Manual builds use the version committed in Cargo.toml, so local and
+            # GitHub artifacts share one version number instead of drifting apart.
+            $ver = (Select-String -Path $conf -Pattern '^version = "(.+)"' | Select-Object -First 1).Matches[0].Groups[1].Value
           }
           if ($ver -notmatch "^[0-9]+\.[0-9]+\.[0-9]+$") {
-            throw "bad version from tag/run number: $ver"
+            throw "bad version from tag/Cargo.toml: $ver"
           }
           $text = Get-Content $conf -Raw
           $text = $text -replace '(?m)^version = ".+"', "version = `"$ver`""

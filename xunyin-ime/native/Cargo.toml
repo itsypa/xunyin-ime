@@ -1,6 +1,6 @@
 [package]
 name = "xunyin-ime"
-version = "0.1.0"
+version = "0.1.93"
 description = "迅音输入法 —— 原生设置中心（Win32 + 公共控件，无 WebView 依赖）"
 edition = "2021"
 
