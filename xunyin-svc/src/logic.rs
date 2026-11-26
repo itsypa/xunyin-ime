@@ -307,7 +307,7 @@ impl Logic {
                 .clone();
             (commit, e.get_context())
         };
-        self.after_key(commit, snapshot, &cfg, &mut out, vk != 0x20);
+        self.after_key(commit, snapshot, &cfg, &mut out, !is_candidate_select_key(vk));
         self.remember_current_mode(&cfg);
         out
     }
@@ -963,24 +963,35 @@ impl Logic {
 
     /// 叠加候选的选择键（空格 = 第一项，1-9 = 第 N 项）。返回 Some 表示已处理。
     fn overlay_select(&mut self, vk: u32, out: &mut Reply) -> Option<bool> {
-        if vk != 0x20 && !(0x31..=0x39).contains(&vk) {
+        if vk != 0x20
+            && !(0x31..=0x39).contains(&vk)
+            && !(0x61..=0x69).contains(&vk)
+        {
             return None;
         }
-        if self.overlay.is_empty() {
+        let composing = self.engine().map(|e| e.is_composing()).unwrap_or(false);
+        // 没有叠加候选时，空格/数字仍要按“显示下标 → Rime 下标”选词：
+        // 删词黑名单过滤后显示顺序会变，直接交给 Rime 会选到另一个字。
+        if self.overlay.is_empty() && !composing {
             return None;
         }
-        let idx = if vk == 0x20 {
-            0
-        } else {
-            (vk - 0x31) as usize
+        let idx = match vk {
+            0x20 => 0,
+            0x31..=0x39 => (vk - 0x31) as usize,
+            0x61..=0x69 => (vk - 0x61) as usize,
+            _ => return None,
         };
+        // 数字超出当前显示候选数：吞掉，别交给 Rime 选一个没显示出来的候选
+        if vk != 0x20 && idx >= self.overlay.len() + self.cand_map.len() {
+            return Some(true);
+        }
         // 客户端在 key() 开头已经切好，这里沿用当前那个
         let r = self.select(self.last_client.unwrap_or(0), idx);
         if !r.consume || r.commit.is_empty() {
             return None;
         }
-        // 空格选词后清掉 select() 刚摆好的联想，避免下一次空格/数字误选它。
-        if vk == 0x20 {
+        // 选词键上屏后清掉 select() 刚摆好的联想，避免下一次空格/数字误选它。
+        if is_candidate_select_key(vk) {
             self.assoc_followers.clear();
             self.overlay.clear();
             self.overlay_comments.clear();
@@ -991,6 +1002,11 @@ impl Logic {
         out.preedit.clear();
         Some(true)
     }
+}
+
+/// 选词上屏键：空格、主键盘/小键盘数字、回车、Tab。
+fn is_candidate_select_key(vk: u32) -> bool {
+    matches!(vk, 0x20 | 0x09 | 0x0D | 0x31..=0x39 | 0x61..=0x69)
 }
 
 /// v 模式可接受的字符（数字与四则运算符，含小键盘）。

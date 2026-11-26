@@ -291,6 +291,8 @@ pub struct CandidateWindow {
     font_family: std::cell::RefCell<String>,
     /// 上屏后展示的“联想候选”：没有组合串，但不能被光标跟随定时器立刻隐藏。
     pinned: Cell<bool>,
+    /// 每个候选在窗口内的命中矩形（横排/竖排都按实际绘制位置记录）。
+    hit_rects: RefCell<Vec<(i32, i32, i32, i32)>>,
 }
 
 // 候选窗只由 TSF 线程创建与访问（静态互斥锁串行化），
@@ -339,6 +341,7 @@ impl CandidateWindow {
             dpi: Cell::new(dpi),
             font_family: RefCell::new(family),
             pinned: Cell::new(false),
+            hit_rects: RefCell::new(Vec::new()),
         }
     }
 
@@ -797,27 +800,34 @@ impl CandidateWindow {
                     ));
                 }
             }
+            let mut hits: Vec<(i32, i32, i32, i32)> = Vec::with_capacity(count);
             for (i, &(x, y, cell_w)) in layout.iter().enumerate() {
                 let is_sel = i == selected;
+                let cell_rect = if c.layout == "horizontal" {
+                    // 横排：高亮/命中只包住这一项
+                    RECT {
+                        left: (x - 6).max(1),
+                        top: y,
+                        right: (x + cell_w + 6).min(rc.right - 1),
+                        bottom: y + self.row_h,
+                    }
+                } else {
+                    RECT {
+                        left: 1,
+                        top: y,
+                        right: rc.right - 1,
+                        bottom: y + self.row_h,
+                    }
+                };
+                hits.push((
+                    cell_rect.left,
+                    cell_rect.top,
+                    cell_rect.right,
+                    cell_rect.bottom,
+                ));
                 if is_sel {
-                    let sel_rect = if c.layout == "horizontal" {
-                        // 横排：高亮只包住这一项
-                        RECT {
-                            left: (x - 6).max(1),
-                            top: y,
-                            right: (x + cell_w + 6).min(rc.right - 1),
-                            bottom: y + self.row_h,
-                        }
-                    } else {
-                        RECT {
-                            left: 1,
-                            top: y,
-                            right: rc.right - 1,
-                            bottom: y + self.row_h,
-                        }
-                    };
                     let hl = CreateSolidBrush(COLORREF(parse_color(&c.selected_bg, 0x002A6FDB)));
-                    FillRect(mem, &sel_rect, hl);
+                    FillRect(mem, &cell_rect, hl);
                     DeleteObject(HGDIOBJ(hl.0));
                 }
                 SetBkMode(mem, TRANSPARENT);
@@ -866,6 +876,7 @@ impl CandidateWindow {
                     );
                 }
             }
+            *self.hit_rects.borrow_mut() = hits;
 
             let page = self.page.get();
             let page_size = self.page_size.get().max(1);
@@ -1129,10 +1140,16 @@ extern "system" fn wnd_proc(
                 LRESULT(0)
             }
             WM_LBUTTONUP => {
-                let y = ((lparam.0 >> 16) & 0xFFFF) as i32;
-                if y >= this.pad_y {
-                    let row = (y - this.pad_y) / this.row_h;
-                    this.on_click(row as usize);
+                let x = ((lparam.0 & 0xFFFF) as i16) as i32;
+                let y = (((lparam.0 >> 16) & 0xFFFF) as i16) as i32;
+                let hit = {
+                    let rects = this.hit_rects.borrow();
+                    rects
+                        .iter()
+                        .position(|&(l, t, r, b)| x >= l && x < r && y >= t && y < b)
+                };
+                if let Some(i) = hit {
+                    this.on_click(i);
                 }
                 LRESULT(0)
             }

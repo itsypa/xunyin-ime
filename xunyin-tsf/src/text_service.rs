@@ -35,6 +35,12 @@ fn is_dunhao_key(vk: u32, shift: bool) -> bool {
     !shift && matches!(vk, 0xBF | 0xDC)
 }
 
+/// 选词上屏键：空格、主键盘/小键盘数字、回车、Tab。
+/// 这些键上屏后不弹联想（联想只应出现在用户继续输入时，不该挡在选词之后）。
+fn is_candidate_select_key(vk: u32) -> bool {
+    matches!(vk, 0x20 | 0x09 | 0x0D | 0x31..=0x39 | 0x61..=0x69)
+}
+
 /// v 模式可接受的输入字符（数字与四则运算符）。
 fn v_mode_char(vk: u32, mask: i32) -> Option<char> {
     let shift = mask & xunyin_rime::kRimeModifierShift != 0;
@@ -474,20 +480,33 @@ impl TextService_Impl {
         if mask & (kRimeModifierControl | kRimeModifierAlt) != 0 {
             return None;
         }
-        if vk != 0x20 && !(0x31..=0x39).contains(&vk) {
+        if vk != 0x20
+            && !(0x31..=0x39).contains(&vk)
+            && !(0x61..=0x69).contains(&vk)
+        {
             return None;
         }
-        let overlay = match self.shared.lock() {
-            Ok(st) => st.overlay.clone(),
-            Err(_) => Vec::new(),
+        let composing = match engine::ensure_engine() {
+            Some(arc) => arc
+                .lock()
+                .map(|mut e| e.is_composing())
+                .unwrap_or(false),
+            None => false,
         };
-        if overlay.is_empty() {
+        let (overlay, cand_map) = match self.shared.lock() {
+            Ok(st) => (st.overlay.clone(), st.cand_map.clone()),
+            Err(_) => (Vec::new(), Vec::new()),
+        };
+        // 没有叠加候选时，空格/数字仍要按显示下标映射到 Rime 下标再选：
+        // 删词过滤后显示顺序会变，直接交给 Rime 会选到另一个字。
+        if overlay.is_empty() && !composing {
             return None;
         }
-        let idx = if vk == 0x20 {
-            0
-        } else {
-            (vk - 0x31) as usize
+        let idx = match vk {
+            0x20 => 0,
+            0x31..=0x39 => (vk - 0x31) as usize,
+            0x61..=0x69 => (vk - 0x61) as usize,
+            _ => return None,
         };
         if idx < overlay.len() {
             let text = overlay[idx].clone();
@@ -508,10 +527,11 @@ impl TextService_Impl {
         }
         // 下标落在 Rime 候选段：换算成 Rime 下标（黑名单过滤过要查映射表），选它并上屏
         let disp = idx - overlay.len();
-        let rime_idx = match self.shared.lock() {
-            Ok(st) => st.cand_map.get(disp).copied().unwrap_or(disp),
-            Err(_) => disp,
-        };
+        if vk != 0x20 && disp >= cand_map.len() {
+            // 显示下标越界：吞掉，别交给 Rime 去选一个没显示出来的候选
+            return Some(true);
+        }
+        let rime_idx = cand_map.get(disp).copied().unwrap_or(disp);
         let mut commit = String::new();
         if let Some(arc) = engine::ensure_engine() {
             if let Ok(mut e) = arc.lock() {
@@ -627,7 +647,7 @@ impl TextService_Impl {
         if crate::svc::ready() {
             let shift_now = key::key_state_down(0x10);
             if let Some(reply) = crate::svc::key(vk, mask, shift_now) {
-                return self.apply_service_reply(context, &reply, vk == 0x20);
+                return self.apply_service_reply(context, &reply, is_candidate_select_key(vk));
             }
             // 服务这条路暂时不通（超时/断开/服务侧报错）：**绝不能吞键**。
             // 吞了就是"切到输入法之后一个字都打不出来"（真实踩过这个坑：请求通道
@@ -945,8 +965,8 @@ impl TextService_Impl {
                         xunyin_rime::assoc::learn_and_maybe_save(&p, &commit);
                     }
                 }
-                let followers = if vk == 0x20 {
-                    // 空格选词后不弹联想：用户要的是立刻上屏
+                let followers = if is_candidate_select_key(vk) {
+                    // 空格/数字/回车选词后不弹联想：用户要的是立刻上屏
                     Vec::new()
                 } else {
                     xunyin_rime::assoc::followers(&commit)
